@@ -170,12 +170,6 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
 
     img.src = 'http://' + host + ':81/stream';
 
-    // Offscreen 40x30 Ultra-Fast Subsampling (1,200 Pixels = Zero Lag)
-    const offCanvas = document.createElement('canvas');
-    offCanvas.width = 40;
-    offCanvas.height = 30;
-    const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
-
     function resizeCanvas() {
       if (img.clientWidth > 0 && img.clientHeight > 0) {
         canvas.width = img.clientWidth;
@@ -185,270 +179,87 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     window.addEventListener('resize', resizeCanvas);
     img.onload = resizeCanvas;
 
-    let clientBox = null;
-    let clientLastSeen = 0;
-    let prevLumJS = null;
-
-    function runClientTracker() {
-      try {
-        if (img.complete && img.naturalWidth > 0) {
-          offCtx.drawImage(img, 0, 0, 40, 30);
-          const imgData = offCtx.getImageData(0, 0, 40, 30).data;
-          const rawLum = new Uint8Array(1200);
-          let sumLum = 0;
-
-          for (let i = 0; i < 1200; i++) {
-            const r = imgData[i * 4];
-            const g = imgData[i * 4 + 1];
-            const b = imgData[i * 4 + 2];
-            const y = (0.299 * r + 0.587 * g + 0.114 * b) | 0;
-            rawLum[i] = y;
-            sumLum += y;
-          }
-
-          const meanLum = sumLum / 1200.0;
-          const deltaYSkin = meanLum < 90 ? Math.max(0, Math.min(12, (90 - meanLum) / 2)) : 0;
-          const cbMin = 70 - deltaYSkin, cbMax = 133 + deltaYSkin;
-          const crMin = 128 - deltaYSkin, crMax = 178 + deltaYSkin;
-
-          const skinMaskJS = new Uint8Array(1200);
-          let skinPixelCount = 0;
-          for (let i = 0; i < 1200; i++) {
-            const r = imgData[i * 4];
-            const g = imgData[i * 4 + 1];
-            const b = imgData[i * 4 + 2];
-            const cb = 128 + (((-43 * r - 85 * g + 128 * b)) >> 8);
-            const cr = 128 + (((128 * r - 107 * g - 21 * b)) >> 8);
-            const isSkin = (cb >= cbMin && cb <= cbMax && cr >= crMin && cr <= crMax);
-            skinMaskJS[i] = isSkin ? 1 : 0;
-            if (isSkin) skinPixelCount++;
-          }
-
-          // 3x3 Spatial Box Blur
-          const curLum = new Uint8Array(1200);
-          for (let y = 1; y < 29; y++) {
-            const y_off = y * 40;
-            for (let x = 1; x < 39; x++) {
-              const idx = y_off + x;
-              const sum = rawLum[idx - 41] + rawLum[idx - 40] + rawLum[idx - 39] +
-                          rawLum[idx - 1]  + rawLum[idx]      + rawLum[idx + 1]  +
-                          rawLum[idx + 39] + rawLum[idx + 40] + rawLum[idx + 41];
-              curLum[idx] = (sum / 9) | 0;
-            }
-          }
-
-          if (!prevLumJS) {
-            prevLumJS = curLum;
-          } else {
-            let M00 = 0.0, M10 = 0.0, M01 = 0.0;
-            let M20 = 0.0, M02 = 0.0;
-
-            // Pure Full-Frame Skin-Anchored Photometric Moments (Zero-Transcendental)
-            for (let y = 1; y < 29; y++) {
-              const y_off = y * 40;
-              for (let x = 1; x < 39; x++) {
-                const idx = y_off + x;
-                const lum = curLum[idx];
-                const prevL = prevLumJS[idx];
-
-                // Temporal Kinetic Difference ΔY
-                const delta = Math.abs(lum - prevL);
-
-                // Spatial Gradient gy
-                const gy = Math.abs(curLum[idx + 40] - curLum[idx - 40]);
-
-                // Photometric Energy: Skin is 1.0x, Non-skin is 0.04x (prevents wall poster hijacking)
-                const isSkin = (skinMaskJS[idx] === 1);
-                const rawEnergy = 2.5 * delta + 1.5 * gy;
-                const energy = isSkin ? rawEnergy : (0.04 * rawEnergy);
-
-                if (energy < 4.0) continue;
-
-                M00 += energy;
-                M10 += x * energy;
-                M01 += y * energy;
-                M20 += x * x * energy;
-                M02 += y * y * energy;
-              }
-            }
-
-            const clientDynThresh = Math.max(35.0, 75.0 - skinPixelCount * 0.5);
-            if (M00 >= clientDynThresh) {
-              const meanX = M10 / M00;
-              const meanY = M01 / M00;
-              const mu20 = Math.max(0, (M20 / M00) - (meanX * meanX));
-              const mu02 = Math.max(0, (M02 / M00) - (meanY * meanY));
-              const sigmaX = Math.sqrt(mu20);
-              const sigmaY = Math.sqrt(mu02);
-
-              const zx = meanX * 16.0;
-              const zy = meanY * 16.0;
-              let rawBw = 2.4 * Math.max(1.5, sigmaX) * 16.0;
-              let rawBh = 2.6 * Math.max(2.0, sigmaY) * 16.0;
-
-              rawBw = Math.max(60, Math.min(360, rawBw));
-              let coupledBh = Math.max(rawBh, 1.15 * rawBw);
-              coupledBh = Math.min(coupledBh, 1.55 * rawBw);
-              coupledBh = Math.max(80, Math.min(480, coupledBh));
-
-              // 1st-Order Alpha-Beta State Filter
-              const ALPHA = 0.40;
-              const BETA  = 0.20;
-              const dt    = 0.04;
-
-              if (!clientBox) {
-                clientBox = {
-                  detected: true,
-                  cx: zx,
-                  cy: zy,
-                  x: Math.round(zx - rawBw / 2),
-                  y: Math.round(zy - coupledBh / 2),
-                  w: Math.round(rawBw),
-                  h: Math.round(coupledBh),
-                  vx: 0.0,
-                  vy: 0.0,
-                  energy: M00
-                };
-              } else {
-                const predX = clientBox.cx + clientBox.vx * dt;
-                const predY = clientBox.cy + clientBox.vy * dt;
-                const rx = zx - predX;
-                const ry = zy - predY;
-
-                const distSq = rx * rx + ry * ry;
-                const speed = Math.hypot(clientBox.vx, clientBox.vy);
-                const gateRadius = Math.min(250.0, 90.0 + 0.25 * speed);
-
-                if (distSq <= gateRadius * gateRadius) {
-                  const newCx = predX + ALPHA * rx;
-                  const newCy = predY + ALPHA * ry;
-                  let newVx = clientBox.vx + (BETA / dt) * rx;
-                  let newVy = clientBox.vy + (BETA / dt) * ry;
-                  newVx = Math.max(-800.0, Math.min(800.0, newVx));
-                  newVy = Math.max(-800.0, Math.min(800.0, newVy));
-
-                  const newW = clientBox.w * 0.70 + rawBw * 0.30;
-                  const newH = clientBox.h * 0.70 + coupledBh * 0.30;
-
-                  clientBox = {
-                    detected: true,
-                    cx: newCx,
-                    cy: newCy,
-                    x: Math.round(newCx - newW / 2),
-                    y: Math.round(newCy - newH / 2),
-                    w: Math.round(newW),
-                    h: Math.round(newH),
-                    vx: newVx,
-                    vy: newVy,
-                    energy: M00
-                  };
-                }
-              }
-              clientLastSeen = Date.now();
-            } else if (Date.now() - clientLastSeen > 400) {
-              clientBox = null;
-            }
-            prevLumJS = curLum;
-          }
-        }
-      } catch (e) {}
-      setTimeout(runClientTracker, 40);
-    }
-    runClientTracker();
-
-    let lastMcuTrueTime = Date.now();
+    let targetData = null;
     let renderBox = null;
 
-    async function updateTelemetry() {
+    // Fetch telemetry periodically (10Hz)
+    async function fetchTelemetry() {
       try {
         const res = await fetch('http://' + host + '/telemetry');
-        const mcuData = await res.json();
-        const now = Date.now();
-
-        if (mcuData.detected) {
-          lastMcuTrueTime = now;
-        }
-
-        // Hysteresis: Percaya clientBox jika MCU hilang > 300ms
-        let data = mcuData.detected ? mcuData : (
-          (now - lastMcuTrueTime > 300 && clientBox) ? {
-            detected: true,
-            cx: clientBox.cx,
-            cy: clientBox.cy,
-            x: clientBox.x,
-            y: clientBox.y,
-            w: clientBox.w,
-            h: clientBox.h,
-            fw: 640,
-            fh: 480
-          } : mcuData
-        );
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        if (data.detected && data.fw > 0 && data.fh > 0) {
-          resizeCanvas();
-          const scaleX = canvas.width / data.fw;
-          const scaleY = canvas.height / data.fh;
-
-          const targetBx = data.x * scaleX;
-          const targetBy = data.y * scaleY;
-          const targetBw = data.w * scaleX;
-          const targetBh = data.h * scaleY;
-          const targetCx = data.cx * scaleX;
-          const targetCy = data.cy * scaleY;
-
-          // Kinematic Responsive Smoothing (75% baru + 25% lama)
-          if (!renderBox) {
-            renderBox = { bx: targetBx, by: targetBy, bw: targetBw, bh: targetBh, cx: targetCx, cy: targetCy };
-          } else {
-            renderBox.bx = renderBox.bx * 0.25 + targetBx * 0.75;
-            renderBox.by = renderBox.by * 0.25 + targetBy * 0.75;
-            renderBox.bw = renderBox.bw * 0.25 + targetBw * 0.75;
-            renderBox.bh = renderBox.bh * 0.25 + targetBh * 0.75;
-            renderBox.cx = renderBox.cx * 0.25 + targetCx * 0.75;
-            renderBox.cy = renderBox.cy * 0.25 + targetCy * 0.75;
-          }
-
-          const bx = renderBox.bx;
-          const by = renderBox.by;
-          const bw = renderBox.bw;
-          const bh = renderBox.bh;
-          const cx = renderBox.cx;
-          const cy = renderBox.cy;
-
-          // Bounding Box Neon Green
-          ctx.strokeStyle = '#00ff88';
-          ctx.lineWidth = 2;
-          ctx.strokeRect(bx, by, bw, bh);
-
-          // Sci-Fi Corner Brackets
-          const len = 14;
-          ctx.lineWidth = 3.5;
-          ctx.beginPath(); ctx.moveTo(bx, by + len); ctx.lineTo(bx, by); ctx.lineTo(bx + len, by); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx + bw - len, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + len); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx, by + bh - len); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + len, by + bh); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx + bw - len, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - len); ctx.stroke();
-
-          // Centroid Crosshair (True Center of Mass)
-          ctx.strokeStyle = '#00d8ff';
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy);
-          ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10);
-          ctx.stroke();
-
-          ctx.beginPath();
-          ctx.arc(cx, cy, 3.5, 0, 2 * Math.PI);
-          ctx.stroke();
-        } else {
-          renderBox = null;
-        }
+        targetData = await res.json();
       } catch (e) {}
-      setTimeout(updateTelemetry, 100);
+      setTimeout(fetchTelemetry, 100);
     }
 
-    updateTelemetry();
+    // Render loop at 60 FPS (Zero CPU Thrashing)
+    function drawHUD() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      if (targetData && targetData.detected && targetData.fw > 0 && targetData.fh > 0) {
+        resizeCanvas();
+        const scaleX = canvas.width / targetData.fw;
+        const scaleY = canvas.height / targetData.fh;
+
+        const targetBx = targetData.x * scaleX;
+        const targetBy = targetData.y * scaleY;
+        const targetBw = targetData.w * scaleX;
+        const targetBh = targetData.h * scaleY;
+        const targetCx = targetData.cx * scaleX;
+        const targetCy = targetData.cy * scaleY;
+
+        // Kinematic Responsive Smoothing (interpolation)
+        if (!renderBox) {
+          renderBox = { bx: targetBx, by: targetBy, bw: targetBw, bh: targetBh, cx: targetCx, cy: targetCy };
+        } else {
+          renderBox.bx += (targetBx - renderBox.bx) * 0.25;
+          renderBox.by += (targetBy - renderBox.by) * 0.25;
+          renderBox.bw += (targetBw - renderBox.bw) * 0.25;
+          renderBox.bh += (targetBh - renderBox.bh) * 0.25;
+          renderBox.cx += (targetCx - renderBox.cx) * 0.25;
+          renderBox.cy += (targetCy - renderBox.cy) * 0.25;
+        }
+
+        const bx = renderBox.bx;
+        const by = renderBox.by;
+        const bw = renderBox.bw;
+        const bh = renderBox.bh;
+        const cx = renderBox.cx;
+        const cy = renderBox.cy;
+
+        // Bounding Box Neon Green
+        ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(bx, by, bw, bh);
+
+        // Sci-Fi Corner Brackets
+        const len = 14;
+        ctx.lineWidth = 3.5;
+        ctx.beginPath(); ctx.moveTo(bx, by + len); ctx.lineTo(bx, by); ctx.lineTo(bx + len, by); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(bx + bw - len, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + len); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(bx, by + bh - len); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + len, by + bh); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(bx + bw - len, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - len); ctx.stroke();
+
+        // Centroid Crosshair (True Center of Mass)
+        ctx.strokeStyle = '#00d8ff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy);
+        ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3.5, 0, 2 * Math.PI);
+        ctx.stroke();
+      } else {
+        renderBox = null;
+      }
+      
+      requestAnimationFrame(drawHUD);
+    }
+
+    // Start loops
+    fetchTelemetry();
+    requestAnimationFrame(drawHUD);
   </script>
 </body>
 </html>
@@ -464,6 +275,8 @@ struct AlphaBetaState2D {
   float vy;      // Kecepatan vy (piksel/detik, clamped [-800, 800])
   float w;       // Lebar Bounding Box (piksel)
   float h;       // Tinggi Bounding Box (piksel)
+  float vw;      // Kecepatan ekspansi/kontraksi lebar
+  float vh;      // Kecepatan ekspansi/kontraksi tinggi
   bool  active;  // Status track aktif
   uint32_t last_update_us; // Timestamp mikrodetik terakhir
 };
@@ -472,6 +285,7 @@ static AlphaBetaState2D ab_state = {
   320.0f, 240.0f, // x, y
   0.0f, 0.0f,     // vx, vy
   160.0f, 200.0f, // w, h
+  0.0f, 0.0f,     // vw, vh
   false,
   0
 };
@@ -491,6 +305,11 @@ static float debug_vy = 0.0f;
 // =============================================
 void processFrameAI(camera_fb_t *fb) {
   if (!small_rgb_buf || !prev_lum_buf || fb->format != PIXFORMAT_JPEG) return;
+
+  static uint32_t last_ai_run_ms = 0;
+  uint32_t now_ms = millis();
+  if (now_ms - last_ai_run_ms < 35) return;
+  last_ai_run_ms = now_ms;
 
   // Subsampling decode 80x60 via hardware IDCT (~1.2ms)
   bool ok = jpg2rgb565(fb->buf, fb->len, small_rgb_buf, JPG_SCALE_8X);
@@ -564,6 +383,7 @@ void processFrameAI(camera_fb_t *fb) {
   static bool first_frame = true;
   if (first_frame) {
     memcpy(prev_lum_buf, smooth_40x30, 1200);
+    prev_mean_lum = (float)total_lum_sum / 1200.0f; // Instantly converge EMA at cold start
     first_frame = false;
     ab_state.last_update_us = micros();
     return;
@@ -587,7 +407,7 @@ void processFrameAI(camera_fb_t *fb) {
   float global_delta_mean = sample_count > 0 ? ((float)total_delta_sum / (float)sample_count) : 0.0f;
 
   uint32_t now_us = micros();
-  uint32_t now_ms = millis();
+  now_ms = millis();
 
   // Guard Delta-t
   float dt_sec = (ab_state.last_update_us > 0) ? ((float)(now_us - ab_state.last_update_us) * 1e-6f) : 0.033f;
@@ -611,10 +431,13 @@ void processFrameAI(camera_fb_t *fb) {
   double M00 = 0.0;
   double M10 = 0.0, M01 = 0.0;
   double M20 = 0.0, M02 = 0.0;
+  double M11 = 0.0;
+  double M00_top = 0.0;
 
   uint8_t* p_sm = smooth_40x30 + 41;
   uint8_t* p_pr = prev_lum_buf + 41;
   bool* p_msk = skin_mask_40x30 + 41;
+  float threshold_y = pred_y / 16.0f;
 
   for (int y = 1; y < 29; y++) {
     for (int x = 1; x < 39; x++) {
@@ -637,6 +460,11 @@ void processFrameAI(camera_fb_t *fb) {
         M01 += dy * weight;
         M20 += dx * dx * weight;
         M02 += dy * dy * weight;
+        M11 += dx * dy * weight;
+
+        if (dy < threshold_y) {
+          M00_top += weight;
+        }
       }
       p_sm++;
       p_pr++;
@@ -667,24 +495,41 @@ void processFrameAI(camera_fb_t *fb) {
 
     double mu20 = (M20 * inv_M00) - (mean_x * mean_x);
     double mu02 = (M02 * inv_M00) - (mean_y * mean_y);
+    double mu11 = (M11 * inv_M00) - (mean_x * mean_y);
 
-    float sigma_x = sqrtf(fmaxf(0.0f, (float)mu20));
-    float sigma_y = sqrtf(fmaxf(0.0f, (float)mu02));
+    float trace = (float)(mu20 + mu02);
+    float det_diff = (float)(mu20 - mu02);
+    float term = sqrtf(fmaxf(0.0f, det_diff * det_diff + 4.0f * (float)(mu11 * mu11)));
+
+    float lambda_1 = 0.5f * (trace + term);
+    float lambda_2 = 0.5f * (trace - term);
 
     // Koordinat Centroid pada Layar Resolusi 640x480
     float raw_cx = (float)mean_x * 16.0f; // 640 / 40
     float raw_cy = (float)mean_y * 16.0f; // 480 / 30
 
     // Dimensi Bounding Box dari Dispersi Spasial Orde-2
-    float raw_bw = 2.4f * fmaxf(1.5f, sigma_x) * 16.0f;
-    float raw_bh = 2.6f * fmaxf(2.0f, sigma_y) * 16.0f;
+    float raw_w = 2.0f * sqrtf(fmaxf(1.0f, lambda_1)) * 16.0f;
+    float raw_h = 2.0f * sqrtf(fmaxf(1.0f, lambda_2)) * 16.0f;
 
-    raw_bw = fmaxf(60.0f, fminf(360.0f, raw_bw));
-    float coupled_bh = fmaxf(raw_bh, 1.15f * raw_bw);
-    coupled_bh = fminf(coupled_bh, 1.55f * raw_bw);
+    // Adaptif Rasio Aspek (Face vs Body Classification)
+    float eta = (float)M00_top / ((float)M00 + 1e-6f);
+    float gamma_target;
+    if (eta >= 0.48f) {
+      gamma_target = 1.20f;
+    } else if (eta <= 0.40f) {
+      gamma_target = 2.15f;
+    } else {
+      float t = (eta - 0.40f) / 0.08f;
+      gamma_target = 2.15f + t * (1.20f - 2.15f);
+    }
+    float target_h = raw_w * gamma_target;
+    
+    cand_bw = raw_w;
+    cand_bh = target_h * lock_confidence + raw_h * (1.0f - lock_confidence);
 
-    cand_bw = raw_bw;
-    cand_bh = fmaxf(80.0f, fminf(480.0f, coupled_bh));
+    cand_bw = fmaxf(60.0f, fminf(360.0f, cand_bw));
+    cand_bh = fmaxf(80.0f, fminf(480.0f, cand_bh));
 
     // =============================================
     // DATA ASSOCIATION (Euclidean Distance Gating)
@@ -729,9 +574,19 @@ void processFrameAI(camera_fb_t *fb) {
     ab_state.vx = fmaxf(-800.0f, fminf(800.0f, ab_state.vx + (BETA / dt) * rx));
     ab_state.vy = fmaxf(-800.0f, fminf(800.0f, ab_state.vy + (BETA / dt) * ry));
 
-    // Bounding Box Smoothing
-    ab_state.w = ab_state.w * 0.70f + cand_bw * 0.30f;
-    ab_state.h = ab_state.h * 0.70f + cand_bh * 0.30f;
+    // Bounding Box Smoothing - Kinematic Alpha-Beta Scale Filtering
+    const float ALPHA_SCALE = 0.35f;
+    const float BETA_SCALE = 0.15f;
+    float pred_w = ab_state.w + ab_state.vw * dt;
+    float pred_h = ab_state.h + ab_state.vh * dt;
+    float r_w = cand_bw - pred_w;
+    float r_h = cand_bh - pred_h;
+    
+    ab_state.w = pred_w + ALPHA_SCALE * r_w;
+    ab_state.h = pred_h + ALPHA_SCALE * r_h;
+    ab_state.vw = fmaxf(-400.0f, fminf(400.0f, ab_state.vw + (BETA_SCALE / dt) * r_w));
+    ab_state.vh = fmaxf(-400.0f, fminf(400.0f, ab_state.vh + (BETA_SCALE / dt) * r_h));
+
     ab_state.w = fmaxf(60.0f, fminf(400.0f, ab_state.w));
     ab_state.h = fmaxf(80.0f, fminf(480.0f, ab_state.h));
 
@@ -743,11 +598,18 @@ void processFrameAI(camera_fb_t *fb) {
     ab_state.y = pred_y;
     ab_state.vx *= 0.85f;
     ab_state.vy *= 0.85f;
+    
+    ab_state.w += ab_state.vw * dt;
+    ab_state.h += ab_state.vh * dt;
+    ab_state.vw *= 0.85f;
+    ab_state.vh *= 0.85f;
 
     if (now_ms - last_valid_human_time > 400) {
       ab_state.active = false;
       ab_state.vx = 0.0f;
       ab_state.vy = 0.0f;
+      ab_state.vw = 0.0f;
+      ab_state.vh = 0.0f;
     }
   }
 
@@ -872,7 +734,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     last_frame_time = now;
 
     // Yield sesaat untuk stack IP
-    vTaskDelay(pdMS_TO_TICKS(1));
+    taskYIELD();
   }
   return res;
 }
@@ -880,6 +742,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 void startWebServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
+  config.stack_size = 8192;
+  config.task_priority = 5;
 
   httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL };
   httpd_uri_t telemetry_uri = { .uri = "/telemetry", .method = HTTP_GET, .handler = telemetry_handler, .user_ctx = NULL };
@@ -922,10 +786,10 @@ bool initCamera() {
   config.pin_pwdn     = PWDN_GPIO_NUM;
   config.pin_reset    = RESET_GPIO_NUM;
   
-  config.xclk_freq_hz = 16000000;
+  config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size   = FRAMESIZE_VGA; // 640x480
-  config.jpeg_quality = 8;             // Jernih & tajam
+  config.jpeg_quality = 12;
   config.fb_count     = 2;
   config.fb_location  = CAMERA_FB_IN_PSRAM;
   config.grab_mode    = CAMERA_GRAB_LATEST;
@@ -956,10 +820,10 @@ bool initCamera() {
     }
   }
 
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 15; i++) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) esp_camera_fb_return(fb);
-    delay(40);
+    delay(30);
   }
 
   return true;
