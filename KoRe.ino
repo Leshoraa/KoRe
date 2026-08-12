@@ -354,13 +354,6 @@ void updateGazeSystem() {
       trackSaccadeStartY = currentOffsetY;
       eye_vx = 0.0f;
       eye_vy = 0.0f;
-
-      // Trigger 40% probability reflex blink on large saccade
-      bool canReflexBlink = (currentExpr != EXPR_ANGRY && currentExpr != EXPR_OVERLOAD && currentExpr != EXPR_SEDIH && currentExpr != EXPR_JOY);
-      if (canReflexBlink && g_blinkState == BLINK_IDLE_STATE && (esp_random() % 100) < 40) {
-        g_blinkState = BLINK_CLOSING_STATE;
-        g_blinkStartTime = now;
-      }
     }
 
     if (trackInSaccade) {
@@ -1009,14 +1002,14 @@ void oledTask(void *pvParameters) {
     } else {
       if (g_blinkState == BLINK_IDLE_STATE) {
         if (g_nextBlinkTime == 0) {
-          g_nextBlinkTime = now + (esp_random() % 3000 + 2500);
+          g_nextBlinkTime = now + (esp_random() % 3500 + 3500);
         }
         if (now >= g_nextBlinkTime) {
           g_blinkState = BLINK_CLOSING_STATE;
           g_blinkStartTime = now;
           if (g_isDoubleBlinkPending) {
             g_isDoubleBlinkPending = false;
-          } else if ((esp_random() % 100) < 18) { // 18% double-blink probability
+          } else if ((esp_random() % 100) < 14) { // 14% double-blink probability
             g_isDoubleBlinkPending = true;
           }
         }
@@ -1040,9 +1033,9 @@ void oledTask(void *pvParameters) {
           g_blinkEyeHeight = 1.0f;
           g_blinkState = BLINK_IDLE_STATE;
           if (g_isDoubleBlinkPending) {
-            g_nextBlinkTime = now + 130;
+            g_nextBlinkTime = now + 140;
           } else {
-            g_nextBlinkTime = now + (esp_random() % 3200 + 2200);
+            g_nextBlinkTime = now + (esp_random() % 3500 + 3500); // 3.5s - 7.0s natural interval
           }
         } else {
           float t = elapsed / duration;
@@ -1101,7 +1094,7 @@ static float debug_lock_conf = 0.0f;
 
 // --- Differential Computer Vision Engine ---
 void processFrameAI(camera_fb_t *fb) {
-  if (!small_rgb_buf || !prev_lum_buf || !mhi_buf || fb->format != PIXFORMAT_JPEG) return;
+  if (!fb || !fb->buf || fb->len < 1024 || !small_rgb_buf || !prev_lum_buf || !mhi_buf || fb->format != PIXFORMAT_JPEG) return;
 
   bool ok = jpg2rgb565(fb->buf, fb->len, small_rgb_buf, JPG_SCALE_8X);
   if (!ok) return;
@@ -1391,35 +1384,40 @@ void cameraTask(void *pvParameters) {
   while (true) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) {
-      processFrameAI(fb);
+      // Validate JPEG frame integrity before decoding to avoid esp_jpeg_decode error 6
+      if (fb->len > 1024 && fb->buf[0] == 0xFF && fb->buf[1] == 0xD8) {
+        processFrameAI(fb);
 
-      uint32_t now = millis();
-      if (now - last_frame_time > 0) {
-        fps_ai = 1000.0f / (float)(now - last_frame_time);
-      }
-      last_frame_time = now;
+        uint32_t now = millis();
+        if (now - last_frame_time > 0) {
+          fps_ai = 1000.0f / (float)(now - last_frame_time);
+        }
+        last_frame_time = now;
 
-      bool streaming_now = false;
-      portENTER_CRITICAL(&g_stream_mutex);
-      streaming_now = (g_stream_clients > 0);
-      portEXIT_CRITICAL(&g_stream_mutex);
+        bool streaming_now = false;
+        portENTER_CRITICAL(&g_stream_mutex);
+        streaming_now = (g_stream_clients > 0);
+        portEXIT_CRITICAL(&g_stream_mutex);
 
-      if (streaming_now && g_latest_jpeg_buf) {
-        if (fb->len <= 64 * 1024) {
-          portENTER_CRITICAL(&g_stream_mutex);
-          memcpy(g_latest_jpeg_buf, fb->buf, fb->len);
-          g_latest_jpeg_len = fb->len;
-          portENTER_CRITICAL(&g_stream_mutex);
+        if (streaming_now && g_latest_jpeg_buf) {
+          if (fb->len <= 64 * 1024) {
+            portENTER_CRITICAL(&g_stream_mutex);
+            memcpy(g_latest_jpeg_buf, fb->buf, fb->len);
+            g_latest_jpeg_len = fb->len;
+            portEXIT_CRITICAL(&g_stream_mutex);
 
-          if (g_frame_sem) {
-            xSemaphoreGive(g_frame_sem);
+            if (g_frame_sem) {
+              xSemaphoreGive(g_frame_sem);
+            }
           }
         }
       }
 
       esp_camera_fb_return(fb);
     }
-    vTaskDelay(pdMS_TO_TICKS(5));
+    // Yield execution to reset Task Watchdog Timer (TWDT) on Core 0
+    vTaskDelay(pdMS_TO_TICKS(4));
+    taskYIELD();
   }
 }
 
