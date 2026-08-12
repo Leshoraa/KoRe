@@ -892,7 +892,7 @@ void updateBiologicalMoodEngine() {
     return;
   }
 
-  // Spontaneous Markov mood transitions (65%+ IDLE Dominance)
+  // Spontaneous Markov mood transitions (65%+ IDLE Dominance, Ultra-Rare 1% OVERLOAD)
   if (g_nextMoodShiftTime == 0) {
     g_nextMoodShiftTime = now + (esp_random() % 6000 + 5000);
   }
@@ -904,50 +904,50 @@ void updateBiologicalMoodEngine() {
     switch (currentExpr) {
       case EXPR_IDLE:
         if (roll < 65) nextMood = EXPR_IDLE;          // 65% EXPR_IDLE (Dominant Idle)
-        else if (roll < 82) nextMood = EXPR_ANGRY;    // 17% EXPR_ANGRY
-        else if (roll < 90) nextMood = EXPR_OVERLOAD; // 8% EXPR_OVERLOAD
-        else if (roll < 95) nextMood = EXPR_JOY;      // 5% EXPR_JOY
-        else if (roll < 98) nextMood = EXPR_SEDIH;    // 3% EXPR_SEDIH
-        else nextMood = EXPR_SMIRK;                   // 2% EXPR_SMIRK
+        else if (roll < 88) nextMood = EXPR_ANGRY;    // 23% EXPR_ANGRY
+        else if (roll < 94) nextMood = EXPR_JOY;      // 6% EXPR_JOY
+        else if (roll < 97) nextMood = EXPR_SEDIH;    // 3% EXPR_SEDIH
+        else if (roll < 99) nextMood = EXPR_SMIRK;    // 2% EXPR_SMIRK
+        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD (Ultra Rare)
         break;
 
       case EXPR_ANGRY:
-        if (roll < 62) nextMood = EXPR_IDLE;          // 62% Return to IDLE
-        else if (roll < 88) nextMood = EXPR_ANGRY;    // 26% Stay ANGRY
-        else if (roll < 95) nextMood = EXPR_OVERLOAD; // 7% EXPR_OVERLOAD
-        else nextMood = EXPR_SEDIH;                   // 5% EXPR_SEDIH
+        if (roll < 65) nextMood = EXPR_IDLE;          // 65% Return to IDLE
+        else if (roll < 92) nextMood = EXPR_ANGRY;    // 27% Stay ANGRY
+        else if (roll < 99) nextMood = EXPR_SEDIH;    // 7% EXPR_SEDIH
+        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
         break;
 
       case EXPR_JOY:
         if (roll < 75) nextMood = EXPR_IDLE;          // 75% Return to IDLE
-        else if (roll < 90) nextMood = EXPR_ANGRY;    // 15% EXPR_ANGRY
-        else if (roll < 96) nextMood = EXPR_OVERLOAD; // 6% EXPR_OVERLOAD
-        else nextMood = EXPR_SMIRK;                   // 4% EXPR_SMIRK
+        else if (roll < 93) nextMood = EXPR_ANGRY;    // 18% EXPR_ANGRY
+        else if (roll < 99) nextMood = EXPR_SMIRK;    // 6% EXPR_SMIRK
+        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
         break;
 
       case EXPR_SMIRK:
-        if (roll < 60) nextMood = EXPR_IDLE;          // 60% Return to IDLE
-        else if (roll < 88) nextMood = EXPR_ANGRY;    // 28% EXPR_ANGRY
-        else nextMood = EXPR_OVERLOAD;                // 12% EXPR_OVERLOAD
+        if (roll < 65) nextMood = EXPR_IDLE;          // 65% Return to IDLE
+        else if (roll < 99) nextMood = EXPR_ANGRY;    // 34% EXPR_ANGRY
+        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
         break;
 
       case EXPR_SHOCK:
-        if (roll < 55) nextMood = EXPR_IDLE;          // 55% Return to IDLE
-        else if (roll < 85) nextMood = EXPR_ANGRY;    // 30% EXPR_ANGRY
-        else nextMood = EXPR_OVERLOAD;                // 15% EXPR_OVERLOAD
+        if (roll < 60) nextMood = EXPR_IDLE;          // 60% Return to IDLE
+        else if (roll < 99) nextMood = EXPR_ANGRY;    // 39% EXPR_ANGRY
+        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
         break;
 
       case EXPR_OVERLOAD:
-        if (roll < 62) nextMood = EXPR_IDLE;          // 62% Return to IDLE
-        else if (roll < 90) nextMood = EXPR_ANGRY;    // 28% EXPR_ANGRY
-        else nextMood = EXPR_SEDIH;                   // 10% EXPR_SEDIH
+        if (roll < 70) nextMood = EXPR_IDLE;          // 70% Return to IDLE
+        else if (roll < 95) nextMood = EXPR_ANGRY;    // 25% EXPR_ANGRY
+        else nextMood = EXPR_SEDIH;                   // 5% EXPR_SEDIH
         break;
 
       case EXPR_SEDIH:
-        if (roll < 68) nextMood = EXPR_IDLE;          // 68% Return to IDLE
-        else if (roll < 88) nextMood = EXPR_ANGRY;    // 20% EXPR_ANGRY
-        else if (roll < 95) nextMood = EXPR_OVERLOAD; // 7% EXPR_OVERLOAD
-        else nextMood = EXPR_JOY;                     // 5% EXPR_JOY
+        if (roll < 70) nextMood = EXPR_IDLE;          // 70% Return to IDLE
+        else if (roll < 92) nextMood = EXPR_ANGRY;    // 22% EXPR_ANGRY
+        else if (roll < 99) nextMood = EXPR_JOY;      // 7% EXPR_JOY
+        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
         break;
     }
 
