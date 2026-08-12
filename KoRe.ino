@@ -874,8 +874,8 @@ void updateBiologicalMoodEngine() {
   if (target.detected && !g_lastTargetDetectedState) {
     g_lastTargetDetectedState = true;
     uint32_t roll = esp_random() % 100;
-    // 55% EXPR_ANGRY, 30% EXPR_SHOCK, 15% EXPR_IDLE
-    Expression reactExpr = (roll < 55) ? EXPR_ANGRY : ((roll < 85) ? EXPR_SHOCK : EXPR_IDLE);
+    // 40% EXPR_ANGRY, 25% EXPR_SHOCK, 35% EXPR_IDLE
+    Expression reactExpr = (roll < 40) ? EXPR_ANGRY : ((roll < 65) ? EXPR_SHOCK : EXPR_IDLE);
     setNextExpression(reactExpr);
     g_nextMoodShiftTime = now + (esp_random() % 4000 + 4000);
     return;
@@ -885,14 +885,14 @@ void updateBiologicalMoodEngine() {
   if (!target.detected && g_lastTargetDetectedState) {
     g_lastTargetDetectedState = false;
     uint32_t roll = esp_random() % 100;
-    // 60% EXPR_IDLE, 30% EXPR_ANGRY, 10% EXPR_SEDIH
-    Expression reactExpr = (roll < 60) ? EXPR_IDLE : ((roll < 90) ? EXPR_ANGRY : EXPR_SEDIH);
+    // 75% EXPR_IDLE, 18% EXPR_ANGRY, 7% EXPR_SEDIH
+    Expression reactExpr = (roll < 75) ? EXPR_IDLE : ((roll < 93) ? EXPR_ANGRY : EXPR_SEDIH);
     setNextExpression(reactExpr);
     g_nextMoodShiftTime = now + (esp_random() % 4000 + 3500);
     return;
   }
 
-  // Spontaneous Markov mood transitions
+  // Spontaneous Markov mood transitions (65%+ IDLE Dominance)
   if (g_nextMoodShiftTime == 0) {
     g_nextMoodShiftTime = now + (esp_random() % 6000 + 5000);
   }
@@ -903,51 +903,51 @@ void updateBiologicalMoodEngine() {
 
     switch (currentExpr) {
       case EXPR_IDLE:
-        if (roll < 48) nextMood = EXPR_IDLE;          // 48% EXPR_IDLE
-        else if (roll < 76) nextMood = EXPR_ANGRY;    // 28% EXPR_ANGRY
-        else if (roll < 86) nextMood = EXPR_OVERLOAD; // 10% EXPR_OVERLOAD
-        else if (roll < 93) nextMood = EXPR_JOY;      // 7% EXPR_JOY
-        else if (roll < 97) nextMood = EXPR_SEDIH;    // 4% EXPR_SEDIH
-        else nextMood = EXPR_SMIRK;                   // 3% EXPR_SMIRK
+        if (roll < 65) nextMood = EXPR_IDLE;          // 65% EXPR_IDLE (Dominant Idle)
+        else if (roll < 82) nextMood = EXPR_ANGRY;    // 17% EXPR_ANGRY
+        else if (roll < 90) nextMood = EXPR_OVERLOAD; // 8% EXPR_OVERLOAD
+        else if (roll < 95) nextMood = EXPR_JOY;      // 5% EXPR_JOY
+        else if (roll < 98) nextMood = EXPR_SEDIH;    // 3% EXPR_SEDIH
+        else nextMood = EXPR_SMIRK;                   // 2% EXPR_SMIRK
         break;
 
       case EXPR_ANGRY:
-        if (roll < 48) nextMood = EXPR_ANGRY;         // 48% EXPR_ANGRY
-        else if (roll < 83) nextMood = EXPR_IDLE;     // 35% EXPR_IDLE
-        else if (roll < 93) nextMood = EXPR_OVERLOAD; // 10% EXPR_OVERLOAD
-        else nextMood = EXPR_SEDIH;                   // 7% EXPR_SEDIH
+        if (roll < 62) nextMood = EXPR_IDLE;          // 62% Return to IDLE
+        else if (roll < 88) nextMood = EXPR_ANGRY;    // 26% Stay ANGRY
+        else if (roll < 95) nextMood = EXPR_OVERLOAD; // 7% EXPR_OVERLOAD
+        else nextMood = EXPR_SEDIH;                   // 5% EXPR_SEDIH
         break;
 
       case EXPR_JOY:
-        if (roll < 65) nextMood = EXPR_IDLE;          // 65% EXPR_IDLE
-        else if (roll < 85) nextMood = EXPR_ANGRY;    // 20% EXPR_ANGRY
-        else if (roll < 93) nextMood = EXPR_OVERLOAD; // 8% EXPR_OVERLOAD
-        else nextMood = EXPR_SMIRK;                   // 7% EXPR_SMIRK
+        if (roll < 75) nextMood = EXPR_IDLE;          // 75% Return to IDLE
+        else if (roll < 90) nextMood = EXPR_ANGRY;    // 15% EXPR_ANGRY
+        else if (roll < 96) nextMood = EXPR_OVERLOAD; // 6% EXPR_OVERLOAD
+        else nextMood = EXPR_SMIRK;                   // 4% EXPR_SMIRK
         break;
 
       case EXPR_SMIRK:
-        if (roll < 55) nextMood = EXPR_ANGRY;         // 55% EXPR_ANGRY
-        else if (roll < 85) nextMood = EXPR_IDLE;     // 30% EXPR_IDLE
-        else nextMood = EXPR_OVERLOAD;                // 15% EXPR_OVERLOAD
+        if (roll < 60) nextMood = EXPR_IDLE;          // 60% Return to IDLE
+        else if (roll < 88) nextMood = EXPR_ANGRY;    // 28% EXPR_ANGRY
+        else nextMood = EXPR_OVERLOAD;                // 12% EXPR_OVERLOAD
         break;
 
       case EXPR_SHOCK:
-        if (roll < 50) nextMood = EXPR_ANGRY;         // 50% EXPR_ANGRY
-        else if (roll < 80) nextMood = EXPR_IDLE;     // 30% EXPR_IDLE
-        else nextMood = EXPR_OVERLOAD;                // 20% EXPR_OVERLOAD
+        if (roll < 55) nextMood = EXPR_IDLE;          // 55% Return to IDLE
+        else if (roll < 85) nextMood = EXPR_ANGRY;    // 30% EXPR_ANGRY
+        else nextMood = EXPR_OVERLOAD;                // 15% EXPR_OVERLOAD
         break;
 
       case EXPR_OVERLOAD:
-        if (roll < 55) nextMood = EXPR_ANGRY;         // 55% EXPR_ANGRY
-        else if (roll < 88) nextMood = EXPR_IDLE;     // 33% EXPR_IDLE
-        else nextMood = EXPR_SEDIH;                   // 12% EXPR_SEDIH
+        if (roll < 62) nextMood = EXPR_IDLE;          // 62% Return to IDLE
+        else if (roll < 90) nextMood = EXPR_ANGRY;    // 28% EXPR_ANGRY
+        else nextMood = EXPR_SEDIH;                   // 10% EXPR_SEDIH
         break;
 
       case EXPR_SEDIH:
-        if (roll < 50) nextMood = EXPR_IDLE;          // 50% EXPR_IDLE
-        else if (roll < 78) nextMood = EXPR_ANGRY;    // 28% EXPR_ANGRY
-        else if (roll < 90) nextMood = EXPR_OVERLOAD; // 12% EXPR_OVERLOAD
-        else nextMood = EXPR_JOY;                     // 10% EXPR_JOY
+        if (roll < 68) nextMood = EXPR_IDLE;          // 68% Return to IDLE
+        else if (roll < 88) nextMood = EXPR_ANGRY;    // 20% EXPR_ANGRY
+        else if (roll < 95) nextMood = EXPR_OVERLOAD; // 7% EXPR_OVERLOAD
+        else nextMood = EXPR_JOY;                     // 5% EXPR_JOY
         break;
     }
 
@@ -994,7 +994,7 @@ void oledTask(void *pvParameters) {
     portEXIT_CRITICAL(&target_mutex);
 
     // Eyelid blink state machine
-    bool canBlink = (currentExpr != EXPR_ANGRY && currentExpr != EXPR_OVERLOAD && currentExpr != EXPR_SEDIH && currentExpr != EXPR_JOY);
+    bool canBlink = (currentExpr != EXPR_OVERLOAD && currentExpr != EXPR_SEDIH && currentExpr != EXPR_JOY);
 
     if (!canBlink) {
       g_blinkState = BLINK_IDLE_STATE;
@@ -1002,7 +1002,8 @@ void oledTask(void *pvParameters) {
     } else {
       if (g_blinkState == BLINK_IDLE_STATE) {
         if (g_nextBlinkTime == 0) {
-          g_nextBlinkTime = now + (esp_random() % 3500 + 3500);
+          uint32_t initInterval = (currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
+          g_nextBlinkTime = now + initInterval;
         }
         if (now >= g_nextBlinkTime) {
           g_blinkState = BLINK_CLOSING_STATE;
@@ -1017,7 +1018,7 @@ void oledTask(void *pvParameters) {
 
       if (g_blinkState == BLINK_CLOSING_STATE) {
         float elapsed = (float)(now - g_blinkStartTime);
-        float duration = 50.0f; // Eyelid closure phase (50ms)
+        float duration = (currentExpr == EXPR_ANGRY) ? 35.0f : 50.0f; // Sharp 35ms snap close for angry gaze
         if (elapsed >= duration) {
           g_blinkEyeHeight = 0.0f;
           g_blinkState = BLINK_OPENING_STATE;
@@ -1028,14 +1029,15 @@ void oledTask(void *pvParameters) {
         }
       } else if (g_blinkState == BLINK_OPENING_STATE) {
         float elapsed = (float)(now - g_blinkStartTime);
-        float duration = 110.0f; // Eyelid opening phase (110ms)
+        float duration = (currentExpr == EXPR_ANGRY) ? 80.0f : 110.0f; // Fierce 80ms snap opening
         if (elapsed >= duration) {
           g_blinkEyeHeight = 1.0f;
           g_blinkState = BLINK_IDLE_STATE;
           if (g_isDoubleBlinkPending) {
-            g_nextBlinkTime = now + 140;
+            g_nextBlinkTime = now + 120;
           } else {
-            g_nextBlinkTime = now + (esp_random() % 3500 + 3500); // 3.5s - 7.0s natural interval
+            uint32_t interval = (currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
+            g_nextBlinkTime = now + interval;
           }
         } else {
           float t = elapsed / duration;
