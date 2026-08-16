@@ -7,6 +7,7 @@
  */
 
 #include "esp_camera.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "img_converters.h"
 #include <WiFi.h>
@@ -40,7 +41,7 @@ public:
     {
       auto cfg = _bus_instance.config();
       cfg.i2c_port = 0;
-      cfg.freq_write = 800000; // 800kHz Fast-mode I2C
+      cfg.freq_write = 1000000; // 1.0MHz Fast-mode Plus I2C
       cfg.freq_read = 400000;
       cfg.pin_scl = 5; // D4 = GPIO 5
       cfg.pin_sda = 6; // D5 = GPIO 6
@@ -314,39 +315,37 @@ void updateGazeSystem() {
 
   unsigned long now = millis();
 
-  // Target tracking: 2nd-order damped smooth pursuit & minimum-jerk saccades
+  // Target tracking: 2nd-order critically-damped smooth pursuit & minimum-jerk saccades
   if (target.detected) {
     float normX = constrain(target.error_x / 100.0f, -1.0f, 1.0f);
     float normY = constrain(target.error_y / 100.0f, -1.0f, 1.0f);
 
-    float boostX = (normX >= 0.0f ? 1.0f : -1.0f) * sqrtf(fabsf(normX));
-    float boostY = (normY >= 0.0f ? 1.0f : -1.0f) * sqrtf(fabsf(normY));
-
-    float rawTargetX = boostX * 18.0f;
-    float rawTargetY = boostY * 12.0f;
+    // Smooth linear gaze target mapping without nonlinear noise amplification
+    float rawTargetX = normX * 16.0f;
+    float rawTargetY = normY * 10.0f;
 
     // Foveal deadzone & noise suppression
     float dx_raw = rawTargetX - smoothedTargetX;
     float dy_raw = rawTargetY - smoothedTargetY;
     float dist_raw = sqrtf(dx_raw * dx_raw + dy_raw * dy_raw);
 
-    if (dist_raw < 1.5f) {
+    if (dist_raw < 2.5f) {
       // Lock gaze within deadzone to eliminate sub-pixel jitter
-      smoothedTargetX += dx_raw * 0.02f;
-      smoothedTargetY += dy_raw * 0.02f;
+      smoothedTargetX += dx_raw * 0.05f;
+      smoothedTargetY += dy_raw * 0.05f;
     } else {
       // Adaptive hysteresis tracking
-      float alpha = constrain((dist_raw - 1.5f) / 8.0f, 0.15f, 0.80f);
+      float alpha = constrain((dist_raw - 2.5f) / 12.0f, 0.08f, 0.35f);
       smoothedTargetX += dx_raw * alpha;
       smoothedTargetY += dy_raw * alpha;
     }
 
-    // Ballistic saccade detection (>3.5px offset)
+    // Ballistic saccade detection (>6.0px large offset only)
     float dx_eye = smoothedTargetX - currentOffsetX;
     float dy_eye = smoothedTargetY - currentOffsetY;
     float dist_eye = sqrtf(dx_eye * dx_eye + dy_eye * dy_eye);
 
-    if (dist_eye > 3.5f && !trackInSaccade) {
+    if (dist_eye > 6.0f && !trackInSaccade) {
       trackInSaccade = true;
       trackSaccadeStart = now;
       trackSaccadeDuration = (uint32_t)constrain(40.0f + dist_eye * 3.0f, 50.0f, 90.0f);
@@ -365,22 +364,19 @@ void updateGazeSystem() {
         currentOffsetY = smoothedTargetY;
         trackInSaccade = false;
       } else {
-        // 5th-order minimum-jerk saccade trajectory with muscle overshoot
+        // 5th-order minimum-jerk saccade trajectory
         float p = progress;
         float s = 10.0f * p * p * p - 15.0f * p * p * p * p + 6.0f * p * p * p * p * p;
         float distX = smoothedTargetX - trackSaccadeStartX;
         float distY = smoothedTargetY - trackSaccadeStartY;
-        float overshootX = 0.10f * distX * sinf(3.14159265f * p) * expf(-3.5f * p);
-        float overshootY = 0.10f * distY * sinf(3.14159265f * p) * expf(-3.5f * p);
-
-        currentOffsetX = trackSaccadeStartX + (distX * s) + overshootX;
-        currentOffsetY = trackSaccadeStartY + (distY * s) + overshootY;
+        currentOffsetX = trackSaccadeStartX + (distX * s);
+        currentOffsetY = trackSaccadeStartY + (distY * s);
       }
     } else {
-      // Mass-spring-damper smooth pursuit (omega_n = 22.0 rad/s, zeta = 0.88)
+      // Mass-spring-damper smooth pursuit (omega_n = 10.0 rad/s, zeta = 1.0f - Critically Damped)
       float dt = 0.016f; // ~60 FPS
-      float omega_n = 22.0f;
-      float zeta = 0.88f;
+      float omega_n = 10.0f;
+      float zeta = 1.0f;
 
       float ax = (omega_n * omega_n) * (smoothedTargetX - currentOffsetX) - (2.0f * zeta * omega_n) * eye_vx;
       float ay = (omega_n * omega_n) * (smoothedTargetY - currentOffsetY) - (2.0f * zeta * omega_n) * eye_vy;
@@ -393,8 +389,8 @@ void updateGazeSystem() {
 
       // Physiological 4Hz micro-tremor
       if (dist_eye < 1.0f) {
-        float tremorX = 0.25f * sinf(now * 0.025f);
-        float tremorY = 0.18f * cosf(now * 0.031f);
+        float tremorX = 0.15f * sinf(now * 0.025f);
+        float tremorY = 0.10f * cosf(now * 0.031f);
         currentOffsetX += tremorX * 0.05f;
         currentOffsetY += tremorY * 0.05f;
       }
@@ -1094,8 +1090,8 @@ static float debug_m00 = 0.0f;
 static int debug_skin_px = 0;
 static float debug_lock_conf = 0.0f;
 
-// --- Differential Computer Vision Engine ---
-void processFrameAI(camera_fb_t *fb) {
+// --- Differential Computer Vision Engine (IRAM Executed) ---
+void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   if (!fb || !fb->buf || fb->len < 1024 || !small_rgb_buf || !prev_lum_buf || !mhi_buf || fb->format != PIXFORMAT_JPEG) return;
 
   bool ok = jpg2rgb565(fb->buf, fb->len, small_rgb_buf, JPG_SCALE_8X);
@@ -1103,9 +1099,9 @@ void processFrameAI(camera_fb_t *fb) {
 
   uint16_t* pixels = (uint16_t*)small_rgb_buf;
 
-  static uint8_t cur_40x30[1200];
-  static bool skin_mask_40x30[1200];
-  static uint8_t texture_40x30[1200];
+  static uint8_t cur_40x30[1200] __attribute__((aligned(16)));
+  static bool skin_mask_40x30[1200] __attribute__((aligned(16)));
+  static uint8_t texture_40x30[1200] __attribute__((aligned(16)));
   int skin_pixel_count = 0;
   uint32_t total_luminance_sum = 0;
 
@@ -1133,7 +1129,8 @@ void processFrameAI(camera_fb_t *fb) {
       int cb = 128 + (((-43 * r - 85 * g + 128 * b)) >> 8);
       int cr = 128 + (((128 * r - 107 * g - 21 * b)) >> 8);
 
-      bool is_skin = (cb >= min_cb && cb <= max_cb && cr >= min_cr && cr <= max_cr);
+      // Strict human skin locus: require R >= B and Cr - Cb >= 6 to reject purple walls and ambient blue/purple background lights
+      bool is_skin = (r >= b) && ((cr - cb) >= 6) && (r >= 10) && (cb >= min_cb && cb <= max_cb && cr >= min_cr && cr <= max_cr);
       *p_skin++ = is_skin;
       if (is_skin) skin_pixel_count++;
     }
@@ -1142,7 +1139,7 @@ void processFrameAI(camera_fb_t *fb) {
   float frame_mean_lum = (float)total_luminance_sum / 1200.0f;
   ema_global_luminance = 0.90f * ema_global_luminance + 0.10f * frame_mean_lum;
 
-  static uint8_t smooth_40x30[1200];
+  static uint8_t smooth_40x30[1200] __attribute__((aligned(16)));
   for (int y = 1; y < 29; y++) {
     int y_off = y * 40;
     for (int x = 1; x < 39; x++) {
@@ -1177,7 +1174,10 @@ void processFrameAI(camera_fb_t *fb) {
   }
   float global_delta_mean = sample_count > 0 ? ((float)total_delta_sum / (float)sample_count) : 0.0f;
 
-  double M00 = 0.0, M10 = 0.0, M01 = 0.0, M20 = 0.0, M02 = 0.0, M11 = 0.0;
+  float M00 = 0.0f, M10 = 0.0f, M01 = 0.0f, M20 = 0.0f, M02 = 0.0f, M11 = 0.0f;
+
+  float prev_grid_x = k_state.x * (1.0f / 16.0f);
+  float prev_grid_y = k_state.y * (1.0f / 16.0f);
 
   for (int y = 1; y < 29; y++) {
     int y_off = y * 40;
@@ -1200,24 +1200,52 @@ void processFrameAI(camera_fb_t *fb) {
       float gy = (float)abs((int)smooth_40x30[idx + 40] - (int)smooth_40x30[idx - 40]);
       float gx = (float)abs((int)smooth_40x30[idx + 1] - (int)smooth_40x30[idx - 1]);
 
-      float energy = 2.5f * delta + 16.0f * mhi_weight + 1.5f * gy + 0.8f * gx;
-
       bool is_skin = skin_mask_40x30[idx];
+      uint8_t raw_lum = cur_40x30[idx];
+
+      // Reject high-luminance non-skin background light sources (neon lights, lamps)
+      if (!is_skin && raw_lum > 200) continue;
+
+      // If human skin is detected in the frame, ignore non-skin background pixels completely
+      if (skin_pixel_count >= 4 && !is_skin) continue;
+
+      float raw_energy = 2.5f * delta + 16.0f * mhi_weight + 1.5f * gy + 0.8f * gx;
+      float energy = raw_energy;
+
       if (is_skin) {
-        energy *= 1.25f;
+        // Uniform weighting for skin pixels so the centroid computes the true geometric center of the face/head,
+        // preventing motion from mouth/eyes from pulling the crosshair around the face.
+        energy = 10.0f + 0.3f * (gy + gx);
       } else {
         float tex_val = (float)texture_40x30[idx];
         float texture_factor = 1.0f - (tex_val - 15.0f) / 40.0f;
-        if (texture_factor < 0.35f) texture_factor = 0.35f;
+        if (texture_factor < 0.20f) texture_factor = 0.20f;
         if (texture_factor > 1.0f)  texture_factor = 1.0f;
-        energy *= (0.04f * texture_factor);
+        energy = raw_energy * (0.04f * texture_factor);
       }
 
-      if (energy < 8.0f) continue;
+      if (is_skin) {
+        // Accept skin pixels
+      } else {
+        if (raw_energy < 22.0f || energy < 1.0f) continue; // Require strong motion/gradient for non-skin pixels
+      }
 
-      double weight = (double)energy;
-      double dx = (double)x;
-      double dy = (double)y;
+      float weight = energy;
+      float dx = (float)x;
+      float dy = (float)y;
+
+      // Spatial Kernel Gating: Attenuate distant background noise relative to predicted target position
+      if (k_state.active) {
+        float dist_x = dx - prev_grid_x;
+        float dist_y = dy - prev_grid_y;
+        float norm_dist_sq = (dist_x * dist_x) * (1.0f / 64.0f) + (dist_y * dist_y) * (1.0f / 49.0f);
+        if (norm_dist_sq > 2.25f && !is_skin) {
+          continue; // Discard distant ceiling/wall noise
+        }
+        if (norm_dist_sq > 1.0f && !is_skin) {
+          weight *= 0.25f;
+        }
+      }
 
       M00 += weight;
       M10 += dx * weight;
@@ -1257,37 +1285,91 @@ void processFrameAI(camera_fb_t *fb) {
   float cand_cx = pred_x, cand_cy = pred_y, cand_bw = k_state.w, cand_bh = k_state.h;
 
   if (M00 >= dynamic_threshold) {
-    double inv_M00 = 1.0 / M00;
-    double mean_x = M10 * inv_M00;
-    double mean_y = M01 * inv_M00;
+    float inv_M00 = 1.0f / M00;
+    float mean_x = M10 * inv_M00;
+    float mean_y = M01 * inv_M00;
 
-    double mu20 = (M20 * inv_M00) - (mean_x * mean_x);
-    double mu02 = (M02 * inv_M00) - (mean_y * mean_y);
+    float mu20 = (M20 * inv_M00) - (mean_x * mean_x);
+    float mu02 = (M02 * inv_M00) - (mean_y * mean_y);
 
-    float sigma_x = sqrtf(fmaxf(0.0f, (float)mu20));
-    float sigma_y = sqrtf(fmaxf(0.0f, (float)mu02));
+    float sigma_x = sqrtf(fmaxf(0.0f, mu20));
+    float sigma_y = sqrtf(fmaxf(0.0f, mu02));
 
-    float raw_cx = (float)mean_x * 16.0f;
-    float raw_cy = (float)mean_y * 16.0f;
+    float raw_cx = mean_x * 16.0f;
+    float raw_cy = mean_y * 16.0f;
 
-    float raw_bw = 2.4f * fmaxf(1.5f, sigma_x) * 16.0f;
-    float raw_bh = 2.6f * fmaxf(2.0f, sigma_y) * 16.0f;
+    // Anatomically proportioned bounding box scaling for human head, face, and shoulders (140-240px width, 180-310px height)
+    float raw_bw = 2.4f * fmaxf(2.8f, sigma_x) * 16.0f;
+    float raw_bh = 2.8f * fmaxf(3.2f, sigma_y) * 16.0f;
 
-    float coupled_bh = fmaxf(raw_bh, 1.15f * raw_bw);
-    coupled_bh = fminf(coupled_bh, 1.55f * raw_bw);
+    float coupled_bh = fmaxf(raw_bh, 1.25f * raw_bw);
+    coupled_bh = fminf(coupled_bh, 1.50f * raw_bw);
 
-    cand_bw = fmaxf(60.0f, fminf(400.0f, raw_bw));
-    cand_bh = fmaxf(80.0f, fminf(480.0f, coupled_bh));
+    cand_bw = fmaxf(140.0f, fminf(240.0f, raw_bw));
+    cand_bh = fmaxf(180.0f, fminf(310.0f, coupled_bh));
 
     if (!k_state.active) {
-      cand_cx = raw_cx;
-      cand_cy = raw_cy;
-      candidate_found = true;
-    } else {
-      float dist_sq = (raw_cx - pred_x) * (raw_cx - pred_x) + (raw_cy - pred_y) * (raw_cy - pred_y);
-      if (dist_sq <= (search_radius * search_radius)) {
+      if (skin_pixel_count >= 4) {
         cand_cx = raw_cx;
         cand_cy = raw_cy;
+        candidate_found = true;
+      }
+    } else {
+      float effective_radius = (skin_pixel_count >= 4) ? 400.0f : search_radius;
+      float dist_sq = (raw_cx - pred_x) * (raw_cx - pred_x) + (raw_cy - pred_y) * (raw_cy - pred_y);
+      if (dist_sq <= (effective_radius * effective_radius)) {
+        cand_cx = raw_cx;
+        cand_cy = raw_cy;
+        candidate_found = true;
+      }
+    }
+  } else if (k_state.active && skin_pixel_count >= 8) {
+    // --- Static Target Persistence (Skin-Locus Centroid & Spatial Variance Fallback) ---
+    float M00_skin = 0.0f, M10_skin = 0.0f, M01_skin = 0.0f;
+    float M20_skin = 0.0f, M02_skin = 0.0f;
+    for (int y = 1; y < 29; y++) {
+      int y_off = y * 40;
+      for (int x = 1; x < 39; x++) {
+        int idx = y_off + x;
+        if (skin_mask_40x30[idx]) {
+          float fx = (float)x;
+          float fy = (float)y;
+          M00_skin += 1.0f;
+          M10_skin += fx;
+          M01_skin += fy;
+          M20_skin += fx * fx;
+          M02_skin += fy * fy;
+        }
+      }
+    }
+    if (M00_skin >= 15.0f) {
+      float inv_M00_skin = 1.0f / M00_skin;
+      float mean_x_skin = M10_skin * inv_M00_skin;
+      float mean_y_skin = M01_skin * inv_M00_skin;
+
+      float mu20_skin = (M20_skin * inv_M00_skin) - (mean_x_skin * mean_x_skin);
+      float mu02_skin = (M02_skin * inv_M00_skin) - (mean_y_skin * mean_y_skin);
+
+      float sigma_x_skin = sqrtf(fmaxf(0.0f, mu20_skin));
+      float sigma_y_skin = sqrtf(fmaxf(0.0f, mu02_skin));
+
+      float raw_cx_skin = mean_x_skin * 16.0f;
+      float raw_cy_skin = mean_y_skin * 16.0f;
+
+      float raw_bw_skin = 2.4f * fmaxf(2.8f, sigma_x_skin) * 16.0f;
+      float raw_bh_skin = 2.8f * fmaxf(3.2f, sigma_y_skin) * 16.0f;
+      float coupled_bh_skin = fmaxf(raw_bh_skin, 1.25f * raw_bw_skin);
+      coupled_bh_skin = fminf(coupled_bh_skin, 1.50f * raw_bw_skin);
+
+      // Preserve previous w and h via lower bounds to prevent bounding box collapse when stationary
+      cand_bw = fmaxf(k_state.w * 0.85f, fmaxf(140.0f, fminf(240.0f, raw_bw_skin)));
+      cand_bh = fmaxf(k_state.h * 0.85f, fmaxf(180.0f, fminf(310.0f, coupled_bh_skin)));
+
+      float effective_radius_skin = (skin_pixel_count >= 4) ? 400.0f : search_radius;
+      float dist_sq_skin = (raw_cx_skin - pred_x) * (raw_cx_skin - pred_x) + (raw_cy_skin - pred_y) * (raw_cy_skin - pred_y);
+      if (dist_sq_skin <= (effective_radius_skin * effective_radius_skin)) {
+        cand_cx = raw_cx_skin;
+        cand_cy = raw_cy_skin;
         candidate_found = true;
       }
     }
@@ -1297,21 +1379,50 @@ void processFrameAI(camera_fb_t *fb) {
 
   if (candidate_found) {
     float speed_norm = fminf(1.0f, speed / 450.0f);
-    float alpha = fminf(0.85f, 0.55f + 0.30f * speed_norm);
-    float beta  = fminf(0.50f, 0.25f + 0.25f * speed_norm);
-    float gamma = fminf(0.20f, 0.08f + 0.12f * speed_norm);
+    float alpha = fminf(0.40f, 0.25f + 0.15f * speed_norm);
+    float beta  = fminf(0.25f, 0.10f + 0.10f * speed_norm);
+    float gamma = fminf(0.10f, 0.04f + 0.05f * speed_norm);
 
     float rx = cand_cx - pred_x;
     float ry = cand_cy - pred_y;
 
-    k_state.x = pred_x + alpha * rx;
-    k_state.y = pred_y + alpha * ry;
+    if (skin_pixel_count >= 4) {
+      // Adaptive Dynamic Responsiveness for Human Tracking:
+      // When stationary (dist < 5px), alpha = 0.20 (rock-solid, zero jitter, locked center).
+      // When body moves fast (dist > 25px), alpha scales up to 0.85 for instant 1-frame response!
+      float dist_to_target = sqrtf((cand_cx - k_state.x) * (cand_cx - k_state.x) + (cand_cy - k_state.y) * (cand_cy - k_state.y));
+      float adaptive_alpha = fminf(0.85f, 0.20f + 0.025f * dist_to_target);
 
-    k_state.vx = fmaxf(-1200.0f, fminf(1200.0f, pred_vx + (beta / dt) * rx));
-    k_state.vy = fmaxf(-1200.0f, fminf(1200.0f, pred_vy + (beta / dt) * ry));
+      k_state.x = k_state.x * (1.0f - adaptive_alpha) + cand_cx * adaptive_alpha;
+      k_state.y = k_state.y * (1.0f - adaptive_alpha) + cand_cy * adaptive_alpha;
+      k_state.vx = (cand_cx - k_state.x) * 2.0f;
+      k_state.vy = (cand_cy - k_state.y) * 2.0f;
+      k_state.ax = 0.0f;
+      k_state.ay = 0.0f;
+    } else {
+      float dist_r = sqrtf(rx * rx + ry * ry);
 
-    k_state.ax = fmaxf(-3000.0f, fminf(3000.0f, pred_ax + (2.0f * gamma / (dt * dt)) * rx));
-    k_state.ay = fmaxf(-3000.0f, fminf(3000.0f, pred_ay + (2.0f * gamma / (dt * dt)) * ry));
+      if (dist_r < 18.0f) {
+        // Foveal Deadzone & Centroid Lock Suppression:
+        float deadzone_alpha = 0.06f + 0.04f * (dist_r / 18.0f);
+        k_state.x = pred_x + deadzone_alpha * rx;
+        k_state.y = pred_y + deadzone_alpha * ry;
+
+        k_state.vx *= 0.65f;
+        k_state.vy *= 0.65f;
+        k_state.ax = 0.0f;
+        k_state.ay = 0.0f;
+      } else {
+        k_state.x = pred_x + alpha * rx;
+        k_state.y = pred_y + alpha * ry;
+
+        k_state.vx = fmaxf(-1200.0f, fminf(1200.0f, pred_vx + (beta / dt) * rx));
+        k_state.vy = fmaxf(-1200.0f, fminf(1200.0f, pred_vy + (beta / dt) * ry));
+
+        k_state.ax = fmaxf(-3000.0f, fminf(3000.0f, pred_ax + (2.0f * gamma / (dt * dt)) * rx));
+        k_state.ay = fmaxf(-3000.0f, fminf(3000.0f, pred_ay + (2.0f * gamma / (dt * dt)) * ry));
+      }
+    }
 
     k_state.w = k_state.w * 0.70f + cand_bw * 0.30f;
     k_state.h = k_state.h * 0.70f + cand_bh * 0.30f;
@@ -1417,9 +1528,8 @@ void cameraTask(void *pvParameters) {
 
       esp_camera_fb_return(fb);
     }
-    // Yield execution to reset Task Watchdog Timer (TWDT) on Core 0
-    vTaskDelay(pdMS_TO_TICKS(4));
-    taskYIELD();
+    // Yield 1 tick to reset Task Watchdog Timer (TWDT) and feed FreeRTOS Core 0 Wi-Fi stack
+    vTaskDelay(1);
   }
 }
 
@@ -1580,11 +1690,21 @@ bool initCamera() {
       s->set_exposure_ctrl(s, 1);
       s->set_gain_ctrl(s, 1);
     } else {
-      s->set_brightness(s, 0);
-      s->set_contrast(s, 0);
+      s->set_brightness(s, 2);       // Boost brightness +2 for low-light face exposure
+      s->set_contrast(s, 2);         // Boost contrast +2
       s->set_sharpness(s, 1);
       s->set_vflip(s, 1);
       s->set_hmirror(s, 1);
+      s->set_whitebal(s, 1);         // Enable Automatic White Balance
+      s->set_awb_gain(s, 1);         // Enable AWB Gain
+      s->set_exposure_ctrl(s, 1);    // Enable Auto Exposure Control
+      s->set_aec2(s, 1);             // Enable AEC DSP
+      s->set_ae_level(s, 1);         // Exposure level +1
+      s->set_gain_ctrl(s, 1);        // Enable Auto Gain Control
+      s->set_agc_gain(s, 15);        // Initial AGC Gain
+      s->set_gainceiling(s, GAINCEILING_16X); // 16X gain ceiling for dark rooms
+      s->set_bpc(s, 1);             // Black Pixel Correction
+      s->set_wpc(s, 1);             // White Pixel Correction
     }
   }
 
@@ -1613,19 +1733,23 @@ void setup() {
   }
   Serial.println("Camera initialized.");
 
+  // High-frequency AI buffers allocated in fast Internal SRAM to eliminate SPI bus contention
+  small_rgb_buf     = (uint8_t*)heap_caps_malloc(80 * 60 * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  prev_lum_buf      = (uint8_t*)heap_caps_malloc(40 * 30, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  mhi_buf           = (uint8_t*)heap_caps_malloc(40 * 30, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
   if (psramFound()) {
-    small_rgb_buf     = (uint8_t*)ps_malloc(80 * 60 * 2);
-    prev_lum_buf      = (uint8_t*)ps_malloc(40 * 30);
-    mhi_buf           = (uint8_t*)ps_malloc(40 * 30);
     g_latest_jpeg_buf = (uint8_t*)ps_malloc(64 * 1024);
-    Serial.println("PSRAM buffers allocated.");
+    Serial.println("AI buffers allocated in Internal SRAM, Stream buffer in PSRAM.");
   } else {
-    small_rgb_buf     = (uint8_t*)malloc(80 * 60 * 2);
-    prev_lum_buf      = (uint8_t*)malloc(40 * 30);
-    mhi_buf           = (uint8_t*)malloc(40 * 30);
     g_latest_jpeg_buf = (uint8_t*)malloc(64 * 1024);
-    Serial.println("SRAM buffers allocated.");
+    Serial.println("All buffers allocated in SRAM.");
   }
+
+  // Fallback if Internal SRAM allocation fails
+  if (!small_rgb_buf) small_rgb_buf = (uint8_t*)malloc(80 * 60 * 2);
+  if (!prev_lum_buf)  prev_lum_buf  = (uint8_t*)malloc(40 * 30);
+  if (!mhi_buf)       mhi_buf       = (uint8_t*)malloc(40 * 30);
 
   g_frame_sem = xSemaphoreCreateBinary();
 
