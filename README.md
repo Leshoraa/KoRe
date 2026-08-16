@@ -3,12 +3,12 @@
 [![Board](https://img.shields.io/badge/Hardware-Seeed_XIAO_ESP32--S3_Sense-00979D.svg?style=for-the-badge&logo=arduino)](https://www.seeedstudio.com/XIAO-ESP32S3-Sense-p-5639.html)
 [![Core Architecture](https://img.shields.io/badge/Architecture-Dual--Core_FreeRTOS_240MHz-blue.svg?style=for-the-badge)](#system-architecture)
 [![Vision Latency](https://img.shields.io/badge/AI_Latency-%3C_0.5_ms-brightgreen.svg?style=for-the-badge)](#performance-benchmarks)
-[![Ocular Dynamics](https://img.shields.io/badge/Physics-32.0_rad%2Fs_Mass--Spring--Damper-orange.svg?style=for-the-badge)](#key-engineering-features)
+[![Ocular Dynamics](https://img.shields.io/badge/Physics-36.0_rad%2Fs_Mass--Spring--Damper-orange.svg?style=for-the-badge)](#key-engineering-features)
 [![Display Driver](https://img.shields.io/badge/Display-LovyanGFX_SSD1306_1.0MHz_I2C-purple.svg?style=for-the-badge)](#hardware-interfacing--pinout)
 
-**KoRe** (*Kinematic Optical Recognition Engine*) is an industrial-grade, 100% standalone embedded computer vision and biomechanical ocular synthesis system built for the **Seeed Studio XIAO ESP32-S3 Sense** (Xtensa LX7 Dual-Core @ 240 MHz).
+**KoRe** (*Kinematic Optical Recognition Engine*) is an industrial-grade, 100% standalone embedded computer vision and biomechanical ocular synthesis system designed for the **Seeed Studio XIAO ESP32-S3 Sense** (Xtensa LX7 Dual-Core @ 240 MHz).
 
-The system integrates real-time differential photometric tracking, uniform geometric face centroid extraction, adaptive dynamic responsiveness, high-speed 2nd-order mass-spring-damper gaze kinematics ($\omega_n = 32.0\text{ rad/s}$), non-blocking asynchronous eyelid dynamics, and an autonomous Markov dynamic mood engine. It drives an animated 2D facial interface on an SSD1306 OLED display via LovyanGFX Fast-Mode Plus I2C (1.0 MHz) with zero rendering latency or cloud dependencies.
+The system integrates real-time differential photometric tracking, uniform geometric face centroid extraction, multi-object spatial sector tracking (up to 3 candidate targets with priority scoring), high-speed 2nd-order mass-spring-damper gaze kinematics ($\omega_n = 36.0\text{ rad/s}, \zeta = 0.95$), quintic minimum-jerk saccades with glissade damped overshoot, a unified rigid 2D facial rig, non-blocking asynchronous eyelid dynamics, and an autonomous Markov dynamic mood engine. It drives an animated facial interface on an SSD1306 OLED display via LovyanGFX Fast-Mode Plus I2C (1.0 MHz) with zero rendering latency or cloud dependencies.
 
 ---
 
@@ -27,9 +27,9 @@ KoRe operates on a deterministic dual-core FreeRTOS architecture designed to iso
     |  * Continuous Frame Acquisition (esp_camera_fb_get)                             |
     |  * JPG8X Hardware IDCT Subsampling (640x480 -> 40x30 Grid, 1,200 Pixels)         |
     |  * Single-Pass YCbCr Conversion & Dynamic EMA Low-Lux Adaptation                |
+    |  * Multi-Object Spatial Clustering & Priority Score Ranking (Max 3 Targets)     |
     |  * Uniform Skin Pixel Weighting (Geometric Face Centroid Extraction)            |
     |  * Spatial Moments Calculation (M00, M10, M01, M20, M02)                         |
-    |  * Adaptive Dynamic Responsiveness (α = 0.20 - 0.85 & 400px Skin Search Radius) |
     |  * Double-Buffered JPEG Copier for Web Streaming (g_stream_mutex)               |
     +---------------------------------------------------------------------------------+
                                              |
@@ -38,9 +38,10 @@ KoRe operates on a deterministic dual-core FreeRTOS architecture designed to iso
                                              v
     +---------------------------------------------------------------------------------+
     | CORE 1: oledTask (Priority 1, ~60 FPS Display & Kinematics Loop)                |
-    |  * Biological Mood Engine (Autonomous Markov Personality Transition)             |
-    |  * High-Speed Ocular Dynamics (32.0 rad/s Mass-Spring-Damper & Fast Saccades)   |
-    |  * Non-Blocking Asynchronous Eyelid Blink Engine (Poisson Interval & Double-Blink)|
+    |  * Biological Mood Engine (Autonomous Markov Personality State Transitions)      |
+    |  * Unified Rigid 2D Facial Rig (Eyes, Brows, and Mouth Locked to Single Offset) |
+    |  * High-Speed Ocular Dynamics (36.0 rad/s Mass-Spring-Damper & Minimum-Jerk)    |
+    |  * Non-Blocking Asynchronous Eyelid Blink Engine (Poisson & Double-Blink)       |
     |  * LovyanGFX High-Speed SSD1306 Rendering (1.0 MHz Fast-Mode+ I2C Bus)          |
     +---------------------------------------------------------------------------------+
                                              |
@@ -49,7 +50,7 @@ KoRe operates on a deterministic dual-core FreeRTOS architecture designed to iso
                                              v
     +---------------------------------------------------------------------------------+
     | HTTP TELEMETRY & MJPEG SERVER (Port 80 JSON & HUD, Port 81 MJPEG Stream)        |
-    |  * /telemetry : Real-time JSON target coordinates, error vector & FPS           |
+    |  * /telemetry : Real-time JSON multi-candidate targets, priority scores & FPS   |
     |  * /stream    : Non-blocking MJPEG live video stream                            |
     +---------------------------------------------------------------------------------+
 ```
@@ -59,22 +60,28 @@ KoRe operates on a deterministic dual-core FreeRTOS architecture designed to iso
 ## Key Engineering Features
 
 ### 1. Geometric Face Centroid Lock (Feature-Motion Anti-Bias)
-- **Problem Solved:** Traditional motion-weighted centroid algorithms cause the target crosshair to orbit or scan around the face whenever the user talks, blinks, or moves their head (because moving lips/eyes receive 20x higher weight than static forehead/skin).
+- **Problem Solved:** Traditional motion-weighted centroid algorithms cause target crosshairs to orbit or scan around the face whenever the user talks, blinks, or moves their head (because moving lips/eyes receive higher weight than static facial skin).
 - **Engineered Solution:** Skin pixels (`is_skin == true`) are assigned uniform spatial weighting ($\Phi_{\text{skin}} = 10.0 + 0.3(g_y + g_x)$). This forces spatial moments ($M_{10}/M_{00}$ and $M_{01}/M_{00}$) to calculate the **true geometric center of mass** of the human face/head, keeping the tracking crosshair locked solidly in the center of the face regardless of lip movements or eye blinks.
 
-### 2. Adaptive Dynamic Responsiveness ($\alpha$) & Expanded Search Radius
-- **Zero-Jitter Stationary Lock:** When displacement is small ($dist < 5\text{px}$), filtering uses $\alpha = 0.20$, rendering the bounding box and crosshair completely motionless without sub-pixel jitter.
-- **Instantaneous Body Movement Tracking:** When the body moves rapidly ($dist > 25\text{px}$), the response coefficient scales dynamically up to $\alpha = 0.85$, snapping the target box to the new body position in 1 frame (~30 ms).
-- **400px Skin Search Radius:** Expands candidate search radius to 400 pixels during human skin tracking, eliminating target drops or "sticking to empty walls" when the user moves across the frame.
+### 2. Multi-Candidate Target Tracking & Autonomous Inspection Scanning
+- **Multi-Object Priority Engine:** Tracks up to 3 active candidate objects ($P_1$ Primary, $P_2$ Secondary, $P_3$ Tertiary) across spatial sectors based on a composite score combining skin area, motion energy, and foveal distance:
+  $$\text{Priority}_k = 15.0 \cdot \text{SkinPx}_k + 1.8 \cdot \text{Motion}_k + 0.10 \cdot \text{Energy}_k - 0.06 \cdot |\text{CenterDist}_k|$$
+- **Autonomous Inspection Scanning:** While resting on $P_1$, KoRe periodically executes autonomous saccades every 2.4s to 3.8s to inspect candidate $P_2$ or $P_3$ for ~2.5s before snapping back to primary target $P_1$.
 
-### 3. High-Speed Biomechanical Ocular Dynamics (LCD Display Response)
-- **High-Frequency Smooth Pursuit ($\omega_n = 32.0\text{ rad/s}, \zeta = 0.95$):** Natural frequency of the 2nd-order mass-spring-damper eye movement system is tuned to 32.0 rad/s, reducing display settling lag from 400 ms down to **~60 ms** for near-instantaneous eye response on the OLED/LCD screen.
-- **Quintic Minimum-Jerk Saccades (20 ms – 45 ms):** Ballistic eye snaps executed via 5th-order polynomial trajectories for rapid eye shifts.
-- **Physiological Micro-tremor:** Sub-pixel 4 Hz sinusoidal micro-drift ($\approx 0.15\text{ px}$) during gaze fixation to emulate living biological eyes.
+### 3. Unified Rigid 2D Facial Rig Synchronization
+- **Integer Offset Binding ($\mathbf{O}_{\text{face}} = (\text{ox}, \text{oy})$):** All facial primitives (`drawEyes`, `drawAngryBrows`, `drawMouthCustom`, etc.) receive integer-rounded rigid offsets derived once per frame:
+  $$\text{ox} = \text{roundf}(\text{currentOffsetX}), \quad \text{oy} = \text{roundf}(\text{currentOffsetY})$$
+- **Fixed Vertical Geometry:** Vertical distance between eye center ($y = 28 + \text{oy}$) and mouth center ($y = 44 + \text{oy}$) remains permanently fixed at **exactly 16 pixels**, eliminating sub-pixel rounding jitter and floating displacement across all movements.
 
-### 4. Biological Mood Engine & Eyelid Dynamics
-- **Autonomous Markov Emotion Engine:** Dynamic probabilistic transition engine cycling between 6 biological expressions: `EXPR_IDLE`, `EXPR_ANGRY`, `EXPR_OVERLOAD`, `EXPR_JOY`, `EXPR_SEDIH`, and `EXPR_SHOCK`.
-- **Asynchronous Eyelid Engine:** Poisson-distributed blink intervals ($3.5\text{s} - 7.5\text{s}$), 14% double-blink probability, and sharp 35 ms eyelid closures.
+### 4. High-Speed Biomechanical Ocular Dynamics & Minimum-Jerk Saccades
+- **Smooth Pursuit Dynamics ($\omega_n = 36.0\text{ rad/s}, \zeta = 0.95$):** Second-order mass-spring-damper kinetics provide crisp target pursuit without overshoot lag.
+- **Minimum-Jerk Saccadic Trajectory:** Ballistic eye shifts follow a 5th-order jerk minimization polynomial with glissade damped overshoot:
+  $$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5, \quad \text{overshoot}(\tau) = 0.12 \cdot \Delta x \cdot \sin(\pi \tau) \cdot e^{-3.0 \tau}$$
+- **Physiological Ocular Micro-Drift:** Sub-pixel sinusoidal micro-drift ($\approx 0.45\text{ px}$ X / $0.35\text{ px}$ Y) prevents visual freezing during fixation holding.
+
+### 5. Biological Mood Engine & Eyelid Dynamics
+- **Autonomous Markov Emotion Engine:** Dynamic probabilistic state engine cycling between 7 biological expressions: `EXPR_IDLE`, `EXPR_ANGRY`, `EXPR_OVERLOAD`, `EXPR_JOY`, `EXPR_SEDIH`, `EXPR_SMIRK`, and `EXPR_SHOCK`.
+- **Asynchronous Eyelid Engine:** Non-blocking Poisson-distributed blink intervals ($3.5\text{s} - 7.5\text{s}$), 14% double-blink probability, and sharp 35 ms eyelid closures.
 
 ---
 
@@ -93,7 +100,7 @@ KoRe operates on a deterministic dual-core FreeRTOS architecture designed to iso
     Strict Ratio: (R >= B) && (Cr - Cb >= 6) && (R >= 10)
                 |
                 v
-  3x3 Spatial Box Blur & Background Global Motion Flow Compensation
+  Multi-Sector Spatial Clustering & Candidate Priority Ranking (P1, P2, P3)
                 |
                 v
   Uniform Geometric Skin Energy Accumulation Φ(x, y)
@@ -102,18 +109,8 @@ KoRe operates on a deterministic dual-core FreeRTOS architecture designed to iso
   Spatial Moments Calculation (M00, M10, M01, M20, M02)
                 |
                 v
-  Reciprocal Centroid Extraction & Anatomical Aspect Ratio Coupling (1.25 <= H/W <= 1.50)
-                |
-                v
-  Adaptive Dynamic State Filter & Kinematic Update
+  Adaptive Dynamic State Filter & Second-Order Kinematic Update
 ```
-
-### Photometric Energy Density Equation
-
-$$\Phi(x,y) = \begin{cases} 
-10.0 + 0.3 \cdot \left( g_y(x,y) + g_x(x,y) \right) & \text{if } \text{SkinMask}(x,y) = \text{true} \\[6pt]
-0.04 \cdot T(x,y) \cdot \left( 2.5 \cdot \Delta Y + 16.0 \cdot W_{\text{MHI}} + 1.5 \cdot g_y + 0.8 \cdot g_x \right) & \text{if } \text{SkinMask}(x,y) = \text{false} 
-\end{cases}$$
 
 ---
 
@@ -126,7 +123,7 @@ $$\Phi(x,y) = \begin{cases}
 | **Frame Resolution** | VGA ($640 \times 480$), Quality 8 JPEG | PSRAM Framebuffer |
 | **AI Subsampling Grid** | $40 \times 30$ Matrix ($1,200\text{ pixels}$) | 8x Hardware IDCT Scaling |
 | **AI Pipeline Latency** | **$< 0.5\text{ ms}$ / frame** | Executed on Core 0 |
-| **Gaze Response Latency** | **$\sim 60\text{ ms}$** | 32.0 rad/s Mass-Spring-Damper |
+| **Gaze Pursuit Frequency** | **$\omega_n = 36.0\text{ rad/s}$** | Mass-Spring-Damper Model |
 | **MJPEG Streaming FPS** | **$30+\text{ FPS}$** | Port 81 Dedicated Async Handler |
 | **Display Refresh Rate** | **$60\text{ FPS}$** | LovyanGFX I2C @ 1.0 MHz |
 | **Dynamic Memory Allocation** | $< 12\text{ KB}$ SRAM / PSRAM | Zero Redundant Buffering |
@@ -142,16 +139,16 @@ $$\Phi(x,y) = \begin{cases}
 | **OLED Display (SSD1306)** | I2C SCL | GPIO 5 | D4 |
 | **OLED Display (SSD1306)** | I2C SDA | GPIO 6 | D5 |
 | **Touch Sensor (Optional)** | Digital Input | GPIO 2 | D1 |
-| **Camera DVP Bus** | XCLK, PCLK, VSYNC, HREF, Y2-Y9 | GPIO 10, 11, 12, 13, 14, 15, 16, 17, 18, 38, 39, 40, 47, 48 | Board Expansion Connector |
+| **Camera DVP Bus** | XCLK, PCLK, VSYNC, HREF, Y2-Y9 | GPIO 10, 11, 12, 13, 14, 15, 16, 17, 18, 38, 39, 40, 47, 48 | Expansion Connector |
 
 ---
 
 ## API Endpoints & Sci-Fi Web Telemetry HUD
 
-KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection and MJPEG video streaming:
+KoRe hosts an asynchronous dual-port HTTP web server for live multi-box telemetry inspection and MJPEG video streaming:
 
-- **Sci-Fi Web HUD (`GET http://<ESP32_IP>/`):** Modern web interface featuring dynamic canvas overlays, target corner brackets, confidence gauges, and real-time center-of-mass crosshairs.
-- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns high-frequency tracking metadata:
+- **Web HUD (`GET http://<ESP32_IP>/`):** Modern web interface rendering real-time bounding boxes for up to 3 candidate targets ($P_1$ Green, $P_2$ Cyan, $P_3$ Yellow), inspection badges, and target crosshairs.
+- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns high-frequency tracking metadata and candidate priority arrays:
   ```json
   {
     "detected": true,
@@ -167,8 +164,11 @@ KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspecti
     "fps_ai": 31.5,
     "fw": 640,
     "fh": 480,
-    "vx": -12.4,
-    "vy": 8.1
+    "num_cands": 3,
+    "insp_idx": 0,
+    "c0_cx": 300, "c0_cy": 250, "c0_p": 142.5,
+    "c1_cx": 120, "c1_cy": 180, "c1_p": 88.2,
+    "c2_cx": 480, "c2_cy": 310, "c2_p": 64.1
   }
   ```
 - **MJPEG Video Feed (`GET http://<ESP32_IP>:81/stream`):** Dedicated Port 81 asynchronous stream handler.

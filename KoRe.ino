@@ -1,9 +1,11 @@
-/*
- * KoRe (Kinematic Optical Recognition Engine)
- * Standalone Embedded Biomechanical Human Face Tracker & Animated UI
- * Target: Seeed Studio XIAO ESP32-S3 Sense
- * Display: 0.96" SSD1306 OLED via LovyanGFX I2C (800kHz)
- * Architecture: Dual-Core FreeRTOS (Core 0: Vision & Stream, Core 1: OLED & UI Engine)
+/**
+ * @file KoRe.ino
+ * @brief High-Performance Dual-Core Biomechanical Vision & Kinematics Control Firmware
+ * @details Target Platform: Seeed Studio XIAO ESP32-S3 Sense
+ *          Display Interface: 0.96" SSD1306 OLED via LovyanGFX I2C Bus (1.0MHz Fast-mode Plus)
+ *          Architecture: FreeRTOS Dual-Core Asynchronous Partitioning
+ *                        Core 0: Computer Vision Pipeline, Spatial Clustering & HTTP Stream Server
+ *                        Core 1: 60 FPS Biomechanical Gaze Kinematics & OLED Rendering Engine
  */
 
 #include "esp_camera.h"
@@ -18,10 +20,14 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
-// --- Hardware Configuration & Pins ---
-#define ENABLE_TOUCH_PIN false // Set true if physical touch sensor is attached
-#define TOUCH_PIN 2            // D1 (GPIO 2)
+/* --- System Hardware & Configuration Parameters --- */
+#define ENABLE_TOUCH_PIN false 
+#define TOUCH_PIN 2            
 
+/**
+ * @enum Expression
+ * @brief Discrete 2D animated facial state expressions.
+ */
 enum Expression {
   EXPR_IDLE,
   EXPR_JOY,
@@ -32,6 +38,10 @@ enum Expression {
   EXPR_SEDIH
 };
 
+/**
+ * @class LGFX
+ * @brief Hardware-abstracted display panel driver configuration for SSD1306 OLED.
+ */
 class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_SSD1306 _panel_instance;
   lgfx::Bus_I2C _bus_instance;
@@ -41,10 +51,10 @@ public:
     {
       auto cfg = _bus_instance.config();
       cfg.i2c_port = 0;
-      cfg.freq_write = 1000000; // 1.0MHz Fast-mode Plus I2C
+      cfg.freq_write = 1000000; 
       cfg.freq_read = 400000;
-      cfg.pin_scl = 5; // D4 = GPIO 5
-      cfg.pin_sda = 6; // D5 = GPIO 6
+      cfg.pin_scl = 5; 
+      cfg.pin_sda = 6; 
       _bus_instance.config(cfg);
       _panel_instance.setBus(&_bus_instance);
     }
@@ -62,7 +72,7 @@ public:
 
 LGFX lcd;
 
-// --- Network Configuration ---
+/* --- Wireless Network Infrastructure --- */
 #define USE_AP_MODE false
 const char* ap_ssid     = "KoRe-Tracker";
 const char* ap_password = "12345678";
@@ -70,7 +80,7 @@ const char* ap_password = "12345678";
 const char* sta_ssid     = "Kasminingsih";
 const char* sta_password = "hidet4mp4n";
 
-// --- Camera Hardware Configuration ---
+/* --- ESP32-S3 Camera Pin Definitions --- */
 #define PWDN_GPIO_NUM  -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  10
@@ -89,7 +99,10 @@ const char* sta_password = "hidet4mp4n";
 #define HREF_GPIO_NUM  47
 #define PCLK_GPIO_NUM  13
 
-// --- Telemetry & Target State Data Structures ---
+/**
+ * @struct TrackTarget
+ * @brief Core target telemetry state shared between vision and motion tasks.
+ */
 struct TrackTarget {
   bool detected;
   int x;
@@ -107,6 +120,30 @@ struct TrackTarget {
   uint32_t last_seen_ms;
 };
 
+/**
+ * @struct ObjectCandidate
+ * @brief Multi-object spatial sector candidate descriptor.
+ */
+struct ObjectCandidate {
+  bool active;
+  int cx;
+  int cy;
+  int w;
+  int h;
+  float priority_score;
+  float error_x;
+  float error_y;
+  int skin_px;
+  float motion_energy;
+};
+
+#define MAX_OBJECT_CANDIDATES 3
+static ObjectCandidate g_object_candidates[MAX_OBJECT_CANDIDATES] = {0};
+static int g_num_candidates = 0;
+static int g_inspected_candidate_idx = 0;
+static uint32_t g_last_inspection_time_ms = 0;
+static uint32_t g_inspection_hold_time_ms = 2800;
+
 static TrackTarget current_target = {false, 0, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0};
 static portMUX_TYPE target_mutex = portMUX_INITIALIZER_UNLOCKED;
 
@@ -115,19 +152,19 @@ static volatile float fps_stream = 0.0f;
 static const int frame_w = 640;
 static const int frame_h = 480;
 
-// --- Framebuffer Processing Allocations ---
+/* --- Internal Memory Allocation Pointers --- */
 static uint8_t* small_rgb_buf = NULL;
 static uint8_t* prev_lum_buf  = NULL;
 static uint8_t* mhi_buf       = NULL;
 
-// --- Core 0 to Core 1 IPC Streaming Sync ---
+/* --- Inter-Core Asynchronous Synchronization & Streaming --- */
 static volatile int g_stream_clients = 0;
 static uint8_t* g_latest_jpeg_buf = NULL;
 static size_t g_latest_jpeg_len = 0;
 static portMUX_TYPE g_stream_mutex = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t g_frame_sem = NULL;
 
-// --- Web Server Contexts ---
+/* --- Embedded HTTP Service Handles --- */
 httpd_handle_t stream_httpd = NULL;
 httpd_handle_t camera_httpd = NULL;
 
@@ -136,7 +173,7 @@ static const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" P
 static const char* STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
-// --- Animation & Mood Engine States ---
+/* --- Gaze Kinematics & Animation State --- */
 Expression currentExpr = EXPR_IDLE;
 
 unsigned long lastBlink = 0;
@@ -157,18 +194,21 @@ unsigned long gazeDuration = 120;
 unsigned long nextGazeTime = 0;
 bool inSaccade = false;
 
-// --- Biomechanical Ocular Kinematics State ---
-static float eye_vx = 0.0f;           // Velocity X (px/s)
-static float eye_vy = 0.0f;           // Velocity Y (px/s)
-static float smoothedTargetX = 0.0f;  // Deadzone-filtered target X
-static float smoothedTargetY = 0.0f;  // Deadzone-filtered target Y
-static bool trackInSaccade = false;   // Active tracking saccade flag
+/* --- Biomechanical Dynamic Model State Variables --- */
+static float eye_vx = 0.0f;           
+static float eye_vy = 0.0f;           
+static float smoothedTargetX = 0.0f;  
+static float smoothedTargetY = 0.0f;  
+static bool trackInSaccade = false;   
 static uint32_t trackSaccadeStart = 0;
 static uint32_t trackSaccadeDuration = 60;
 static float trackSaccadeStartX = 0.0f;
 static float trackSaccadeStartY = 0.0f;
 
-// --- Non-Blocking Eyelid Blink Engine ---
+/**
+ * @enum BlinkState
+ * @brief Non-blocking state machine states for ocular eyelid blinking.
+ */
 enum BlinkState {
   BLINK_IDLE_STATE,
   BLINK_CLOSING_STATE,
@@ -184,6 +224,20 @@ static bool g_isDoubleBlinkPending = false;
 // --- Dynamic Biological Mood Engine ---
 static uint32_t g_nextMoodShiftTime = 0;
 static bool g_lastTargetDetectedState = false;
+
+// --- Intermittent Reconnaissance Duty Cycle FSM ---
+enum ReconState {
+  STATE_ACTIVE,       // Full 30 FPS vision tracking @ 240 MHz CPU
+  STATE_SLEEP_RECON,  // Camera paused, 80 MHz CPU, random spatial saccades
+  STATE_SAMPLING      // Fast 3-frame check @ 240 MHz CPU
+};
+
+static volatile ReconState g_recon_state = STATE_ACTIVE;
+static uint32_t g_state_timer = 0;
+static float g_rand_target_x = 0.0f;
+static float g_rand_target_y = 0.0f;
+static uint32_t g_last_saccade_shift = 0;
+static uint32_t g_nextGazeTime = 4500;
 
 // --- Telemetry Dashboard Web UI ---
 const char HTML_PAGE[] PROGMEM = R"rawliteral(
@@ -223,7 +277,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     window.addEventListener('resize', resizeCanvas);
     img.onload = resizeCanvas;
 
-    let renderBox = null;
+    let renderBoxes = [];
     async function updateTelemetry() {
       try {
         const res = await fetch('http://' + host + '/telemetry');
@@ -235,46 +289,80 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
           const scaleX = canvas.width / data.fw;
           const scaleY = canvas.height / data.fh;
 
-          const targetBx = data.x * scaleX;
-          const targetBy = data.y * scaleY;
-          const targetBw = data.w * scaleX;
-          const targetBh = data.h * scaleY;
-          const targetCx = data.cx * scaleX;
-          const targetCy = data.cy * scaleY;
+          const numCands = data.num_cands || 1;
+          const colors = ['#00ff9d', '#00e5ff', '#ffea00'];
+          const labels = ['P1 PRIMARY TRACK', 'P2 SCAN CANDIDATE', 'P3 SCAN CANDIDATE'];
 
-          if (!renderBox) {
-            renderBox = { bx: targetBx, by: targetBy, bw: targetBw, bh: targetBh, cx: targetCx, cy: targetCy };
-          } else {
-            renderBox.bx = renderBox.bx * 0.25 + targetBx * 0.75;
-            renderBox.by = renderBox.by * 0.25 + targetBy * 0.75;
-            renderBox.bw = renderBox.bw * 0.25 + targetBw * 0.75;
-            renderBox.bh = renderBox.bh * 0.25 + targetBh * 0.75;
-            renderBox.cx = renderBox.cx * 0.25 + targetCx * 0.75;
-            renderBox.cy = renderBox.cy * 0.25 + targetCy * 0.75;
+          const cands = [
+            { cx: data.c0_cx || data.cx, cy: data.c0_cy || data.cy, p: data.c0_p || 100 },
+            { cx: data.c1_cx || 0, cy: data.c1_cy || 0, p: data.c1_p || 0 },
+            { cx: data.c2_cx || 0, cy: data.c2_cy || 0, p: data.c2_p || 0 }
+          ];
+
+          for (let i = 0; i < numCands; i++) {
+            const cand = cands[i];
+            if (cand.cx <= 0) continue;
+
+            const bw = data.w || 160;
+            const bh = data.h || 200;
+
+            const targetBx = (cand.cx - bw / 2) * scaleX;
+            const targetBy = (cand.cy - bh / 2) * scaleY;
+            const targetBw = bw * scaleX;
+            const targetBh = bh * scaleY;
+            const targetCx = cand.cx * scaleX;
+            const targetCy = cand.cy * scaleY;
+
+            if (!renderBoxes[i]) {
+              renderBoxes[i] = { bx: targetBx, by: targetBy, bw: targetBw, bh: targetBh, cx: targetCx, cy: targetCy };
+            } else {
+              renderBoxes[i].bx = renderBoxes[i].bx * 0.25 + targetBx * 0.75;
+              renderBoxes[i].by = renderBoxes[i].by * 0.25 + targetBy * 0.75;
+              renderBoxes[i].bw = renderBoxes[i].bw * 0.25 + targetBw * 0.75;
+              renderBoxes[i].bh = renderBoxes[i].bh * 0.25 + targetBh * 0.75;
+              renderBoxes[i].cx = renderBoxes[i].cx * 0.25 + targetCx * 0.75;
+              renderBoxes[i].cy = renderBoxes[i].cy * 0.25 + targetCy * 0.75;
+            }
+
+            const rBox = renderBoxes[i];
+            const bx = rBox.bx, by = rBox.by, bWidth = rBox.bw, bHeight = rBox.bh, cX = rBox.cx, cY = rBox.cy;
+            const color = colors[i % colors.length];
+            const isInspected = (i === data.insp_idx);
+
+            // Bounding Box Line
+            ctx.strokeStyle = color;
+            ctx.lineWidth = isInspected ? 2.5 : 1.5;
+            if (!isInspected) ctx.setLineDash([6, 4]); else ctx.setLineDash([]);
+            ctx.strokeRect(bx, by, bWidth, bHeight);
+            ctx.setLineDash([]);
+
+            // Corner Brackets
+            const len = 14;
+            ctx.lineWidth = 3.5;
+            ctx.beginPath(); ctx.moveTo(bx, by + len); ctx.lineTo(bx, by); ctx.lineTo(bx + len, by); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bx + bWidth - len, by); ctx.lineTo(bx + bWidth, by); ctx.lineTo(bx + bWidth, by + len); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bx, by + bHeight - len); ctx.lineTo(bx, by + bHeight); ctx.lineTo(bx + len, by + bHeight); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bx + bWidth - len, by + bHeight); ctx.lineTo(bx + bWidth, by + bHeight); ctx.lineTo(bx + bWidth, by + bHeight - len); ctx.stroke();
+
+            // Label & Priority Badge
+            ctx.fillStyle = color;
+            ctx.font = 'bold 12px monospace';
+            const statusText = isInspected ? ' [SCANNING...]' : '';
+            ctx.fillText(labels[i] + statusText, bx + 4, by - 6);
+
+            // Target Crosshair
+            if (isInspected) {
+              ctx.strokeStyle = '#00d8ff';
+              ctx.lineWidth = 1.5;
+              ctx.beginPath();
+              ctx.moveTo(cX - 10, cY); ctx.lineTo(cX + 10, cY);
+              ctx.moveTo(cX, cY - 10); ctx.lineTo(cX, cY + 10);
+              ctx.stroke();
+              ctx.beginPath(); ctx.arc(cX, cY, 4, 0, 2 * Math.PI); ctx.stroke();
+            }
           }
-
-          const bx = renderBox.bx, by = renderBox.by, bw = renderBox.bw, bh = renderBox.bh, cx = renderBox.cx, cy = renderBox.cy;
-
-          ctx.strokeStyle = '#00ff88';
-          ctx.lineWidth = 2;
-          ctx.strokeRect(bx, by, bw, bh);
-
-          const len = 14;
-          ctx.lineWidth = 3.5;
-          ctx.beginPath(); ctx.moveTo(bx, by + len); ctx.lineTo(bx, by); ctx.lineTo(bx + len, by); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx + bw - len, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + len); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx, by + bh - len); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + len, by + bh); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(bx + bw - len, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - len); ctx.stroke();
-
-          ctx.strokeStyle = '#00d8ff';
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy);
-          ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10);
-          ctx.stroke();
-          ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, 2 * Math.PI); ctx.stroke();
         } else {
-          renderBox = null;
+          renderBoxes = [];
         }
       } catch (e) {}
       setTimeout(updateTelemetry, 50);
@@ -285,28 +373,47 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-// --- Easing & Math Utilities ---
+/* --- Kinematic Interpolation & Mathematical Utilities --- */
+
+/**
+ * @brief Evaluates cubic ease-in-out interpolation curve.
+ * @param t Normalized progress in range [0.0, 1.0].
+ * @return Interpolated scalar multiplier.
+ */
 float easeInOutCubic(float t) {
   return t < 0.5f ? 4.0f * t * t * t : 1.0f - powf(-2.0f * t + 2.0f, 3.0f) / 2.0f;
 }
 
+/**
+ * @brief Quadratic closing phase ease curve for eyelid blinking.
+ */
 float blinkCloseEase(float t) {
   return 1.0f - (t * t);
 }
 
+/**
+ * @brief Sinusoidal opening phase ease curve for eyelid blinking.
+ */
 float blinkOpenEase(float t) {
   return sinf(t * 1.5707963f);
 }
 
+/**
+ * @brief Linear interpolation helper function.
+ */
 float customLerp(float a, float b, float t) {
   return a + t * (b - a);
 }
 
 void drawSensorOverlay() {
-  // Sensor text overlay explicitly disabled for clean UI
+  /* Sensor telemetry overlay hook */
 }
 
-// --- Biomechanical 2D Gaze Controller ---
+/**
+ * @brief Biomechanical 2D gaze pursuit and fixation controller.
+ * @details Executes active target smooth pursuit via second-order mass-spring-damper kinetics,
+ *          or spontaneous foveal fixation saccades using 5th-order minimum-jerk splines.
+ */
 void updateGazeSystem() {
   TrackTarget target;
   portENTER_CRITICAL(&target_mutex);
@@ -315,40 +422,35 @@ void updateGazeSystem() {
 
   unsigned long now = millis();
 
-  // Target tracking: 2nd-order critically-damped smooth pursuit & minimum-jerk saccades
+  /* --- Active Target Tracking Pursuit Branch --- */
   if (target.detected) {
     float normX = constrain(target.error_x / 100.0f, -1.0f, 1.0f);
     float normY = constrain(target.error_y / 100.0f, -1.0f, 1.0f);
 
-    // Smooth linear gaze target mapping without nonlinear noise amplification
-    float rawTargetX = normX * 16.0f;
-    float rawTargetY = normY * 10.0f;
+    float rawTargetX = normX * 22.0f;
+    float rawTargetY = normY * 14.0f;
 
-    // Foveal deadzone & noise suppression
     float dx_raw = rawTargetX - smoothedTargetX;
     float dy_raw = rawTargetY - smoothedTargetY;
     float dist_raw = sqrtf(dx_raw * dx_raw + dy_raw * dy_raw);
 
     if (dist_raw < 1.0f) {
-      // Lock gaze within micro-deadzone to eliminate sub-pixel jitter
       smoothedTargetX += dx_raw * 0.25f;
       smoothedTargetY += dy_raw * 0.25f;
     } else {
-      // Fast adaptive gaze tracking response
-      float alpha = constrain(0.45f + (dist_raw - 1.0f) * 0.15f, 0.45f, 0.92f);
+      float alpha = constrain(0.35f + dist_raw * 0.08f, 0.35f, 0.80f);
       smoothedTargetX += dx_raw * alpha;
       smoothedTargetY += dy_raw * alpha;
     }
 
-    // High-speed saccade snap (20ms - 45ms duration)
     float dx_eye = smoothedTargetX - currentOffsetX;
     float dy_eye = smoothedTargetY - currentOffsetY;
     float dist_eye = sqrtf(dx_eye * dx_eye + dy_eye * dy_eye);
 
-    if (dist_eye > 4.0f && !trackInSaccade) {
+    if (dist_eye > 10.0f && !trackInSaccade) {
       trackInSaccade = true;
       trackSaccadeStart = now;
-      trackSaccadeDuration = (uint32_t)constrain(20.0f + dist_eye * 1.5f, 25.0f, 45.0f);
+      trackSaccadeDuration = (uint32_t)constrain(25.0f + dist_eye * 1.2f, 30.0f, 60.0f);
       trackSaccadeStartX = currentOffsetX;
       trackSaccadeStartY = currentOffsetY;
       eye_vx = 0.0f;
@@ -364,7 +466,7 @@ void updateGazeSystem() {
         currentOffsetY = smoothedTargetY;
         trackInSaccade = false;
       } else {
-        // 5th-order minimum-jerk saccade trajectory
+        /* Minimum-Jerk polynomial trajectory: 10p^3 - 15p^4 + 6p^5 */
         float p = progress;
         float s = 10.0f * p * p * p - 15.0f * p * p * p * p + 6.0f * p * p * p * p * p;
         float distX = smoothedTargetX - trackSaccadeStartX;
@@ -373,9 +475,9 @@ void updateGazeSystem() {
         currentOffsetY = trackSaccadeStartY + (distY * s);
       }
     } else {
-      // High-speed pursuit mass-spring-damper (omega_n = 32.0 rad/s - Instant response)
-      float dt = 0.016f; // ~60 FPS
-      float omega_n = 32.0f;
+      /* Second-order mass-spring-damper differential system: w_n = 36.0 rad/s, zeta = 0.95 */
+      float dt = 0.016f; 
+      float omega_n = 36.0f;
       float zeta = 0.95f;
 
       float ax = (omega_n * omega_n) * (smoothedTargetX - currentOffsetX) - (2.0f * zeta * omega_n) * eye_vx;
@@ -386,22 +488,18 @@ void updateGazeSystem() {
 
       currentOffsetX += eye_vx * dt;
       currentOffsetY += eye_vy * dt;
-
-      // Physiological 4Hz micro-tremor
-      if (dist_eye < 1.0f) {
-        float tremorX = 0.15f * sinf(now * 0.025f);
-        float tremorY = 0.10f * cosf(now * 0.031f);
-        currentOffsetX += tremorX * 0.05f;
-        currentOffsetY += tremorY * 0.05f;
-      }
     }
+
+    /* Enforce rigid OLED screen boundary limits */
+    currentOffsetX = constrain(currentOffsetX, -17.5f, 17.5f);
+    currentOffsetY = constrain(currentOffsetY, -12.0f, 11.0f);
 
     inSaccade = false;
     nextGazeTime = now + 600;
     return;
   }
 
-  // Center decay for non-gaze expressions
+  /* --- Non-Tracking Center Return Branch --- */
   if (currentExpr != EXPR_IDLE && currentExpr != EXPR_SHOCK && currentExpr != EXPR_SEDIH) {
     targetOffsetX = 0.0f;
     targetOffsetY = 0.0f;
@@ -416,7 +514,7 @@ void updateGazeSystem() {
     return;
   }
 
-  // Idle gaze wander state machine
+  /* --- Spontaneous Fixation State Generator --- */
   if (!inSaccade && now >= nextGazeTime) {
     startOffsetX = currentOffsetX;
     startOffsetY = currentOffsetY;
@@ -458,7 +556,7 @@ void updateGazeSystem() {
     inSaccade = true;
   }
 
-  // Idle saccadic trajectory
+  /* --- Spontaneous Saccadic Trajectory Evaluation --- */
   if (inSaccade) {
     float elapsed = (float)(now - gazeStartTime);
     float progress = elapsed / (float)gazeDuration;
@@ -481,11 +579,12 @@ void updateGazeSystem() {
 }
 
 // --- 2D Facial Primitives ---
-void drawEyes(float eyeHeightFactor, float offsetX, float offsetY, uint16_t color) {
-  int lx = 32 + (int)offsetX;
-  int rx = 96 + (int)offsetX;
-  int ly = 28 + (int)offsetY;
-  int ry = 28 + (int)offsetY;
+// --- 2D Facial Primitives (Rigid Group Locked) ---
+void drawEyes(float eyeHeightFactor, int ox, int oy, uint16_t color) {
+  int lx = 32 + ox;
+  int rx = 96 + ox;
+  int ly = 28 + oy;
+  int ry = 28 + oy;
 
   int maxEyeWidth = 28;
   int maxEyeHeight = 38;
@@ -501,11 +600,11 @@ void drawEyes(float eyeHeightFactor, float offsetX, float offsetY, uint16_t colo
   }
 }
 
-void drawJoyEyes(float offsetX, float offsetY, float scale, uint16_t color) {
+void drawJoyEyes(int ox, int oy, float scale, uint16_t color) {
   if (scale <= 0.05f) return;
-  int lx = 32 + (int)offsetX;
-  int rx = 96 + (int)offsetX;
-  int ly = 31 + (int)offsetY;
+  int lx = 32 + ox;
+  int rx = 96 + ox;
+  int ly = 31 + oy;
 
   float eyeWidth = 24.0f * scale;
   float archHeight = 9.0f * scale;
@@ -520,13 +619,13 @@ void drawJoyEyes(float offsetX, float offsetY, float scale, uint16_t color) {
   }
 }
 
-void drawAngryBrows(float eyeHeightFactor, float offsetX, float offsetY, float browAlpha, uint16_t color) {
+void drawAngryBrows(float eyeHeightFactor, int ox, int oy, float browAlpha, uint16_t color) {
   if (eyeHeightFactor <= 0.2f || browAlpha <= 0.01f) return;
 
-  int lx = 32 + (int)offsetX;
-  int rx = 96 + (int)offsetX;
-  int ly = 28 + (int)offsetY;
-  int ry = 28 + (int)offsetY;
+  int lx = 32 + ox;
+  int rx = 96 + ox;
+  int ly = 28 + oy;
+  int ry = 28 + oy;
 
   int maxEyeWidth = 28;
   int maxEyeHeight = 38;
@@ -549,11 +648,11 @@ void drawAngryBrows(float eyeHeightFactor, float offsetX, float offsetY, float b
   );
 }
 
-void drawShockEyes(float offsetX, float offsetY, uint16_t color) {
-  int lx = 32 + (int)offsetX;
-  int rx = 96 + (int)offsetX;
-  int ly = 28 + (int)offsetY;
-  int ry = 28 + (int)offsetY;
+void drawShockEyes(int ox, int oy, uint16_t color) {
+  int lx = 32 + ox;
+  int rx = 96 + ox;
+  int ly = 28 + oy;
+  int ry = 28 + oy;
 
   lcd.drawRoundRect(lx - 14, ly - 18, 28, 36, 12, color);
   lcd.drawRoundRect(lx - 13, ly - 17, 26, 34, 11, color);
@@ -578,21 +677,21 @@ void drawSpiralEye(int cx, int cy, float rotAngle, uint16_t color) {
   }
 }
 
-void drawSpiralEyes(float offsetX, float offsetY, float rotAngle, uint16_t color) {
-  int lx = 32 + (int)offsetX;
-  int rx = 96 + (int)offsetX;
-  int ly = 28 + (int)offsetY;
-  int ry = 28 + (int)offsetY;
+void drawSpiralEyes(int ox, int oy, float rotAngle, uint16_t color) {
+  int lx = 32 + ox;
+  int rx = 96 + ox;
+  int ly = 28 + oy;
+  int ry = 28 + oy;
 
   drawSpiralEye(lx, ly, rotAngle, color);
   drawSpiralEye(rx, ry, -rotAngle, color);
 }
 
-void drawSedihEyes(float offsetX, float offsetY, uint16_t color) {
-  int lx = 32 + (int)offsetX;
-  int rx = 96 + (int)offsetX;
-  int ly = 28 + (int)offsetY;
-  int ry = 28 + (int)offsetY;
+void drawSedihEyes(int ox, int oy, uint16_t color) {
+  int lx = 32 + ox;
+  int rx = 96 + ox;
+  int ly = 28 + oy;
+  int ry = 28 + oy;
 
   for (float x = -11.0f; x <= 11.0f; x += 0.4f) {
     float y = ly + 4.0f - 0.065f * x * x;
@@ -601,25 +700,25 @@ void drawSedihEyes(float offsetX, float offsetY, uint16_t color) {
   }
 }
 
-// Synchronized mouth path rendering
-void drawMouthCustom(float offsetX, float offsetY, float curve, float baseY, float width, float asym, uint16_t color) {
-  int mx = 64 + (int)offsetX;
-  float my = baseY + offsetY;
+// Synchronized mouth path rendering (Rigid group locked)
+void drawMouthCustom(int ox, int oy, float curve, float baseY, float width, float asym, uint16_t color) {
+  int mx = 64 + ox;
+  int my = (int)baseY + oy;
   for (float x = -width; x <= width; x += 0.4f) {
-    float y = my + curve * x * x + asym * x;
+    float y = (float)my + curve * x * x + asym * x;
     lcd.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
   }
 }
 
-void drawJoyMouth(float offsetX, float offsetY, float scale, uint16_t color) {
+void drawJoyMouth(int ox, int oy, float scale, uint16_t color) {
   if (scale <= 0.05f) return;
-  int mx = 64 + (int)offsetX;
+  int mx = 64 + ox;
   float width = 11.0f * scale;
-  float baseY = 39.0f + offsetY;
+  int baseY = 39 + oy;
 
   for (float x = -width; x <= width; x += 0.4f) {
     float normX = (width > 0) ? (x / width) : 0;
-    float yTop = baseY - 0.02f * x * x;
+    float yTop = (float)baseY - 0.02f * x * x;
     float yBottom = yTop + (11.0f * scale) * (1.0f - normX * normX);
 
     for (float y = yTop; y <= yBottom; y += 0.6f) {
@@ -628,106 +727,108 @@ void drawJoyMouth(float offsetX, float offsetY, float scale, uint16_t color) {
   }
 }
 
-void drawShockMouth(float offsetX, float offsetY, uint16_t color) {
-  int mx = 64 + (int)offsetX;
-  int my = 39 + (int)offsetY;
+void drawShockMouth(int ox, int oy, uint16_t color) {
+  int mx = 64 + ox;
+  int my = 39 + oy;
   lcd.fillRoundRect(mx - 8, my, 16, 14, 5, color);
 }
 
-void drawOverloadMouth(float offsetX, float offsetY, uint16_t color) {
-  int mx = 64 + (int)offsetX;
-  int my = 45 + (int)offsetY;
+void drawOverloadMouth(int ox, int oy, uint16_t color) {
+  int mx = 64 + ox;
+  int my = 45 + oy;
   lcd.fillEllipse(mx, my, 7, 5, color);
 }
 
-void drawSedihMouth(float offsetX, float offsetY, float phase, uint16_t color) {
-  int mx = 64 + (int)offsetX;
-  float baseY = 44.0f + offsetY;
+void drawSedihMouth(int ox, int oy, float phase, uint16_t color) {
+  int mx = 64 + ox;
+  int baseY = 44 + oy;
   for (float x = -8.0f; x <= 8.0f; x += 0.4f) {
-    float y = baseY + 1.2f * sinf(0.8f * x + phase);
+    float y = (float)baseY + 1.2f * sinf(0.8f * x + phase);
     lcd.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
   }
 }
 
-void renderFaceState(float eyeHeightFactor, float offsetX, float offsetY, float mouthCurve, float mouthY, float mouthWidth, float browAlpha, bool inverted) {
+void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCurve, float mouthY, float mouthWidth, float browAlpha, bool inverted) {
   uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
   uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
 
   lcd.startWrite();
   lcd.clear(bgColor);
-  drawEyes(eyeHeightFactor, offsetX, offsetY, fgColor);
-  drawAngryBrows(eyeHeightFactor, offsetX, offsetY, browAlpha, bgColor);
-  drawMouthCustom(offsetX, offsetY, mouthCurve, mouthY, mouthWidth, 0.0f, fgColor);
+  drawEyes(eyeHeightFactor, ox, oy, fgColor);
+  drawAngryBrows(eyeHeightFactor, ox, oy, browAlpha, bgColor);
+  drawMouthCustom(ox, oy, mouthCurve, mouthY, mouthWidth, 0.0f, fgColor);
   drawSensorOverlay();
   lcd.endWrite();
 }
 
-void drawFaceIdle(float eyeHeightFactor, float offsetX, float offsetY) {
-  renderFaceState(eyeHeightFactor, offsetX, offsetY, -0.030f, 44.0f, 7.5f, 0.0f, false);
+void drawFaceIdle(float eyeHeightFactor, int ox, int oy) {
+  renderFaceState(eyeHeightFactor, ox, oy, -0.030f, 44.0f, 7.5f, 0.0f, false);
 }
 
-void drawFaceJoy(float offsetX, float offsetY) {
+void drawFaceJoy(int ox, int oy) {
   lcd.startWrite();
   lcd.clear(TFT_BLACK);
-  drawJoyEyes(offsetX, offsetY, 1.0f, TFT_WHITE);
-  drawJoyMouth(offsetX, offsetY, 1.0f, TFT_WHITE);
+  drawJoyEyes(ox, oy, 1.0f, TFT_WHITE);
+  drawJoyMouth(ox, oy, 1.0f, TFT_WHITE);
   drawSensorOverlay();
   lcd.endWrite();
 }
 
-void drawFaceAngry(float eyeHeightFactor, float offsetX, float offsetY) {
-  renderFaceState(eyeHeightFactor, offsetX, offsetY, 0.042f, 43.0f, 7.0f, 1.0f, true);
+void drawFaceAngry(float eyeHeightFactor, int ox, int oy) {
+  renderFaceState(eyeHeightFactor, ox, oy, 0.042f, 43.0f, 7.0f, 1.0f, true);
 }
 
-void drawFaceSmirk(float eyeHeightFactor, float offsetX, float offsetY) {
+void drawFaceSmirk(float eyeHeightFactor, int ox, int oy) {
   lcd.startWrite();
   lcd.clear(TFT_BLACK);
-  drawEyes(0.35f * eyeHeightFactor, offsetX, offsetY, TFT_WHITE);
-  drawMouthCustom(offsetX, offsetY, -0.035f, 43.0f, 9.0f, 0.14f, TFT_WHITE);
+  drawEyes(0.35f * eyeHeightFactor, ox, oy, TFT_WHITE);
+  drawMouthCustom(ox, oy, -0.035f, 43.0f, 9.0f, 0.14f, TFT_WHITE);
   drawSensorOverlay();
   lcd.endWrite();
 }
 
-void drawFaceShock(float eyeHeightFactor, float offsetX, float offsetY) {
+void drawFaceShock(float eyeHeightFactor, int ox, int oy) {
   lcd.startWrite();
   lcd.clear(TFT_BLACK);
   if (eyeHeightFactor > 0.3f) {
-    drawShockEyes(offsetX, offsetY, TFT_WHITE);
+    drawShockEyes(ox, oy, TFT_WHITE);
   } else {
-    drawEyes(eyeHeightFactor, offsetX, offsetY, TFT_WHITE);
+    drawEyes(eyeHeightFactor, ox, oy, TFT_WHITE);
   }
-  drawShockMouth(offsetX, offsetY, TFT_WHITE);
+  drawShockMouth(ox, oy, TFT_WHITE);
   drawSensorOverlay();
   lcd.endWrite();
 }
 
-void drawFaceOverload(float eyeHeightFactor, float offsetX, float offsetY, float frame = 0.0f) {
+void drawFaceOverload(float eyeHeightFactor, int ox, int oy, float frame = 0.0f) {
   lcd.startWrite();
   lcd.clear(TFT_BLACK);
-  drawSpiralEyes(offsetX, offsetY, frame, TFT_WHITE);
-  drawOverloadMouth(offsetX, offsetY, TFT_WHITE);
+  drawSpiralEyes(ox, oy, frame, TFT_WHITE);
+  drawOverloadMouth(ox, oy, TFT_WHITE);
   drawSensorOverlay();
   lcd.endWrite();
 }
 
-void drawFaceSedih(float eyeHeightFactor, float offsetX, float offsetY, float frame = 0.0f) {
+void drawFaceSedih(float eyeHeightFactor, int ox, int oy, float frame = 0.0f) {
   lcd.startWrite();
   lcd.clear(TFT_BLACK);
-  drawSedihEyes(offsetX, offsetY, TFT_WHITE);
-  drawSedihMouth(offsetX, offsetY, frame, TFT_WHITE);
+  drawSedihEyes(ox, oy, TFT_WHITE);
+  drawSedihMouth(ox, oy, frame, TFT_WHITE);
   drawSensorOverlay();
   lcd.endWrite();
 }
 
 void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offsetY, float frame = 0.0f) {
+  int ox = (int)roundf(offsetX);
+  int oy = (int)roundf(offsetY);
   switch (expr) {
-    case EXPR_IDLE: drawFaceIdle(eyeHeightFactor, offsetX, offsetY); break;
-    case EXPR_JOY: drawFaceJoy(offsetX, offsetY); break;
-    case EXPR_ANGRY: drawFaceAngry(eyeHeightFactor, offsetX, offsetY); break;
-    case EXPR_SMIRK: drawFaceSmirk(eyeHeightFactor, offsetX, offsetY); break;
-    case EXPR_SHOCK: drawFaceShock(eyeHeightFactor, offsetX, offsetY); break;
-    case EXPR_OVERLOAD: drawFaceOverload(eyeHeightFactor, offsetX, offsetY, frame); break;
-    case EXPR_SEDIH: drawFaceSedih(eyeHeightFactor, offsetX, offsetY, frame); break;
+    case EXPR_IDLE: drawFaceIdle(eyeHeightFactor, ox, oy); break;
+    case EXPR_JOY: drawFaceJoy(ox, oy); break;
+    case EXPR_ANGRY: drawFaceAngry(eyeHeightFactor, ox, oy); break;
+    case EXPR_SMIRK: drawFaceSmirk(eyeHeightFactor, ox, oy); break;
+    case EXPR_SHOCK: drawFaceShock(eyeHeightFactor, ox, oy); break;
+    case EXPR_OVERLOAD: drawFaceOverload(eyeHeightFactor, ox, oy, frame); break;
+    case EXPR_SEDIH: drawFaceSedih(eyeHeightFactor, ox, oy, frame); break;
   }
 }
 
@@ -783,43 +884,46 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
     uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
     uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
 
+    int ox = (int)roundf(currentOffsetX);
+    int oy = (int)roundf(currentOffsetY);
+
     lcd.startWrite();
     lcd.clear(bgColor);
 
     Expression activeExpr = (easedT < 0.5f) ? fromExpr : toExpr;
     if (activeExpr == EXPR_IDLE || activeExpr == EXPR_ANGRY || activeExpr == EXPR_SMIRK) {
-      drawEyes(curEyeH, currentOffsetX, currentOffsetY, fgColor);
+      drawEyes(curEyeH, ox, oy, fgColor);
     } else if (activeExpr == EXPR_JOY) {
-      drawJoyEyes(currentOffsetX, currentOffsetY, joyScale, fgColor);
+      drawJoyEyes(ox, oy, joyScale, fgColor);
     } else if (activeExpr == EXPR_SHOCK) {
-      drawShockEyes(currentOffsetX, currentOffsetY, fgColor);
+      drawShockEyes(ox, oy, fgColor);
     } else if (activeExpr == EXPR_OVERLOAD) {
-      drawSpiralEyes(currentOffsetX, currentOffsetY, t * 2.0f, fgColor);
+      drawSpiralEyes(ox, oy, t * 2.0f, fgColor);
     } else if (activeExpr == EXPR_SEDIH) {
-      drawSedihEyes(currentOffsetX, currentOffsetY, fgColor);
+      drawSedihEyes(ox, oy, fgColor);
     }
 
     if (curBrow > 0.01f) {
-      drawAngryBrows(curEyeH, currentOffsetX, currentOffsetY, curBrow, bgColor);
+      drawAngryBrows(curEyeH, ox, oy, curBrow, bgColor);
     }
 
     bool fromCurveMouth = (fromExpr == EXPR_IDLE || fromExpr == EXPR_ANGRY || fromExpr == EXPR_SMIRK);
     bool toCurveMouth   = (toExpr == EXPR_IDLE || toExpr == EXPR_ANGRY || toExpr == EXPR_SMIRK);
 
     if (fromCurveMouth && toCurveMouth) {
-      drawMouthCustom(currentOffsetX, currentOffsetY, curCurve, curY, curW, curAsym, fgColor);
+      drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor);
     } else {
       Expression mouthExpr = (easedT < 0.5f) ? fromExpr : toExpr;
       if (mouthExpr == EXPR_IDLE || mouthExpr == EXPR_ANGRY || mouthExpr == EXPR_SMIRK) {
-        drawMouthCustom(currentOffsetX, currentOffsetY, curCurve, curY, curW, curAsym, fgColor);
+        drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor);
       } else if (mouthExpr == EXPR_JOY) {
-        drawJoyMouth(currentOffsetX, currentOffsetY, joyScale, fgColor);
+        drawJoyMouth(ox, oy, joyScale, fgColor);
       } else if (mouthExpr == EXPR_SHOCK) {
-        drawShockMouth(currentOffsetX, currentOffsetY, fgColor);
+        drawShockMouth(ox, oy, fgColor);
       } else if (mouthExpr == EXPR_OVERLOAD) {
-        drawOverloadMouth(currentOffsetX, currentOffsetY, fgColor);
+        drawOverloadMouth(ox, oy, fgColor);
       } else if (mouthExpr == EXPR_SEDIH) {
-        drawSedihMouth(currentOffsetX, currentOffsetY, t * 4.0f, fgColor);
+        drawSedihMouth(ox, oy, t * 4.0f, fgColor);
       }
     }
 
@@ -952,7 +1056,10 @@ void updateBiologicalMoodEngine() {
   }
 }
 
-// --- OLED Display & UI Task (Core 1) ---
+/**
+ * @brief OLED Display rendering and kinematic animation task bound to Core 1.
+ * @param pvParameters FreeRTOS task parameter payload pointer.
+ */
 void oledTask(void *pvParameters) {
   pinMode(TOUCH_PIN, INPUT_PULLDOWN);
 
@@ -982,14 +1089,71 @@ void oledTask(void *pvParameters) {
     #endif
 
     updateBiologicalMoodEngine();
-    updateGazeSystem();
+
+    /* --- Sleep Mode Ambient Gaze Kinematics --- */
+    if (g_recon_state == STATE_SLEEP_RECON) {
+      if (!inSaccade && now >= nextGazeTime) {
+        startOffsetX = currentOffsetX;
+        startOffsetY = currentOffsetY;
+
+        uint32_t pick = esp_random() % 100;
+        if (pick < 40) {
+          targetOffsetX = 0.0f;
+          targetOffsetY = 0.0f;
+        } else if (pick < 70) {
+          targetOffsetX = -1.0f * (float)(esp_random() % 7 + 4);
+          targetOffsetY = (float)(esp_random() % 5) - 2.0f;
+        } else {
+          targetOffsetX = (float)(esp_random() % 7 + 4);
+          targetOffsetY = (float)(esp_random() % 5) - 2.0f;
+        }
+
+        gazeDuration = esp_random() % 50 + 110; 
+        nextGazeTime = now + (esp_random() % 2400 + 1800); 
+        gazeStartTime = now;
+        inSaccade = true;
+      }
+
+      if (inSaccade) {
+        float elapsed = (float)(now - gazeStartTime);
+        float progress = elapsed / (float)gazeDuration;
+
+        if (progress >= 1.0f) {
+          currentOffsetX = targetOffsetX;
+          currentOffsetY = targetOffsetY;
+          inSaccade = false;
+        } else {
+          float p = progress;
+          float s = 10.0f * p * p * p - 15.0f * p * p * p * p + 6.0f * p * p * p * p * p;
+          
+          float distX = targetOffsetX - startOffsetX;
+          float distY = targetOffsetY - startOffsetY;
+
+          float overshootX = 0.12f * distX * sinf(3.14159265f * p) * expf(-3.0f * p);
+          float overshootY = 0.12f * distY * sinf(3.14159265f * p) * expf(-3.0f * p);
+
+          currentOffsetX = startOffsetX + (distX * s) + overshootX;
+          currentOffsetY = startOffsetY + (distY * s) + overshootY;
+        }
+      } else {
+        float driftX = 0.45f * sinf(now * 0.0032f);
+        float driftY = 0.35f * cosf(now * 0.0027f);
+        currentOffsetX = targetOffsetX + driftX;
+        currentOffsetY = targetOffsetY + driftY;
+      }
+
+      currentOffsetX = constrain(currentOffsetX, -17.5f, 17.5f);
+      currentOffsetY = constrain(currentOffsetY, -12.0f, 11.0f);
+    } else {
+      updateGazeSystem();
+    }
 
     bool isTargetLocked = false;
     portENTER_CRITICAL(&target_mutex);
     isTargetLocked = current_target.detected;
     portEXIT_CRITICAL(&target_mutex);
 
-    // Eyelid blink state machine
+    /* --- Non-Blocking Eyelid Blinking State Machine --- */
     bool canBlink = (currentExpr != EXPR_OVERLOAD && currentExpr != EXPR_SEDIH && currentExpr != EXPR_JOY);
 
     if (!canBlink) {
@@ -1006,7 +1170,7 @@ void oledTask(void *pvParameters) {
           g_blinkStartTime = now;
           if (g_isDoubleBlinkPending) {
             g_isDoubleBlinkPending = false;
-          } else if ((esp_random() % 100) < 14) { // 14% double-blink probability
+          } else if ((esp_random() % 100) < 14) { 
             g_isDoubleBlinkPending = true;
           }
         }
@@ -1014,7 +1178,7 @@ void oledTask(void *pvParameters) {
 
       if (g_blinkState == BLINK_CLOSING_STATE) {
         float elapsed = (float)(now - g_blinkStartTime);
-        float duration = (currentExpr == EXPR_ANGRY) ? 35.0f : 50.0f; // Sharp 35ms snap close for angry gaze
+        float duration = (currentExpr == EXPR_ANGRY) ? 35.0f : 50.0f;
         if (elapsed >= duration) {
           g_blinkEyeHeight = 0.0f;
           g_blinkState = BLINK_OPENING_STATE;
@@ -1025,7 +1189,7 @@ void oledTask(void *pvParameters) {
         }
       } else if (g_blinkState == BLINK_OPENING_STATE) {
         float elapsed = (float)(now - g_blinkStartTime);
-        float duration = (currentExpr == EXPR_ANGRY) ? 80.0f : 110.0f; // Fierce 80ms snap opening
+        float duration = (currentExpr == EXPR_ANGRY) ? 80.0f : 110.0f;
         if (elapsed >= duration) {
           g_blinkEyeHeight = 1.0f;
           g_blinkState = BLINK_IDLE_STATE;
@@ -1044,7 +1208,7 @@ void oledTask(void *pvParameters) {
       }
     }
 
-    // Display render pipeline
+    /* --- OLED Buffer Render Dispatch --- */
     if (currentExpr == EXPR_OVERLOAD || currentExpr == EXPR_SEDIH) {
       if (now - lastAnimUpdate > 25) {
         lastAnimUpdate = now;
@@ -1053,9 +1217,9 @@ void oledTask(void *pvParameters) {
       }
     } else {
       bool isBlinking = (g_blinkState != BLINK_IDLE_STATE);
-      bool needRedraw = isTargetLocked || inSaccade || isBlinking ||
-                         fabsf(currentOffsetX - lastDrawnX) > 0.08f ||
-                         fabsf(currentOffsetY - lastDrawnY) > 0.08f;
+      bool needRedraw = isTargetLocked || inSaccade || isBlinking || (g_recon_state == STATE_SLEEP_RECON) ||
+                        fabsf(currentOffsetX - lastDrawnX) > 0.04f ||
+                        fabsf(currentOffsetY - lastDrawnY) > 0.04f;
       if (needRedraw) {
         drawFace(currentExpr, g_blinkEyeHeight, currentOffsetX, currentOffsetY);
         lastDrawnX = currentOffsetX;
@@ -1179,6 +1343,12 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   float prev_grid_x = k_state.x * (1.0f / 16.0f);
   float prev_grid_y = k_state.y * (1.0f / 16.0f);
 
+  // 3-Sector Multi-Object Spatial Clustering Accumulators
+  float sec_M00[3] = {0}, sec_M10[3] = {0}, sec_M01[3] = {0};
+  float sec_M20[3] = {0}, sec_M02[3] = {0};
+  int sec_skin[3] = {0};
+  float sec_motion[3] = {0};
+
   for (int y = 1; y < 29; y++) {
     int y_off = y * 40;
     for (int x = 1; x < 39; x++) {
@@ -1203,18 +1373,13 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       bool is_skin = skin_mask_40x30[idx];
       uint8_t raw_lum = cur_40x30[idx];
 
-      // Reject high-luminance non-skin background light sources (neon lights, lamps)
-      if (!is_skin && raw_lum > 200) continue;
-
-      // If human skin is detected in the frame, ignore non-skin background pixels completely
-      if (skin_pixel_count >= 4 && !is_skin) continue;
+      // Reject high-luminance background light sources (neon lights, lamps)
+      if (!is_skin && raw_lum > 215) continue;
 
       float raw_energy = 2.5f * delta + 16.0f * mhi_weight + 1.5f * gy + 0.8f * gx;
       float energy = raw_energy;
 
       if (is_skin) {
-        // Uniform weighting for skin pixels so the centroid computes the true geometric center of the face/head,
-        // preventing motion from mouth/eyes from pulling the crosshair around the face.
         energy = 10.0f + 0.3f * (gy + gx);
       } else {
         float tex_val = (float)texture_40x30[idx];
@@ -1234,13 +1399,13 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       float dx = (float)x;
       float dy = (float)y;
 
-      // Spatial Kernel Gating: Attenuate distant background noise relative to predicted target position
+      // Spatial Kernel Gating
       if (k_state.active) {
         float dist_x = dx - prev_grid_x;
         float dist_y = dy - prev_grid_y;
         float norm_dist_sq = (dist_x * dist_x) * (1.0f / 64.0f) + (dist_y * dist_y) * (1.0f / 49.0f);
         if (norm_dist_sq > 2.25f && !is_skin) {
-          continue; // Discard distant ceiling/wall noise
+          continue;
         }
         if (norm_dist_sq > 1.0f && !is_skin) {
           weight *= 0.25f;
@@ -1253,8 +1418,78 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       M20 += dx * dx * weight;
       M02 += dy * dy * weight;
       M11 += dx * dy * weight;
+
+      // Sector Accumulation for Multi-Object Tracking
+      int s_idx = (x < 14) ? 0 : ((x < 27) ? 1 : 2);
+      sec_M00[s_idx] += weight;
+      sec_M10[s_idx] += dx * weight;
+      sec_M01[s_idx] += dy * weight;
+      sec_M20[s_idx] += dx * dx * weight;
+      sec_M02[s_idx] += dy * dy * weight;
+      if (is_skin) sec_skin[s_idx]++;
+      sec_motion[s_idx] += energy;
     }
   }
+
+  // Segment and Rank Multi-Object Candidates (Up to 3 Objects)
+  ObjectCandidate temp_cand[3];
+  int active_cnt = 0;
+
+  for (int s = 0; s < 3; s++) {
+    if (sec_M00[s] >= 8.0f || sec_skin[s] >= 2) {
+      float inv_M = 1.0f / fmaxf(1.0f, sec_M00[s]);
+      float mx = sec_M10[s] * inv_M;
+      float my = sec_M01[s] * inv_M;
+
+      float sig_x = sqrtf(fmaxf(0.0f, (sec_M20[s] * inv_M) - (mx * mx)));
+      float sig_y = sqrtf(fmaxf(0.0f, (sec_M02[s] * inv_M) - (my * my)));
+
+      float cx = mx * 16.0f;
+      float cy = my * 16.0f;
+      float bw = fmaxf(130.0f, fminf(240.0f, 2.4f * fmaxf(2.8f, sig_x) * 16.0f));
+      float bh = fmaxf(160.0f, fminf(310.0f, 2.8f * fmaxf(3.2f, sig_y) * 16.0f));
+
+      // Calculate Priority Score: Skin ratio + Motion energy + Area - Center distance penalty
+      float center_dist = fabsf(cx - 320.0f);
+      float priority = 15.0f * sec_skin[s] + 1.8f * sec_motion[s] + 0.10f * sec_M00[s] - 0.06f * center_dist;
+
+      temp_cand[active_cnt].active = true;
+      temp_cand[active_cnt].cx = (int)cx;
+      temp_cand[active_cnt].cy = (int)cy;
+      temp_cand[active_cnt].w = (int)bw;
+      temp_cand[active_cnt].h = (int)bh;
+      temp_cand[active_cnt].priority_score = priority;
+      temp_cand[active_cnt].skin_px = sec_skin[s];
+      temp_cand[active_cnt].motion_energy = sec_motion[s];
+      temp_cand[active_cnt].error_x = ((cx - 320.0f) / 320.0f) * 100.0f;
+      temp_cand[active_cnt].error_y = ((cy - 240.0f) / 240.0f) * 100.0f;
+      active_cnt++;
+    }
+  }
+
+  // Sort candidates by Priority Score descending (Primary P1, Secondary P2, Tertiary P3)
+  for (int i = 0; i < active_cnt - 1; i++) {
+    for (int j = i + 1; j < active_cnt; j++) {
+      if (temp_cand[j].priority_score > temp_cand[i].priority_score) {
+        ObjectCandidate tmp = temp_cand[i];
+        temp_cand[i] = temp_cand[j];
+        temp_cand[j] = tmp;
+      }
+    }
+  }
+
+  // Update global candidates under mutex
+  portENTER_CRITICAL(&target_mutex);
+  g_num_candidates = active_cnt;
+  for (int i = 0; i < MAX_OBJECT_CANDIDATES; i++) {
+    if (i < active_cnt) {
+      g_object_candidates[i] = temp_cand[i];
+    } else {
+      g_object_candidates[i].active = false;
+      g_object_candidates[i].priority_score = 0.0f;
+    }
+  }
+  portEXIT_CRITICAL(&target_mutex);
 
   memcpy(prev_lum_buf, smooth_40x30, 1200);
 
@@ -1263,6 +1498,17 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
 
   uint32_t now_us = micros();
   uint32_t now_ms = millis();
+
+  // Autonomous Sequential Object Inspection State Machine
+  if (g_num_candidates > 1) {
+    if (now_ms - g_last_inspection_time_ms > g_inspection_hold_time_ms) {
+      g_inspected_candidate_idx = (g_inspected_candidate_idx + 1) % g_num_candidates;
+      g_last_inspection_time_ms = now_ms;
+      g_inspection_hold_time_ms = (esp_random() % 1400) + 2400; // 2.4s to 3.8s per object inspection
+    }
+  } else {
+    g_inspected_candidate_idx = 0;
+  }
 
   float dt_sec = (k_state.last_update_us > 0) ? ((float)(now_us - k_state.last_update_us) * 1e-6f) : 0.033f;
   float dt = fmaxf(0.01f, fminf(0.20f, dt_sec));
@@ -1490,65 +1736,102 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   }
 }
 
-// --- Camera & AI Ingestion Task (Core 0) ---
+/**
+ * @brief Autonomous camera capture and computer vision processing task bound to Core 0.
+ * @param pvParameters FreeRTOS task parameter payload pointer.
+ */
 void cameraTask(void *pvParameters) {
   uint32_t last_frame_time = millis();
+  g_state_timer = millis();
+
+  uint32_t active_duration_ms = (esp_random() % 2000) + 5000; 
+  uint32_t sleep_duration_ms  = (esp_random() % 4000) + 10000; 
 
   while (true) {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (fb) {
-      // Validate JPEG frame integrity before decoding to avoid esp_jpeg_decode error 6
-      if (fb->len > 1024 && fb->buf[0] == 0xFF && fb->buf[1] == 0xD8) {
-        processFrameAI(fb);
+    uint32_t now = millis();
 
-        uint32_t now = millis();
-        if (now - last_frame_time > 0) {
-          fps_ai = 1000.0f / (float)(now - last_frame_time);
-        }
-        last_frame_time = now;
+    if (g_recon_state == STATE_ACTIVE) {
+      camera_fb_t *fb = esp_camera_fb_get();
+      if (fb) {
+        if (fb->len > 1024 && fb->buf[0] == 0xFF && fb->buf[1] == 0xD8) {
+          processFrameAI(fb);
 
-        bool streaming_now = false;
-        portENTER_CRITICAL(&g_stream_mutex);
-        streaming_now = (g_stream_clients > 0);
-        portEXIT_CRITICAL(&g_stream_mutex);
+          if (now - last_frame_time > 0) {
+            fps_ai = 1000.0f / (float)(now - last_frame_time);
+          }
+          last_frame_time = now;
 
-        if (streaming_now && g_latest_jpeg_buf) {
-          if (fb->len <= 64 * 1024) {
-            portENTER_CRITICAL(&g_stream_mutex);
-            memcpy(g_latest_jpeg_buf, fb->buf, fb->len);
-            g_latest_jpeg_len = fb->len;
-            portEXIT_CRITICAL(&g_stream_mutex);
+          bool streaming_now = false;
+          portENTER_CRITICAL(&g_stream_mutex);
+          streaming_now = (g_stream_clients > 0);
+          portEXIT_CRITICAL(&g_stream_mutex);
 
-            if (g_frame_sem) {
-              xSemaphoreGive(g_frame_sem);
+          if (streaming_now && g_latest_jpeg_buf) {
+            if (fb->len <= 64 * 1024) {
+              portENTER_CRITICAL(&g_stream_mutex);
+              memcpy(g_latest_jpeg_buf, fb->buf, fb->len);
+              g_latest_jpeg_len = fb->len;
+              portEXIT_CRITICAL(&g_stream_mutex);
+
+              if (g_frame_sem) {
+                xSemaphoreGive(g_frame_sem);
+              }
             }
           }
         }
+
+        esp_camera_fb_return(fb);
       }
 
-      esp_camera_fb_return(fb);
+      if (now - g_state_timer > active_duration_ms) {
+        g_recon_state = STATE_SLEEP_RECON;
+        g_state_timer = now;
+        sleep_duration_ms = (esp_random() % 4000) + 10000; 
+      }
+    } 
+    else if (g_recon_state == STATE_SLEEP_RECON) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+
+      if (now - g_state_timer > sleep_duration_ms) {
+        g_recon_state = STATE_ACTIVE;
+        g_state_timer = now;
+        active_duration_ms = (esp_random() % 2000) + 5000; 
+      }
     }
-    // Yield 1 tick to reset Task Watchdog Timer (TWDT) and feed FreeRTOS Core 0 Wi-Fi stack
+
     vTaskDelay(1);
   }
 }
 
-// --- HTTP API Handlers ---
+/* --- Embedded HTTP Web Server URI Handlers --- */
+
+/**
+ * @brief HTTP GET handler serving static Web UI dashboard page.
+ */
 static esp_err_t index_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
   return httpd_resp_send(req, HTML_PAGE, strlen(HTML_PAGE));
 }
 
+/**
+ * @brief HTTP GET handler serving JSON telemetry data stream.
+ */
 static esp_err_t telemetry_handler(httpd_req_t *req) {
-  char json[360];
+  char json[512];
   TrackTarget target;
+  int num_cands = 0;
+  int insp_idx = 0;
+  ObjectCandidate cands[3];
 
   portENTER_CRITICAL(&target_mutex);
   target = current_target;
+  num_cands = g_num_candidates;
+  insp_idx = g_inspected_candidate_idx;
+  for (int i = 0; i < 3; i++) cands[i] = g_object_candidates[i];
   portEXIT_CRITICAL(&target_mutex);
 
   snprintf(json, sizeof(json),
-    "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"m00\":%.1f,\"skin_px\":%d,\"lock_conf\":%.2f,\"vx\":%.1f,\"vy\":%.1f}",
+    "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"m00\":%.1f,\"skin_px\":%d,\"lock_conf\":%.2f,\"vx\":%.1f,\"vy\":%.1f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_p\":%.1f}",
     target.detected ? "true" : "false",
     target.x, target.y, target.w, target.h,
     target.cx, target.cy,
@@ -1559,7 +1842,11 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
     debug_m00,
     debug_skin_px,
     debug_lock_conf,
-    target.vx, target.vy
+    target.vx, target.vy,
+    num_cands, insp_idx,
+    cands[0].cx, cands[0].cy, cands[0].priority_score,
+    cands[1].cx, cands[1].cy, cands[1].priority_score,
+    cands[2].cx, cands[2].cy, cands[2].priority_score
   );
 
   httpd_resp_set_type(req, "application/json");
@@ -1567,6 +1854,9 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
   return httpd_resp_send(req, json, strlen(json));
 }
 
+/**
+ * @brief HTTP GET handler serving MJPEG video stream.
+ */
 static esp_err_t stream_handler(httpd_req_t *req) {
   esp_err_t res = ESP_OK;
   char part_buf[64];
@@ -1621,6 +1911,9 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return res;
 }
 
+/**
+ * @brief Initializes HTTP server instances for web UI control and video streaming.
+ */
 void startWebServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
@@ -1642,7 +1935,10 @@ void startWebServer() {
   }
 }
 
-// --- Camera Initialization ---
+/**
+ * @brief Initializes OV2640/OV3660 camera hardware driver settings.
+ * @return True if initialized successfully, false otherwise.
+ */
 bool initCamera() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -1690,21 +1986,21 @@ bool initCamera() {
       s->set_exposure_ctrl(s, 1);
       s->set_gain_ctrl(s, 1);
     } else {
-      s->set_brightness(s, 2);       // Boost brightness +2 for low-light face exposure
-      s->set_contrast(s, 2);         // Boost contrast +2
+      s->set_brightness(s, 2);       
+      s->set_contrast(s, 2);         
       s->set_sharpness(s, 1);
       s->set_vflip(s, 1);
       s->set_hmirror(s, 1);
-      s->set_whitebal(s, 1);         // Enable Automatic White Balance
-      s->set_awb_gain(s, 1);         // Enable AWB Gain
-      s->set_exposure_ctrl(s, 1);    // Enable Auto Exposure Control
-      s->set_aec2(s, 1);             // Enable AEC DSP
-      s->set_ae_level(s, 1);         // Exposure level +1
-      s->set_gain_ctrl(s, 1);        // Enable Auto Gain Control
-      s->set_agc_gain(s, 15);        // Initial AGC Gain
-      s->set_gainceiling(s, GAINCEILING_16X); // 16X gain ceiling for dark rooms
-      s->set_bpc(s, 1);             // Black Pixel Correction
-      s->set_wpc(s, 1);             // White Pixel Correction
+      s->set_whitebal(s, 1);         
+      s->set_awb_gain(s, 1);         
+      s->set_exposure_ctrl(s, 1);    
+      s->set_aec2(s, 1);             
+      s->set_ae_level(s, 1);         
+      s->set_gain_ctrl(s, 1);        
+      s->set_agc_gain(s, 15);        
+      s->set_gainceiling(s, GAINCEILING_16X); 
+      s->set_bpc(s, 1);             
+      s->set_wpc(s, 1);             
     }
   }
 
@@ -1717,7 +2013,9 @@ bool initCamera() {
   return true;
 }
 
-// --- System Entrypoint ---
+/**
+ * @brief Application entrypoint for hardware initialization and FreeRTOS task launching.
+ */
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -1733,7 +2031,6 @@ void setup() {
   }
   Serial.println("Camera initialized.");
 
-  // High-frequency AI buffers allocated in fast Internal SRAM to eliminate SPI bus contention
   small_rgb_buf     = (uint8_t*)heap_caps_malloc(80 * 60 * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   prev_lum_buf      = (uint8_t*)heap_caps_malloc(40 * 30, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   mhi_buf           = (uint8_t*)heap_caps_malloc(40 * 30, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -1746,7 +2043,6 @@ void setup() {
     Serial.println("All buffers allocated in SRAM.");
   }
 
-  // Fallback if Internal SRAM allocation fails
   if (!small_rgb_buf) small_rgb_buf = (uint8_t*)malloc(80 * 60 * 2);
   if (!prev_lum_buf)  prev_lum_buf  = (uint8_t*)malloc(40 * 30);
   if (!mhi_buf)       mhi_buf       = (uint8_t*)malloc(40 * 30);
@@ -1756,29 +2052,39 @@ void setup() {
   if (prev_lum_buf) memset(prev_lum_buf, 0, 40 * 30);
   if (mhi_buf) memset(mhi_buf, 0, 40 * 30);
 
-  WiFi.setTxPower(WIFI_POWER_17dBm);
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true);
+  delay(150);
+  WiFi.setSleep(WIFI_PS_NONE);
+  WiFi.setAutoReconnect(true);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+
   if (USE_AP_MODE) {
+    WiFi.mode(WIFI_AP);
     WiFi.softAP(ap_ssid, ap_password);
-    Serial.print("AP Mode: http://");
+    Serial.println("\n[AP MODE] Access Point Active!");
+    Serial.print("Access Web UI at IP: http://");
     Serial.println(WiFi.softAPIP());
   } else {
     WiFi.begin(sta_ssid, sta_password);
-    Serial.printf("Connecting to WiFi '%s'", sta_ssid);
+    Serial.printf("\nConnecting to WiFi '%s'", sta_ssid);
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    while (WiFi.status() != WL_CONNECTED && attempts < 50) {
       delay(400);
       Serial.print(".");
       attempts++;
     }
     if (WiFi.status() == WL_CONNECTED) {
-      WiFi.setSleep(false);
       Serial.println(" Connected!");
       Serial.print("Web UI: http://");
       Serial.println(WiFi.localIP());
     } else {
+      Serial.printf("\n[ERROR] Could not connect to '%s' (Status Code: %d)\n", sta_ssid, (int)WiFi.status());
+      WiFi.mode(WIFI_AP);
       WiFi.softAP(ap_ssid, ap_password);
-      Serial.println("\nFallback AP Mode!");
-      Serial.print("AP IP: http://");
+      Serial.println("Fallback AP Mode active!");
+      Serial.print("Access Web UI at IP: http://");
       Serial.println(WiFi.softAPIP());
     }
   }
@@ -1786,7 +2092,6 @@ void setup() {
   startWebServer();
   Serial.println("Web server active.");
 
-  // Launch Camera AI Task on Core 0
   xTaskCreatePinnedToCore(
     cameraTask,
     "Camera_AI_Task",
@@ -1798,7 +2103,6 @@ void setup() {
   );
   Serial.println("Camera AI task started on Core 0.");
 
-  // Launch OLED Display Task on Core 1
   xTaskCreatePinnedToCore(
     oledTask,
     "OLED_Task",
@@ -1811,6 +2115,9 @@ void setup() {
   Serial.println("OLED rendering task started on Core 1.");
 }
 
+/**
+ * @brief Main idle task loop. Yields execution to background FreeRTOS scheduler tasks.
+ */
 void loop() {
   vTaskDelay(pdMS_TO_TICKS(5000));
 }
