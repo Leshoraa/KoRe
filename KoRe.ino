@@ -329,26 +329,26 @@ void updateGazeSystem() {
     float dy_raw = rawTargetY - smoothedTargetY;
     float dist_raw = sqrtf(dx_raw * dx_raw + dy_raw * dy_raw);
 
-    if (dist_raw < 2.5f) {
-      // Lock gaze within deadzone to eliminate sub-pixel jitter
-      smoothedTargetX += dx_raw * 0.05f;
-      smoothedTargetY += dy_raw * 0.05f;
+    if (dist_raw < 1.0f) {
+      // Lock gaze within micro-deadzone to eliminate sub-pixel jitter
+      smoothedTargetX += dx_raw * 0.25f;
+      smoothedTargetY += dy_raw * 0.25f;
     } else {
-      // Adaptive hysteresis tracking
-      float alpha = constrain((dist_raw - 2.5f) / 12.0f, 0.08f, 0.35f);
+      // Fast adaptive gaze tracking response
+      float alpha = constrain(0.45f + (dist_raw - 1.0f) * 0.15f, 0.45f, 0.92f);
       smoothedTargetX += dx_raw * alpha;
       smoothedTargetY += dy_raw * alpha;
     }
 
-    // Ballistic saccade detection (>6.0px large offset only)
+    // High-speed saccade snap (20ms - 45ms duration)
     float dx_eye = smoothedTargetX - currentOffsetX;
     float dy_eye = smoothedTargetY - currentOffsetY;
     float dist_eye = sqrtf(dx_eye * dx_eye + dy_eye * dy_eye);
 
-    if (dist_eye > 6.0f && !trackInSaccade) {
+    if (dist_eye > 4.0f && !trackInSaccade) {
       trackInSaccade = true;
       trackSaccadeStart = now;
-      trackSaccadeDuration = (uint32_t)constrain(40.0f + dist_eye * 3.0f, 50.0f, 90.0f);
+      trackSaccadeDuration = (uint32_t)constrain(20.0f + dist_eye * 1.5f, 25.0f, 45.0f);
       trackSaccadeStartX = currentOffsetX;
       trackSaccadeStartY = currentOffsetY;
       eye_vx = 0.0f;
@@ -373,10 +373,10 @@ void updateGazeSystem() {
         currentOffsetY = trackSaccadeStartY + (distY * s);
       }
     } else {
-      // Mass-spring-damper smooth pursuit (omega_n = 10.0 rad/s, zeta = 1.0f - Critically Damped)
+      // High-speed pursuit mass-spring-damper (omega_n = 32.0 rad/s - Instant response)
       float dt = 0.016f; // ~60 FPS
-      float omega_n = 10.0f;
-      float zeta = 1.0f;
+      float omega_n = 32.0f;
+      float zeta = 0.95f;
 
       float ax = (omega_n * omega_n) * (smoothedTargetX - currentOffsetX) - (2.0f * zeta * omega_n) * eye_vx;
       float ay = (omega_n * omega_n) * (smoothedTargetY - currentOffsetY) - (2.0f * zeta * omega_n) * eye_vy;
