@@ -6,7 +6,7 @@
 [![Ocular Dynamics](https://img.shields.io/badge/Physics-36.0_rad%2Fs_Mass--Spring--Damper-orange.svg?style=for-the-badge)](#key-engineering-features)
 [![Display Driver](https://img.shields.io/badge/Display-LovyanGFX_SSD1306_1.0MHz_I2C-purple.svg?style=for-the-badge)](#hardware-interfacing--pinout)
 
-**KoRe** (*Kinematic Optical Recognition Engine*) is an industrial-grade, 100% standalone embedded computer vision and biomechanical ocular synthesis system designed for the **Seeed Studio XIAO ESP32-S3 Sense** (Xtensa LX7 Dual-Core @ 240 MHz).
+**KoRe** (*Kinematic Optical Recognition Engine*) is a lightweight, standalone embedded computer vision and biomechanical ocular synthesis system designed for the **Seeed Studio XIAO ESP32-S3 Sense** (Xtensa LX7 Dual-Core @ 240 MHz).
 
 The system integrates real-time differential photometric tracking, uniform geometric face centroid extraction, multi-object spatial sector tracking (up to 3 candidate targets with priority scoring), high-speed 2nd-order mass-spring-damper gaze kinematics ($\omega_n = 36.0\text{ rad/s}, \zeta = 0.95$), quintic minimum-jerk saccades with glissade damped overshoot, a unified rigid 2D facial rig, non-blocking asynchronous eyelid dynamics, and an autonomous Markov dynamic mood engine. It drives an animated facial interface on an SSD1306 OLED display via LovyanGFX Fast-Mode Plus I2C (1.0 MHz) with zero rendering latency or cloud dependencies.
 
