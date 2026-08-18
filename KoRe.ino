@@ -4,8 +4,8 @@
  * @details Target Platform: Seeed Studio XIAO ESP32-S3 Sense
  *          Display Interface: 0.96" SSD1306 OLED via LovyanGFX I2C Bus (1.0MHz Fast-mode Plus)
  *          Architecture: FreeRTOS Dual-Core Asynchronous Partitioning
- *                        Core 0: Computer Vision Pipeline, Spatial Clustering & HTTP Stream Server
- *                        Core 1: 60 FPS Biomechanical Gaze Kinematics & OLED Rendering Engine
+ *                        Core 0: Computer Vision Pipeline, Spatial Clustering, HTTP Server & DFS
+ *                        Core 1: 60 FPS Biomechanical Gaze Kinematics & 1-Bit LGFX Sprite Engine
  */
 
 #include "esp_camera.h"
@@ -13,6 +13,7 @@
 #include "esp_http_server.h"
 #include "img_converters.h"
 #include <WiFi.h>
+#include <Preferences.h>
 #include <math.h>
 #include <esp_random.h>
 #include <LovyanGFX.hpp>
@@ -71,14 +72,18 @@ public:
 };
 
 LGFX lcd;
+LGFX_Sprite canvas(&lcd);
 
-/* --- Wireless Network Infrastructure --- */
+/* --- Non-Volatile Storage (NVS) & Wireless Network Infrastructure --- */
 #define USE_AP_MODE false
 const char* ap_ssid     = "KoRe-Tracker";
 const char* ap_password = "12345678";
 
-const char* sta_ssid     = "Kasminingsih";
-const char* sta_password = "hidet4mp4n";
+const char* sta_ssid_default     = "Kasminingsih";
+const char* sta_password_default = "hidet4mp4n";
+
+static char sta_ssid[64] = {0};
+static char sta_password[64] = {0};
 
 /* --- ESP32-S3 Camera Pin Definitions --- */
 #define PWDN_GPIO_NUM  -1
@@ -117,6 +122,7 @@ struct TrackTarget {
   float total_energy;
   float vx;
   float vy;
+  float proximity;     // Normalized target proximity Z in range [0.0 (far), 1.0 (near)]
   uint32_t last_seen_ms;
 };
 
@@ -135,6 +141,7 @@ struct ObjectCandidate {
   float error_y;
   int skin_px;
   float motion_energy;
+  float proximity;
 };
 
 #define MAX_OBJECT_CANDIDATES 3
@@ -144,7 +151,7 @@ static int g_inspected_candidate_idx = 0;
 static uint32_t g_last_inspection_time_ms = 0;
 static uint32_t g_inspection_hold_time_ms = 2800;
 
-static TrackTarget current_target = {false, 0, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0};
+static TrackTarget current_target = {false, 0, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0};
 static portMUX_TYPE target_mutex = portMUX_INITIALIZER_UNLOCKED;
 
 static volatile float fps_ai = 0.0f;
@@ -175,6 +182,7 @@ static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u
 
 /* --- Gaze Kinematics & Animation State --- */
 Expression currentExpr = EXPR_IDLE;
+static bool g_is_transitioning = false;
 
 unsigned long lastBlink = 0;
 float animFrame = 0.0f;
@@ -185,6 +193,8 @@ unsigned long lastTouchCheck = 0;
 
 float currentOffsetX = 0.0f;
 float currentOffsetY = 0.0f;
+float currentVergence = 0.0f;
+float currentEyeScale = 1.0f;
 float startOffsetX = 0.0f;
 float startOffsetY = 0.0f;
 float targetOffsetX = 0.0f;
@@ -221,15 +231,11 @@ static uint32_t g_nextBlinkTime = 0;
 static float g_blinkEyeHeight = 1.0f;
 static bool g_isDoubleBlinkPending = false;
 
-// --- Dynamic Biological Mood Engine ---
-static uint32_t g_nextMoodShiftTime = 0;
-static bool g_lastTargetDetectedState = false;
-
 // --- Intermittent Reconnaissance Duty Cycle FSM ---
 enum ReconState {
   STATE_ACTIVE,       // Full 30 FPS vision tracking @ 240 MHz CPU
   STATE_SLEEP_RECON,  // Camera paused, 80 MHz CPU, random spatial saccades
-  STATE_SAMPLING      // Fast 3-frame check @ 240 MHz CPU
+  STATE_SAMPLING      // Fast check @ 240 MHz CPU
 };
 
 static volatile ReconState g_recon_state = STATE_ACTIVE;
@@ -238,6 +244,18 @@ static float g_rand_target_x = 0.0f;
 static float g_rand_target_y = 0.0f;
 static uint32_t g_last_saccade_shift = 0;
 static uint32_t g_nextGazeTime = 4500;
+
+/* --- Camera Sensor Software Standby Low-Power Controller --- */
+void setCameraSleep(bool enable) {
+  sensor_t* s = esp_camera_sensor_get();
+  if (!s) return;
+  if (s->id.PID == OV2640_PID) {
+    s->set_reg(s, 0xFF, 0xFF, 0x01);                  // Switch to register bank 1
+    s->set_reg(s, 0x09, 0xFF, enable ? 0x10 : 0x00);  // COM2: Toggle bit 4 software standby
+  } else if (s->id.PID == OV3660_PID) {
+    s->set_reg(s, 0x3008, 0x40, enable ? 0x40 : 0x00);
+  }
+}
 
 /* --- Biomechanical Oculomotor Model (Sleep/Idle Saccades) ---
  *
@@ -265,36 +283,10 @@ static uint32_t g_nextGazeTime = 4500;
 // Pixel-to-degree conversion: ±17.5px OLED range ≈ ±30° human gaze
 static const float PX_TO_DEG = 30.0f / 17.5f;  // ≈ 1.714 °/px
 
-// Sleep saccade trajectory state
-static float g_sleep_saccStartX  = 0.0f;
-static float g_sleep_saccStartY  = 0.0f;
-static float g_sleep_saccTargX   = 0.0f;
-static float g_sleep_saccTargY   = 0.0f;
-static float g_sleep_saccAmp     = 0.0f;   // amplitude in pixel-degrees
-static uint32_t g_sleep_saccStart_ms  = 0;
-static uint32_t g_sleep_saccDur_ms    = 0;  // main sequence duration
-static float g_sleep_saccVpeak   = 0.0f;   // peak velocity (px/s)
-static bool  g_sleep_inSaccade   = false;
-
-// Post-saccadic overshoot ring-down state
-static bool  g_sleep_inOvershoot    = false;
-static uint32_t g_sleep_overshootStart = 0;
-static float g_sleep_overshootDirX  = 0.0f;
-static float g_sleep_overshootDirY  = 0.0f;
-static float g_sleep_overshootAmp   = 0.0f;  // 5-8% of saccade amplitude
-static float g_sleep_landX          = 0.0f;  // landing point before ring-down
-static float g_sleep_landY          = 0.0f;
-
-// Fixation micro-saccade & drift state
-static uint32_t g_sleep_nextMicro_ms = 0;
-static float g_sleep_driftVx     = 0.0f;
-static float g_sleep_driftVy     = 0.0f;
-static uint32_t g_sleep_lastFrame_ms = 0;  // dynamic delta-t frame timestamp
-
 // State transition detector (ACTIVE ↔ SLEEP handoff)
 static ReconState g_prev_recon_state = STATE_ACTIVE;
 
-// --- Telemetry Dashboard Web UI ---
+// --- Telemetry Dashboard Web UI (With Visibility-Aware Throttling) ---
 const char HTML_PAGE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
@@ -333,7 +325,15 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     img.onload = resizeCanvas;
 
     let renderBoxes = [];
+    let telemetryTimer = null;
+
     async function updateTelemetry() {
+      // Pause/Throttle polling when page is running in background tab
+      if (document.visibilityState === 'hidden') {
+        telemetryTimer = setTimeout(updateTelemetry, 1000);
+        return;
+      }
+
       try {
         const res = await fetch('http://' + host + '/telemetry');
         const data = await res.json();
@@ -397,13 +397,14 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
             ctx.beginPath(); ctx.moveTo(bx, by + len); ctx.lineTo(bx, by); ctx.lineTo(bx + len, by); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(bx + bWidth - len, by); ctx.lineTo(bx + bWidth, by); ctx.lineTo(bx + bWidth, by + len); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(bx, by + bHeight - len); ctx.lineTo(bx, by + bHeight); ctx.lineTo(bx + len, by + bHeight); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(bx + bWidth - len, by + bHeight); ctx.lineTo(bx + bWidth, by + bHeight); ctx.lineTo(bx + bWidth, by + bHeight - len); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(bx + bWidth - len, by + bHeight); ctx.lineTo(bx + bWidth, by + bHeight); ctx.lineTo(bx + bWidth, by + len); ctx.stroke();
 
             // Label & Priority Badge
             ctx.fillStyle = color;
             ctx.font = 'bold 12px monospace';
             const statusText = isInspected ? ' [SCANNING...]' : '';
-            ctx.fillText(labels[i] + statusText, bx + 4, by - 6);
+            const proxText = (data.prox !== undefined) ? ` Z:${(data.prox * 100).toFixed(0)}%` : '';
+            ctx.fillText(labels[i] + statusText + proxText, bx + 4, by - 6);
 
             // Target Crosshair
             if (isInspected) {
@@ -411,7 +412,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
               ctx.lineWidth = 1.5;
               ctx.beginPath();
               ctx.moveTo(cX - 10, cY); ctx.lineTo(cX + 10, cY);
-              ctx.moveTo(cX, cY - 10); ctx.lineTo(cX, cY + 10);
+              ctx.moveTo(cX, cY - 10); ctx.lineTo(cX + 10, cY);
               ctx.stroke();
               ctx.beginPath(); ctx.arc(cX, cY, 4, 0, 2 * Math.PI); ctx.stroke();
             }
@@ -420,8 +421,16 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
           renderBoxes = [];
         }
       } catch (e) {}
-      setTimeout(updateTelemetry, 50);
+      telemetryTimer = setTimeout(updateTelemetry, 100);
     }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        if (telemetryTimer) clearTimeout(telemetryTimer);
+        updateTelemetry();
+      }
+    });
+
     updateTelemetry();
   </script>
 </body>
@@ -465,10 +474,15 @@ void drawSensorOverlay() {
 }
 
 /**
- * @brief Biomechanical 2D gaze pursuit and fixation controller.
+ * @brief Biomechanical 2D gaze pursuit and fixation controller with foveal depth & vergence.
  * @details Executes active target smooth pursuit via second-order mass-spring-damper kinetics,
  *          or spontaneous foveal fixation saccades using 5th-order minimum-jerk splines.
+ *          Integrates target proximity Z for binocular vergence and pupil scaling.
  */
+static float trackSaccadeTargetX = 0.0f;
+static float trackSaccadeTargetY = 0.0f;
+static bool s_prevTargetDetected = false;
+
 void updateGazeSystem() {
   TrackTarget target;
   portENTER_CRITICAL(&target_mutex);
@@ -476,38 +490,62 @@ void updateGazeSystem() {
   portEXIT_CRITICAL(&target_mutex);
 
   unsigned long now = millis();
+  static uint32_t lastGazeTimeUs = 0;
+  uint32_t nowUs = micros();
+  float dt = (lastGazeTimeUs > 0) ? (float)(nowUs - lastGazeTimeUs) * 0.000001f : 0.016666f;
+  dt = constrain(dt, 0.005f, 0.040f);
+  lastGazeTimeUs = nowUs;
 
-  /* --- Active Target Tracking Pursuit Branch --- */
-  if (target.detected) {
+  /* === BRANCH 1: Active Target Vision Tracking === */
+  bool targetActive = (g_recon_state == STATE_ACTIVE) && (target.detected || ((now - target.last_seen_ms) < 300 && target.last_seen_ms > 0));
+  if (targetActive) {
     float normX = constrain(target.error_x / 100.0f, -1.0f, 1.0f);
     float normY = constrain(target.error_y / 100.0f, -1.0f, 1.0f);
 
     float rawTargetX = normX * 22.0f;
     float rawTargetY = normY * 14.0f;
 
-    float dx_raw = rawTargetX - smoothedTargetX;
-    float dy_raw = rawTargetY - smoothedTargetY;
-    float dist_raw = sqrtf(dx_raw * dx_raw + dy_raw * dy_raw);
-
-    if (dist_raw < 1.0f) {
-      smoothedTargetX += dx_raw * 0.25f;
-      smoothedTargetY += dy_raw * 0.25f;
-    } else {
-      float alpha = constrain(0.35f + dist_raw * 0.08f, 0.35f, 0.80f);
-      smoothedTargetX += dx_raw * alpha;
-      smoothedTargetY += dy_raw * alpha;
-    }
-
-    float dx_eye = smoothedTargetX - currentOffsetX;
-    float dy_eye = smoothedTargetY - currentOffsetY;
-    float dist_eye = sqrtf(dx_eye * dx_eye + dy_eye * dy_eye);
-
-    if (dist_eye > 10.0f && !trackInSaccade) {
+    // Detect first acquisition event or large target jump
+    if (!s_prevTargetDetected) {
+      s_prevTargetDetected = true;
       trackInSaccade = true;
       trackSaccadeStart = now;
-      trackSaccadeDuration = (uint32_t)constrain(25.0f + dist_eye * 1.2f, 30.0f, 60.0f);
       trackSaccadeStartX = currentOffsetX;
       trackSaccadeStartY = currentOffsetY;
+      trackSaccadeTargetX = rawTargetX;
+      trackSaccadeTargetY = rawTargetY;
+      float dist_init = sqrtf((rawTargetX - currentOffsetX) * (rawTargetX - currentOffsetX) + 
+                              (rawTargetY - currentOffsetY) * (rawTargetY - currentOffsetY));
+      trackSaccadeDuration = (uint32_t)constrain(120.0f + dist_init * 3.5f, 130.0f, 260.0f);
+      smoothedTargetX = currentOffsetX;
+      smoothedTargetY = currentOffsetY;
+      eye_vx = 0.0f;
+      eye_vy = 0.0f;
+      inSaccade = false;
+    }
+
+    // Continuous exponential low-pass filter
+    float alpha = 1.0f - expf(-20.0f * dt);
+    smoothedTargetX += (rawTargetX - smoothedTargetX) * alpha;
+    smoothedTargetY += (rawTargetY - smoothedTargetY) * alpha;
+
+    // Constant rigid inter-ocular distance (zero breathing/pinching)
+    currentVergence = 0.0f;
+    currentEyeScale = 1.0f;
+
+    // Check for large saccadic glance requirement (suppressed during morph transition)
+    float dx_eye = rawTargetX - currentOffsetX;
+    float dy_eye = rawTargetY - currentOffsetY;
+    float dist_eye = sqrtf(dx_eye * dx_eye + dy_eye * dy_eye);
+
+    if (dist_eye > 15.0f && !trackInSaccade && !g_is_transitioning) {
+      trackInSaccade = true;
+      trackSaccadeStart = now;
+      trackSaccadeDuration = (uint32_t)constrain(100.0f + dist_eye * 3.0f, 120.0f, 220.0f);
+      trackSaccadeStartX = currentOffsetX;
+      trackSaccadeStartY = currentOffsetY;
+      trackSaccadeTargetX = rawTargetX;
+      trackSaccadeTargetY = rawTargetY;
       eye_vx = 0.0f;
       eye_vy = 0.0f;
     }
@@ -517,23 +555,23 @@ void updateGazeSystem() {
       float progress = elapsed / (float)trackSaccadeDuration;
 
       if (progress >= 1.0f) {
-        currentOffsetX = smoothedTargetX;
-        currentOffsetY = smoothedTargetY;
+        currentOffsetX = trackSaccadeTargetX;
+        currentOffsetY = trackSaccadeTargetY;
+        smoothedTargetX = trackSaccadeTargetX;
+        smoothedTargetY = trackSaccadeTargetY;
         trackInSaccade = false;
       } else {
-        /* Minimum-Jerk polynomial trajectory: 10p^3 - 15p^4 + 6p^5 */
         float p = progress;
-        float s = 10.0f * p * p * p - 15.0f * p * p * p * p + 6.0f * p * p * p * p * p;
-        float distX = smoothedTargetX - trackSaccadeStartX;
-        float distY = smoothedTargetY - trackSaccadeStartY;
+        float s = p * p * p * (10.0f + p * (-15.0f + 6.0f * p));
+        float distX = trackSaccadeTargetX - trackSaccadeStartX;
+        float distY = trackSaccadeTargetY - trackSaccadeStartY;
         currentOffsetX = trackSaccadeStartX + (distX * s);
         currentOffsetY = trackSaccadeStartY + (distY * s);
       }
     } else {
-      /* Second-order mass-spring-damper differential system: w_n = 36.0 rad/s, zeta = 0.95 */
-      float dt = 0.016f; 
-      float omega_n = 36.0f;
-      float zeta = 0.95f;
+      // Second-order mass-spring-damper differential system (Critical damping: omega=38, zeta=1.0)
+      float omega_n = 38.0f;
+      float zeta = 1.00f;
 
       float ax = (omega_n * omega_n) * (smoothedTargetX - currentOffsetX) - (2.0f * zeta * omega_n) * eye_vx;
       float ay = (omega_n * omega_n) * (smoothedTargetY - currentOffsetY) - (2.0f * zeta * omega_n) * eye_vy;
@@ -545,73 +583,116 @@ void updateGazeSystem() {
       currentOffsetY += eye_vy * dt;
     }
 
-    /* Enforce rigid OLED screen boundary limits */
     currentOffsetX = constrain(currentOffsetX, -17.5f, 17.5f);
     currentOffsetY = constrain(currentOffsetY, -12.0f, 11.0f);
 
     inSaccade = false;
-    nextGazeTime = now + 600;
+    nextGazeTime = now + 800;
     return;
   }
 
-  /* --- Non-Tracking Center Return Branch --- */
-  if (currentExpr != EXPR_IDLE && currentExpr != EXPR_SHOCK && currentExpr != EXPR_SEDIH) {
-    targetOffsetX = 0.0f;
-    targetOffsetY = 0.0f;
-    if (fabsf(currentOffsetX) > 0.01f || fabsf(currentOffsetY) > 0.01f) {
-      currentOffsetX *= 0.70f;
-      currentOffsetY *= 0.70f;
-    } else {
-      currentOffsetX = 0.0f;
-      currentOffsetY = 0.0f;
-    }
-    inSaccade = false;
-    return;
-  }
+  /* === BRANCH 2 & 3: Ambient Spontaneous Fixations (Idle & Sleep) === */
+  s_prevTargetDetected = false;
+  trackInSaccade = false;
 
-  /* --- Spontaneous Fixation State Generator --- */
+  // Smoothly decay vergence and ocular scale
+  float alpha_decay = 1.0f - expf(-8.0f * dt);
+  currentVergence += (0.0f - currentVergence) * alpha_decay;
+  currentEyeScale += (1.0f - currentEyeScale) * alpha_decay;
+
+  bool isSleep = (g_recon_state == STATE_SLEEP_RECON);
+
   if (!inSaccade && now >= nextGazeTime) {
     startOffsetX = currentOffsetX;
     startOffsetY = currentOffsetY;
-    
-    if (currentExpr == EXPR_IDLE) {
+
+    if (isSleep) {
+      // Sleep Mode: Gentle, relaxed wandering saccades
       uint32_t pick = esp_random() % 100;
-      if (pick < 40) {
-        targetOffsetX = 0.0f;
-        targetOffsetY = 0.0f;
-      } else if (pick < 70) {
-        targetOffsetX = -1.0f * (float)(esp_random() % 9 + 6);
-        targetOffsetY = (float)(esp_random() % 7) - 3.0f;
+      float distFromCenter = sqrtf(startOffsetX * startOffsetX + startOffsetY * startOffsetY);
+
+      if (pick < 35 && distFromCenter >= 3.0f) {
+        // Return to center
+        targetOffsetX = ((float)(esp_random() % 20) - 10.0f) * 0.1f;
+        targetOffsetY = ((float)(esp_random() % 16) - 8.0f) * 0.1f;
+      } else if (pick < 75) {
+        // Lateral scan to opposite quadrant
+        float signX = (startOffsetX > 1.0f) ? -1.0f : ((startOffsetX < -1.0f) ? 1.0f : ((esp_random() % 2 == 0) ? -1.0f : 1.0f));
+        targetOffsetX = signX * (4.5f + (float)(esp_random() % 800) * 0.01f);
+        targetOffsetY = ((float)(esp_random() % 600) - 300.0f) * 0.01f;
       } else {
-        targetOffsetX = (float)(esp_random() % 9 + 6);
-        targetOffsetY = (float)(esp_random() % 7) - 3.0f;
+        // Oblique glance
+        float signX = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
+        float signY = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
+        targetOffsetX = signX * (4.0f + (float)(esp_random() % 600) * 0.01f);
+        targetOffsetY = signY * (2.5f + (float)(esp_random() % 400) * 0.01f);
       }
-      
-      gazeDuration = esp_random() % 50 + 100;
-      nextGazeTime = now + (esp_random() % 2400 + 1800);
-    } 
-    else if (currentExpr == EXPR_SHOCK) {
-      float dir = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
-      targetOffsetX = dir * (float)(esp_random() % 9 + 10);
-      targetOffsetY = (float)(esp_random() % 7) - 3.0f;
-      
-      gazeDuration = esp_random() % 40 + 50;
-      nextGazeTime = now + (esp_random() % 600 + 300);
-    } 
-    else if (currentExpr == EXPR_SEDIH) {
-      float dir = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
-      targetOffsetX = dir * (float)(esp_random() % 10);
-      targetOffsetY = (float)(esp_random() % 6 + 3);
-      
-      gazeDuration = esp_random() % 80 + 180;
-      nextGazeTime = now + (esp_random() % 2500 + 2500);
+
+      targetOffsetX = constrain(targetOffsetX, -15.0f, 15.0f);
+      targetOffsetY = constrain(targetOffsetY, -9.5f, 8.5f);
+
+      float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
+                       (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
+      gazeDuration = (uint32_t)constrain(140.0f + ds * 4.0f, 150.0f, 280.0f);
+      nextGazeTime = now + gazeDuration + (esp_random() % 2000 + 3000);
+    } else {
+      // Active Idle Mode: Alive human-like spontaneous fixations
+      if (currentExpr == EXPR_IDLE) {
+        uint32_t pick = esp_random() % 100;
+        if (pick < 40) {
+          // Center return
+          targetOffsetX = 0.0f;
+          targetOffsetY = 0.0f;
+        } else if (pick < 70) {
+          targetOffsetX = -1.0f * (float)(esp_random() % 9 + 6);
+          targetOffsetY = (float)(esp_random() % 7) - 3.0f;
+        } else {
+          targetOffsetX = (float)(esp_random() % 9 + 6);
+          targetOffsetY = (float)(esp_random() % 7) - 3.0f;
+        }
+        
+        targetOffsetX = constrain(targetOffsetX, -16.5f, 16.5f);
+        targetOffsetY = constrain(targetOffsetY, -10.0f, 9.0f);
+
+        float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
+                         (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
+        gazeDuration = (uint32_t)constrain(120.0f + ds * 3.5f, 130.0f, 240.0f);
+        nextGazeTime = now + gazeDuration + (esp_random() % 1800 + 2200);
+      } 
+      else if (currentExpr == EXPR_SHOCK) {
+        // Alert, centered startle fixation
+        targetOffsetX = currentOffsetX * 0.35f;
+        targetOffsetY = currentOffsetY * 0.35f;
+        float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
+                         (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
+        gazeDuration = (uint32_t)constrain(90.0f + ds * 2.5f, 100.0f, 160.0f);
+        nextGazeTime = now + gazeDuration + (esp_random() % 1500 + 2000);
+      } 
+      else if (currentExpr == EXPR_SEDIH) {
+        // Downward gaze
+        float dir = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
+        targetOffsetX = dir * (float)(esp_random() % 8);
+        targetOffsetY = (float)(esp_random() % 5 + 4);
+        float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
+                         (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
+        gazeDuration = (uint32_t)constrain(140.0f + ds * 4.0f, 150.0f, 260.0f);
+        nextGazeTime = now + gazeDuration + (esp_random() % 2500 + 2500);
+      } else {
+        // SMIRK, JOY, ANGRY: gentle centering
+        targetOffsetX = currentOffsetX * 0.5f;
+        targetOffsetY = currentOffsetY * 0.5f;
+        float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
+                         (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
+        gazeDuration = (uint32_t)constrain(110.0f + ds * 3.0f, 120.0f, 190.0f);
+        nextGazeTime = now + gazeDuration + 3000;
+      }
     }
 
     gazeStartTime = now;
     inSaccade = true;
   }
 
-  /* --- Spontaneous Saccadic Trajectory Evaluation --- */
+  /* --- Minimum-Jerk Saccadic Trajectory Evaluation --- */
   if (inSaccade) {
     float elapsed = (float)(now - gazeStartTime);
     float progress = elapsed / (float)gazeDuration;
@@ -622,20 +703,32 @@ void updateGazeSystem() {
       inSaccade = false;
     } else {
       float p = progress;
-      float s = 10.0f * p * p * p - 15.0f * p * p * p * p + 6.0f * p * p * p * p * p;
+      float s = p * p * p * (10.0f + p * (-15.0f + 6.0f * p));
       float distX = targetOffsetX - startOffsetX;
       float distY = targetOffsetY - startOffsetY;
-      float overshootX = 0.12f * distX * sinf(3.14159265f * p) * expf(-3.0f * p);
-      float overshootY = 0.12f * distY * sinf(3.14159265f * p) * expf(-3.0f * p);
-      currentOffsetX = startOffsetX + (distX * s) + overshootX;
-      currentOffsetY = startOffsetY + (distY * s) + overshootY;
+      currentOffsetX = startOffsetX + (distX * s);
+      currentOffsetY = startOffsetY + (distY * s);
     }
+  } else {
+    // Living fixation micro-drift (Brownian random walk)
+    float u1 = ((float)(esp_random() % 1000) - 500.0f) * 0.001f;
+    float u2 = ((float)(esp_random() % 1000) - 500.0f) * 0.001f;
+    float drift_sigma = 0.03f * sqrtf(dt);
+    eye_vx += u1 * drift_sigma;
+    eye_vy += u2 * drift_sigma;
+    eye_vx *= 0.88f;
+    eye_vy *= 0.88f;
+
+    currentOffsetX += eye_vx;
+    currentOffsetY += eye_vy;
   }
+
+  currentOffsetX = constrain(currentOffsetX, -17.5f, 17.5f);
+  currentOffsetY = constrain(currentOffsetY, -12.0f, 11.0f);
 }
 
-// --- 2D Facial Primitives ---
-// --- 2D Facial Primitives (Rigid Group Locked) ---
-void drawEyes(float eyeHeightFactor, int ox, int oy, uint16_t color) {
+// --- 2D Facial Primitives (Rendered into 1-Bit LGFX Sprite - Rigid Group Synchronized) ---
+void drawEyes(float eyeHeightFactor, int ox, int oy, uint16_t color, float vergence = 0.0f, float scale = 1.0f) {
   int lx = 32 + ox;
   int rx = 96 + ox;
   int ly = 28 + oy;
@@ -643,39 +736,39 @@ void drawEyes(float eyeHeightFactor, int ox, int oy, uint16_t color) {
 
   int maxEyeWidth = 28;
   int maxEyeHeight = 38;
-  int eyeHeight = (int)(maxEyeHeight * eyeHeightFactor);
+  int eyeHeight = (int)roundf((float)maxEyeHeight * eyeHeightFactor);
 
   if (eyeHeight <= 3) {
-    lcd.fillRoundRect(lx - maxEyeWidth / 2, ly - 1, maxEyeWidth, 3, 1, color);
-    lcd.fillRoundRect(rx - maxEyeWidth / 2, ry - 1, maxEyeWidth, 3, 1, color);
+    canvas.fillRoundRect(lx - maxEyeWidth / 2, ly - 1, maxEyeWidth, 3, 1, color);
+    canvas.fillRoundRect(rx - maxEyeWidth / 2, ry - 1, maxEyeWidth, 3, 1, color);
   } else {
     int radius = (eyeHeight < 24) ? eyeHeight / 2 : 12;
-    lcd.fillRoundRect(lx - maxEyeWidth / 2, ly - eyeHeight / 2, maxEyeWidth, eyeHeight, radius, color);
-    lcd.fillRoundRect(rx - maxEyeWidth / 2, ry - eyeHeight / 2, maxEyeWidth, eyeHeight, radius, color);
+    canvas.fillRoundRect(lx - maxEyeWidth / 2, ly - eyeHeight / 2, maxEyeWidth, eyeHeight, radius, color);
+    canvas.fillRoundRect(rx - maxEyeWidth / 2, ry - eyeHeight / 2, maxEyeWidth, eyeHeight, radius, color);
   }
 }
 
-void drawJoyEyes(int ox, int oy, float scale, uint16_t color) {
-  if (scale <= 0.05f) return;
+void drawJoyEyes(int ox, int oy, float joyScale, uint16_t color, float vergence = 0.0f, float scale = 1.0f) {
+  if (joyScale <= 0.05f) return;
   int lx = 32 + ox;
   int rx = 96 + ox;
   int ly = 31 + oy;
 
-  float eyeWidth = 24.0f * scale;
-  float archHeight = 9.0f * scale;
+  float eyeWidth = 24.0f * joyScale;
+  float archHeight = 9.0f * joyScale;
 
   for (int eye = 0; eye < 2; eye++) {
     int cx = (eye == 0) ? lx : rx;
     for (float x = -eyeWidth / 2.0f; x <= eyeWidth / 2.0f; x += 0.3f) {
       float angle = (x / (eyeWidth / 2.0f)) * (3.14159265f / 2.0f);
-      float y = ly - archHeight * cosf(angle);
-      lcd.fillCircle(cx + (int)roundf(x), (int)roundf(y), (scale < 0.5f) ? 1 : 2, color);
+      float y = (float)ly - archHeight * cosf(angle);
+      canvas.fillCircle(cx + (int)roundf(x), (int)roundf(y), (joyScale < 0.5f) ? 1 : 2, color);
     }
   }
 }
 
-void drawAngryBrows(float eyeHeightFactor, int ox, int oy, float browAlpha, uint16_t color) {
-  if (eyeHeightFactor <= 0.2f || browAlpha <= 0.01f) return;
+void drawAngryBrows(float eyeHeightFactor, int ox, int oy, float browAlpha, uint16_t color, float vergence = 0.0f, float scale = 1.0f) {
+  if (eyeHeightFactor <= 0.15f || browAlpha <= 0.01f) return;
 
   int lx = 32 + ox;
   int rx = 96 + ox;
@@ -684,41 +777,46 @@ void drawAngryBrows(float eyeHeightFactor, int ox, int oy, float browAlpha, uint
 
   int maxEyeWidth = 28;
   int maxEyeHeight = 38;
+  int eyeHeight = (int)roundf((float)maxEyeHeight * eyeHeightFactor);
 
   int browCutX = (int)((maxEyeWidth / 2 + 4) * browAlpha);
-  int browCutY = (int)((maxEyeHeight / 2 + 3) * browAlpha);
+  int browCutY = (int)((eyeHeight / 2 + 3) * browAlpha);
+  int eyeTop = ly - eyeHeight / 2;
 
-  lcd.fillTriangle(
-    lx - 2, ly - maxEyeHeight / 2 - 1,
-    lx - 2 + browCutX, ly - maxEyeHeight / 2 - 1,
-    lx - 2 + browCutX, ly - maxEyeHeight / 2 - 1 + browCutY,
+  canvas.fillTriangle(
+    lx - 2, eyeTop - 1,
+    lx - 2 + browCutX, eyeTop - 1,
+    lx - 2 + browCutX, eyeTop - 1 + browCutY,
     color
   );
 
-  lcd.fillTriangle(
-    rx + 2, ry - maxEyeHeight / 2 - 1,
-    rx + 2 - browCutX, ry - maxEyeHeight / 2 - 1,
-    rx + 2 - browCutX, ry - maxEyeHeight / 2 - 1 + browCutY,
+  canvas.fillTriangle(
+    rx + 2, eyeTop - 1,
+    rx + 2 - browCutX, eyeTop - 1,
+    rx + 2 - browCutX, eyeTop - 1 + browCutY,
     color
   );
 }
 
-void drawShockEyes(int ox, int oy, uint16_t color) {
+void drawShockEyes(int ox, int oy, uint16_t color, float vergence = 0.0f, float scale = 1.0f) {
   int lx = 32 + ox;
   int rx = 96 + ox;
   int ly = 28 + oy;
   int ry = 28 + oy;
 
-  lcd.drawRoundRect(lx - 14, ly - 18, 28, 36, 12, color);
-  lcd.drawRoundRect(lx - 13, ly - 17, 26, 34, 11, color);
-  lcd.fillCircle(lx, ly, 3, color);
+  int w = 28;
+  int h = 36;
 
-  lcd.drawRoundRect(rx - 14, ry - 18, 28, 36, 12, color);
-  lcd.drawRoundRect(rx - 13, ry - 17, 26, 34, 11, color);
-  lcd.fillCircle(rx, ry, 3, color);
+  canvas.drawRoundRect(lx - w / 2, ly - h / 2, w, h, 12, color);
+  canvas.drawRoundRect(lx - w / 2 + 1, ly - h / 2 + 1, w - 2, h - 2, 11, color);
+  canvas.fillCircle(lx, ly, 3, color);
+
+  canvas.drawRoundRect(rx - w / 2, ry - h / 2, w, h, 12, color);
+  canvas.drawRoundRect(rx - w / 2 + 1, ry - h / 2 + 1, w - 2, h - 2, 11, color);
+  canvas.fillCircle(rx, ry, 3, color);
 }
 
-void drawSpiralEye(int cx, int cy, float rotAngle, uint16_t color) {
+void drawSpiralEye(int cx, int cy, float rotAngle, uint16_t color, float scale = 1.0f) {
   float prevX = cx;
   float prevY = cy;
   for (float theta = 0.2f; theta <= 13.5f; theta += 0.35f) {
@@ -726,169 +824,171 @@ void drawSpiralEye(int cx, int cy, float rotAngle, uint16_t color) {
     float angle = theta + rotAngle;
     float x = cx + r * cosf(angle);
     float y = cy + r * sinf(angle);
-    lcd.drawLine((int)prevX, (int)prevY, (int)x, (int)y, color);
+    canvas.drawLine((int)prevX, (int)prevY, (int)x, (int)y, color);
     prevX = x;
     prevY = y;
   }
 }
 
-void drawSpiralEyes(int ox, int oy, float rotAngle, uint16_t color) {
+void drawSpiralEyes(int ox, int oy, float rotAngle, uint16_t color, float vergence = 0.0f, float scale = 1.0f) {
   int lx = 32 + ox;
   int rx = 96 + ox;
   int ly = 28 + oy;
   int ry = 28 + oy;
 
-  drawSpiralEye(lx, ly, rotAngle, color);
-  drawSpiralEye(rx, ry, -rotAngle, color);
+  drawSpiralEye(lx, ly, rotAngle, color, scale);
+  drawSpiralEye(rx, ry, -rotAngle, color, scale);
 }
 
-void drawSedihEyes(int ox, int oy, uint16_t color) {
+void drawSedihEyes(int ox, int oy, uint16_t color, float vergence = 0.0f, float scale = 1.0f) {
   int lx = 32 + ox;
   int rx = 96 + ox;
   int ly = 28 + oy;
   int ry = 28 + oy;
 
-  for (float x = -11.0f; x <= 11.0f; x += 0.4f) {
-    float y = ly + 4.0f - 0.065f * x * x;
-    lcd.fillCircle(lx + (int)roundf(x), (int)roundf(y), 1, color);
-    lcd.fillCircle(rx + (int)roundf(x), (int)roundf(y), 1, color);
+  float halfW = 11.0f;
+  for (float x = -halfW; x <= halfW; x += 0.4f) {
+    float y = (float)ly + (4.0f - 0.065f * x * x);
+    canvas.fillCircle(lx + (int)roundf(x), (int)roundf(y), 1, color);
+    canvas.fillCircle(rx + (int)roundf(x), (int)roundf(y), 1, color);
   }
 }
 
 // Synchronized mouth path rendering (Rigid group locked)
-void drawMouthCustom(int ox, int oy, float curve, float baseY, float width, float asym, uint16_t color) {
+void drawMouthCustom(int ox, int oy, float curve, float baseY, float width, float asym, uint16_t color, float scale = 1.0f) {
   int mx = 64 + ox;
-  int my = (int)baseY + oy;
-  for (float x = -width; x <= width; x += 0.4f) {
-    float y = (float)my + curve * x * x + asym * x;
-    lcd.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
+  int my = (int)roundf(baseY + (float)oy);
+  float scaledWidth = width * scale;
+  for (float x = -scaledWidth; x <= scaledWidth; x += 0.4f) {
+    float normX = (scale > 0.01f) ? (x / scale) : x;
+    float y = (float)my + (curve * normX * normX + asym * normX) * scale;
+    canvas.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
   }
 }
 
-void drawJoyMouth(int ox, int oy, float scale, uint16_t color) {
-  if (scale <= 0.05f) return;
+void drawJoyMouth(int ox, int oy, float joyScale, uint16_t color, float scale = 1.0f) {
+  if (joyScale <= 0.05f) return;
   int mx = 64 + ox;
-  float width = 11.0f * scale;
-  int baseY = 39 + oy;
+  float width = 11.0f * joyScale * scale;
+  int baseY = (int)roundf(39.0f + (float)oy);
 
   for (float x = -width; x <= width; x += 0.4f) {
     float normX = (width > 0) ? (x / width) : 0;
-    float yTop = (float)baseY - 0.02f * x * x;
-    float yBottom = yTop + (11.0f * scale) * (1.0f - normX * normX);
+    float yTop = (float)baseY - (0.02f * (x / scale) * (x / scale)) * scale;
+    float yBottom = yTop + (11.0f * joyScale * scale) * (1.0f - normX * normX);
 
     for (float y = yTop; y <= yBottom; y += 0.6f) {
-      lcd.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
+      canvas.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
     }
   }
 }
 
-void drawShockMouth(int ox, int oy, uint16_t color) {
+void drawShockMouth(int ox, int oy, uint16_t color, float scale = 1.0f) {
   int mx = 64 + ox;
-  int my = 39 + oy;
-  lcd.fillRoundRect(mx - 8, my, 16, 14, 5, color);
+  int my = (int)roundf(39.0f + (float)oy);
+  int w = (int)roundf(16.0f * scale);
+  int h = (int)roundf(14.0f * scale);
+  canvas.fillRoundRect(mx - w / 2, my, w, h, (int)roundf(5.0f * scale), color);
 }
 
-void drawOverloadMouth(int ox, int oy, uint16_t color) {
+void drawOverloadMouth(int ox, int oy, uint16_t color, float scale = 1.0f) {
   int mx = 64 + ox;
-  int my = 45 + oy;
-  lcd.fillEllipse(mx, my, 7, 5, color);
+  int my = (int)roundf(45.0f + (float)oy);
+  canvas.fillEllipse(mx, my, (int)roundf(7.0f * scale), (int)roundf(5.0f * scale), color);
 }
 
-void drawSedihMouth(int ox, int oy, float phase, uint16_t color) {
+void drawSedihMouth(int ox, int oy, float phase, uint16_t color, float scale = 1.0f) {
   int mx = 64 + ox;
-  int baseY = 44 + oy;
-  for (float x = -8.0f; x <= 8.0f; x += 0.4f) {
-    float y = (float)baseY + 1.2f * sinf(0.8f * x + phase);
-    lcd.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
+  int baseY = (int)roundf(44.0f + (float)oy);
+  float halfW = 8.0f * scale;
+  for (float x = -halfW; x <= halfW; x += 0.4f) {
+    float y = (float)baseY + (1.2f * sinf(0.8f * (x / scale) + phase)) * scale;
+    canvas.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
   }
 }
 
-void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCurve, float mouthY, float mouthWidth, float browAlpha, bool inverted) {
+void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCurve, float mouthY, float mouthWidth, float browAlpha, bool inverted, float vergence = 0.0f, float scale = 1.0f) {
   uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
   uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
 
-  lcd.startWrite();
-  lcd.clear(bgColor);
-  drawEyes(eyeHeightFactor, ox, oy, fgColor);
-  drawAngryBrows(eyeHeightFactor, ox, oy, browAlpha, bgColor);
-  drawMouthCustom(ox, oy, mouthCurve, mouthY, mouthWidth, 0.0f, fgColor);
+  canvas.fillScreen(bgColor);
+  drawEyes(eyeHeightFactor, ox, oy, fgColor, vergence, scale);
+  drawAngryBrows(eyeHeightFactor, ox, oy, browAlpha, bgColor, vergence, scale);
+  drawMouthCustom(ox, oy, mouthCurve, mouthY, mouthWidth, 0.0f, fgColor, scale);
   drawSensorOverlay();
-  lcd.endWrite();
+  canvas.pushSprite(0, 0);
 }
 
-void drawFaceIdle(float eyeHeightFactor, int ox, int oy) {
-  renderFaceState(eyeHeightFactor, ox, oy, -0.030f, 44.0f, 7.5f, 0.0f, false);
+void drawFaceIdle(float eyeHeightFactor, int ox, int oy, float vergence = 0.0f, float scale = 1.0f) {
+  renderFaceState(eyeHeightFactor, ox, oy, -0.030f, 44.0f, 7.5f, 0.0f, false, vergence, scale);
 }
 
-void drawFaceJoy(int ox, int oy) {
-  lcd.startWrite();
-  lcd.clear(TFT_BLACK);
-  drawJoyEyes(ox, oy, 1.0f, TFT_WHITE);
-  drawJoyMouth(ox, oy, 1.0f, TFT_WHITE);
+void drawFaceJoy(int ox, int oy, float vergence = 0.0f, float scale = 1.0f) {
+  canvas.fillScreen(TFT_BLACK);
+  drawJoyEyes(ox, oy, 1.0f, TFT_WHITE, vergence, scale);
+  drawJoyMouth(ox, oy, 1.0f, TFT_WHITE, scale);
   drawSensorOverlay();
-  lcd.endWrite();
+  canvas.pushSprite(0, 0);
 }
 
-void drawFaceAngry(float eyeHeightFactor, int ox, int oy) {
-  renderFaceState(eyeHeightFactor, ox, oy, 0.042f, 43.0f, 7.0f, 1.0f, true);
+void drawFaceAngry(float eyeHeightFactor, int ox, int oy, float vergence = 0.0f, float scale = 1.0f) {
+  renderFaceState(eyeHeightFactor, ox, oy, 0.042f, 43.0f, 7.0f, 1.0f, true, vergence, scale);
 }
 
-void drawFaceSmirk(float eyeHeightFactor, int ox, int oy) {
-  lcd.startWrite();
-  lcd.clear(TFT_BLACK);
-  drawEyes(0.35f * eyeHeightFactor, ox, oy, TFT_WHITE);
-  drawMouthCustom(ox, oy, -0.035f, 43.0f, 9.0f, 0.14f, TFT_WHITE);
+void drawFaceSmirk(float eyeHeightFactor, int ox, int oy, float vergence = 0.0f, float scale = 1.0f) {
+  canvas.fillScreen(TFT_BLACK);
+  drawEyes(0.35f * eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
+  drawMouthCustom(ox, oy, -0.035f, 43.0f, 9.0f, 0.14f, TFT_WHITE, scale);
   drawSensorOverlay();
-  lcd.endWrite();
+  canvas.pushSprite(0, 0);
 }
 
-void drawFaceShock(float eyeHeightFactor, int ox, int oy) {
-  lcd.startWrite();
-  lcd.clear(TFT_BLACK);
+void drawFaceShock(float eyeHeightFactor, int ox, int oy, float vergence = 0.0f, float scale = 1.0f) {
+  canvas.fillScreen(TFT_BLACK);
   if (eyeHeightFactor > 0.3f) {
-    drawShockEyes(ox, oy, TFT_WHITE);
+    drawShockEyes(ox, oy, TFT_WHITE, vergence, scale);
   } else {
-    drawEyes(eyeHeightFactor, ox, oy, TFT_WHITE);
+    drawEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
   }
-  drawShockMouth(ox, oy, TFT_WHITE);
+  drawShockMouth(ox, oy, TFT_WHITE, scale);
   drawSensorOverlay();
-  lcd.endWrite();
+  canvas.pushSprite(0, 0);
 }
 
-void drawFaceOverload(float eyeHeightFactor, int ox, int oy, float frame = 0.0f) {
-  lcd.startWrite();
-  lcd.clear(TFT_BLACK);
-  drawSpiralEyes(ox, oy, frame, TFT_WHITE);
-  drawOverloadMouth(ox, oy, TFT_WHITE);
+void drawFaceOverload(float eyeHeightFactor, int ox, int oy, float frame = 0.0f, float vergence = 0.0f, float scale = 1.0f) {
+  canvas.fillScreen(TFT_BLACK);
+  drawSpiralEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
+  drawOverloadMouth(ox, oy, TFT_WHITE, scale);
   drawSensorOverlay();
-  lcd.endWrite();
+  canvas.pushSprite(0, 0);
 }
 
-void drawFaceSedih(float eyeHeightFactor, int ox, int oy, float frame = 0.0f) {
-  lcd.startWrite();
-  lcd.clear(TFT_BLACK);
-  drawSedihEyes(ox, oy, TFT_WHITE);
-  drawSedihMouth(ox, oy, frame, TFT_WHITE);
+void drawFaceSedih(float eyeHeightFactor, int ox, int oy, float frame = 0.0f, float vergence = 0.0f, float scale = 1.0f) {
+  canvas.fillScreen(TFT_BLACK);
+  drawSedihEyes(ox, oy, TFT_WHITE, vergence, scale);
+  drawSedihMouth(ox, oy, frame, TFT_WHITE, scale);
   drawSensorOverlay();
-  lcd.endWrite();
+  canvas.pushSprite(0, 0);
 }
 
-void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offsetY, float frame = 0.0f) {
+void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offsetY, float frame = 0.0f, float vergence = 0.0f, float scale = 1.0f) {
   int ox = (int)roundf(offsetX);
   int oy = (int)roundf(offsetY);
   switch (expr) {
-    case EXPR_IDLE: drawFaceIdle(eyeHeightFactor, ox, oy); break;
-    case EXPR_JOY: drawFaceJoy(ox, oy); break;
-    case EXPR_ANGRY: drawFaceAngry(eyeHeightFactor, ox, oy); break;
-    case EXPR_SMIRK: drawFaceSmirk(eyeHeightFactor, ox, oy); break;
-    case EXPR_SHOCK: drawFaceShock(eyeHeightFactor, ox, oy); break;
-    case EXPR_OVERLOAD: drawFaceOverload(eyeHeightFactor, ox, oy, frame); break;
-    case EXPR_SEDIH: drawFaceSedih(eyeHeightFactor, ox, oy, frame); break;
+    case EXPR_IDLE: drawFaceIdle(eyeHeightFactor, ox, oy, vergence, scale); break;
+    case EXPR_JOY: drawFaceJoy(ox, oy, vergence, scale); break;
+    case EXPR_ANGRY: drawFaceAngry(eyeHeightFactor, ox, oy, vergence, scale); break;
+    case EXPR_SMIRK: drawFaceSmirk(eyeHeightFactor, ox, oy, vergence, scale); break;
+    case EXPR_SHOCK: drawFaceShock(eyeHeightFactor, ox, oy, vergence, scale); break;
+    case EXPR_OVERLOAD: drawFaceOverload(eyeHeightFactor, ox, oy, frame, vergence, scale); break;
+    case EXPR_SEDIH: drawFaceSedih(eyeHeightFactor, ox, oy, frame, vergence, scale); break;
   }
 }
 
-// --- Expression Transition Engine ---
-void transitionExpression(Expression fromExpr, Expression toExpr, float durationMs = 380.0f) {
+// --- Expression Transition Engine (Snappy 170ms Ballistic Blink Morph) ---
+void transitionExpression(Expression fromExpr, Expression toExpr, float durationMs = 170.0f) {
+  if (fromExpr == toExpr) return;
+
   float startEyeH = (fromExpr == EXPR_SMIRK) ? 0.35f : 1.0f;
   float endEyeH   = (toExpr == EXPR_SMIRK)   ? 0.35f : 1.0f;
 
@@ -907,149 +1007,210 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
   float startBrow = (fromExpr == EXPR_ANGRY) ? 1.0f : 0.0f;
   float endBrow   = (toExpr == EXPR_ANGRY)   ? 1.0f : 0.0f;
 
-  int steps = 16;
+  int steps = 10;
   float stepDelay = durationMs / steps;
 
   for (int i = 0; i <= steps; i++) {
-    // Update gaze tracking continuously during transition
     updateGazeSystem();
 
-    float t = (float)i / steps;
+    float t = (float)i / (float)steps;
+
+    // Fast ballistic blink closure: drops in 60ms, stays closed 40ms, opens in 70ms
+    float curEyeH;
+    if (t <= 0.40f) {
+      float p = t / 0.40f;
+      curEyeH = startEyeH * fmaxf(0.04f, 1.0f - p * p);
+    } else if (t <= 0.60f) {
+      curEyeH = 0.04f; // Completely closed slit (no smirk half-height dwell)
+    } else {
+      float p = (t - 0.60f) / 0.40f;
+      curEyeH = endEyeH * fmaxf(0.04f, sinf(p * 1.5707963f));
+    }
+
     float easedT = easeInOutCubic(t);
-
-    float squish = sinf(t * 3.14159265f);
-    float curEyeH = customLerp(startEyeH, endEyeH, easedT) * (1.0f - 0.45f * squish);
-
     float curCurve = customLerp(startCurve, endCurve, easedT);
     float curY     = customLerp(startY, endY, easedT);
     float curW     = customLerp(startW, endW, easedT);
     float curAsym  = customLerp(startAsym, endAsym, easedT);
     float curBrow  = customLerp(startBrow, endBrow, easedT);
 
-    float joyScale = 1.0f;
-    if (fromExpr == EXPR_JOY) {
-      joyScale = customLerp(1.0f, 0.0f, easedT * 2.0f);
-      if (joyScale < 0.0f) joyScale = 0.0f;
-    } else if (toExpr == EXPR_JOY) {
-      joyScale = customLerp(0.0f, 1.0f, (easedT - 0.5f) * 2.0f);
-      if (joyScale < 0.0f) joyScale = 0.0f;
-    }
+    float joyScale = (t < 0.5f) ? fmaxf(0.0f, 1.0f - t * 2.0f) : fmaxf(0.0f, (t - 0.5f) * 2.0f);
 
-    bool inverted = (easedT >= 0.5f) ? (toExpr == EXPR_ANGRY) : (fromExpr == EXPR_ANGRY);
+    // Invert background for EXPR_ANGRY cleanly when eyes are closed (t=0.5)
+    bool inverted = (t < 0.5f) ? (fromExpr == EXPR_ANGRY) : (toExpr == EXPR_ANGRY);
     uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
     uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
 
     int ox = (int)roundf(currentOffsetX);
     int oy = (int)roundf(currentOffsetY);
 
-    lcd.startWrite();
-    lcd.clear(bgColor);
+    canvas.fillScreen(bgColor);
 
-    Expression activeExpr = (easedT < 0.5f) ? fromExpr : toExpr;
+    // Morph eye shape cleanly when eyes are in closed slit state
+    Expression activeExpr = (t < 0.5f) ? fromExpr : toExpr;
     if (activeExpr == EXPR_IDLE || activeExpr == EXPR_ANGRY || activeExpr == EXPR_SMIRK) {
-      drawEyes(curEyeH, ox, oy, fgColor);
+      drawEyes(curEyeH, ox, oy, fgColor, currentVergence, currentEyeScale);
     } else if (activeExpr == EXPR_JOY) {
-      drawJoyEyes(ox, oy, joyScale, fgColor);
+      drawJoyEyes(ox, oy, joyScale, fgColor, currentVergence, currentEyeScale);
     } else if (activeExpr == EXPR_SHOCK) {
-      drawShockEyes(ox, oy, fgColor);
+      drawShockEyes(ox, oy, fgColor, currentVergence, currentEyeScale * curEyeH);
     } else if (activeExpr == EXPR_OVERLOAD) {
-      drawSpiralEyes(ox, oy, t * 2.0f, fgColor);
+      drawSpiralEyes(ox, oy, t * 2.0f, fgColor, currentVergence, currentEyeScale * curEyeH);
     } else if (activeExpr == EXPR_SEDIH) {
-      drawSedihEyes(ox, oy, fgColor);
+      drawSedihEyes(ox, oy, fgColor, currentVergence, currentEyeScale * curEyeH);
     }
 
     if (curBrow > 0.01f) {
-      drawAngryBrows(curEyeH, ox, oy, curBrow, bgColor);
+      drawAngryBrows(curEyeH, ox, oy, curBrow, bgColor, currentVergence, currentEyeScale);
     }
 
+    // Rigid synchronized mouth drawing with scale & coordinate lock
     bool fromCurveMouth = (fromExpr == EXPR_IDLE || fromExpr == EXPR_ANGRY || fromExpr == EXPR_SMIRK);
     bool toCurveMouth   = (toExpr == EXPR_IDLE || toExpr == EXPR_ANGRY || toExpr == EXPR_SMIRK);
 
     if (fromCurveMouth && toCurveMouth) {
-      drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor);
+      drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor, currentEyeScale);
     } else {
-      Expression mouthExpr = (easedT < 0.5f) ? fromExpr : toExpr;
+      Expression mouthExpr = (t < 0.5f) ? fromExpr : toExpr;
       if (mouthExpr == EXPR_IDLE || mouthExpr == EXPR_ANGRY || mouthExpr == EXPR_SMIRK) {
-        drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor);
+        drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor, currentEyeScale);
       } else if (mouthExpr == EXPR_JOY) {
-        drawJoyMouth(ox, oy, joyScale, fgColor);
+        drawJoyMouth(ox, oy, joyScale, fgColor, currentEyeScale);
       } else if (mouthExpr == EXPR_SHOCK) {
-        drawShockMouth(ox, oy, fgColor);
+        drawShockMouth(ox, oy, fgColor, currentEyeScale);
       } else if (mouthExpr == EXPR_OVERLOAD) {
-        drawOverloadMouth(ox, oy, fgColor);
+        drawOverloadMouth(ox, oy, fgColor, currentEyeScale);
       } else if (mouthExpr == EXPR_SEDIH) {
-        drawSedihMouth(ox, oy, t * 4.0f, fgColor);
+        drawSedihMouth(ox, oy, t * 4.0f, fgColor, currentEyeScale);
       }
     }
 
     drawSensorOverlay();
-    lcd.endWrite();
+    canvas.pushSprite(0, 0);
     vTaskDelay(pdMS_TO_TICKS((int)stepDelay));
   }
   currentExpr = toExpr;
-  inSaccade = false;
 }
 
 void blink(Expression expr, float currentOffsetX = 0.0f, float currentOffsetY = 0.0f) {
   if (expr == EXPR_ANGRY || expr == EXPR_OVERLOAD || expr == EXPR_SEDIH || expr == EXPR_JOY) return;
 
-  int closeSteps = 4;
+  int closeSteps = 3;
   for (int i = 0; i <= closeSteps; i++) {
     float t = (float)i / closeSteps;
     float h = blinkCloseEase(t);
-    drawFace(expr, h, currentOffsetX, currentOffsetY);
+    drawFace(expr, h, currentOffsetX, currentOffsetY, 0.0f, currentVergence, currentEyeScale);
     vTaskDelay(pdMS_TO_TICKS(11));
   }
 
-  int openSteps = 7;
+  int openSteps = 5;
   for (int i = 0; i <= openSteps; i++) {
     float t = (float)i / openSteps;
     float h = blinkOpenEase(t);
-    drawFace(expr, h, currentOffsetX, currentOffsetY);
-    vTaskDelay(pdMS_TO_TICKS(15));
+    drawFace(expr, h, currentOffsetX, currentOffsetY, 0.0f, currentVergence, currentEyeScale);
+    vTaskDelay(pdMS_TO_TICKS(14));
   }
 }
 
 void setNextExpression(Expression newExpr) {
-  if (currentExpr != newExpr) {
-    transitionExpression(currentExpr, newExpr, 380.0f);
+  if (currentExpr != newExpr && !g_is_transitioning) {
+    g_is_transitioning = true;
+    transitionExpression(currentExpr, newExpr, 170.0f);
     animFrame = 0.0f;
+    g_blinkState = BLINK_IDLE_STATE;
+    g_blinkEyeHeight = 1.0f;
+    g_nextBlinkTime = millis() + ((newExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500));
+    g_is_transitioning = false;
   }
 }
 
-// --- Dynamic Biological Mood Engine ---
+// --- Psychobiological Affective Emotion Engine (Russell Circumplex 2D Model) ---
+static float g_emotion_valence = 0.05f;   // V in [-1.0, +1.0] (Displeasure to Pleasure)
+static float g_emotion_arousal = 0.15f;   // A in [0.0, 1.0] (Quiescence to High Activation)
+static uint32_t g_last_mood_update = 0;
+static uint32_t g_mood_lock_until = 0;    // Absolute biological refractory period
+static uint32_t g_nextMoodShiftTime = 0;
+static bool g_lastTargetDetectedState = false;
+static float g_target_presence_ema = 0.0f;
+
 void updateBiologicalMoodEngine() {
   unsigned long now = millis();
+  if (g_is_transitioning || now < g_mood_lock_until) return; // Enforce atomic locking & biological refractory period
+
   TrackTarget target;
   portENTER_CRITICAL(&target_mutex);
   target = current_target;
   portEXIT_CRITICAL(&target_mutex);
 
-  // Event 1: Target acquired
-  if (target.detected && !g_lastTargetDetectedState) {
+  // Leaky presence integrator
+  float raw_pres = (target.detected && target.confidence > 0.28f) ? 1.0f : 0.0f;
+  g_target_presence_ema = g_target_presence_ema * 0.88f + raw_pres * 0.12f;
+  bool is_detected = (g_target_presence_ema > 0.58f);
+
+  float dt = (g_last_mood_update > 0) ? (float)(now - g_last_mood_update) * 0.001f : 0.050f;
+  dt = constrain(dt, 0.01f, 0.20f);
+  g_last_mood_update = now;
+
+  // Dynamical stimulus forces (Physics & Biology of Emotion)
+  float target_v = 0.05f;
+  float target_a = 0.15f;
+
+  if (is_detected) {
+    target_a = 0.50f + 0.30f * target.proximity;
+    target_v = 0.40f;
+  } else {
+    target_v = 0.05f;
+    target_a = 0.15f;
+  }
+
+  // Viscous homeostatic Langevin relaxation (tau_v = 6.0s, tau_a = 4.5s)
+  float tau_v = 6.0f;
+  float tau_a = 4.5f;
+  g_emotion_valence += ((target_v - g_emotion_valence) / tau_v) * dt;
+  g_emotion_arousal += ((target_a - g_emotion_arousal) / tau_a) * dt;
+
+  // Event 1: First target acquisition stimulus (Debounced & Locked)
+  if (is_detected && !g_lastTargetDetectedState) {
     g_lastTargetDetectedState = true;
     uint32_t roll = esp_random() % 100;
-    // 40% EXPR_ANGRY, 25% EXPR_SHOCK, 35% EXPR_IDLE
-    Expression reactExpr = (roll < 40) ? EXPR_ANGRY : ((roll < 65) ? EXPR_SHOCK : EXPR_IDLE);
+    Expression reactExpr = EXPR_IDLE;
+    if (roll < 45) {
+      reactExpr = EXPR_ANGRY;
+      g_emotion_valence = -0.6f;
+      g_emotion_arousal = 0.75f;
+    } else if (roll < 65) {
+      reactExpr = EXPR_SHOCK;
+      g_emotion_valence = -0.2f;
+      g_emotion_arousal = 0.85f;
+    } else if (roll < 85) {
+      reactExpr = EXPR_SMIRK;
+      g_emotion_valence = 0.45f;
+      g_emotion_arousal = 0.35f;
+    } else {
+      reactExpr = EXPR_IDLE;
+      g_emotion_valence = 0.10f;
+      g_emotion_arousal = 0.25f;
+    }
     setNextExpression(reactExpr);
-    g_nextMoodShiftTime = now + (esp_random() % 4000 + 4000);
+    g_mood_lock_until = now + (esp_random() % 3000 + 5000); // 5 - 8s biological lock
+    g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 4000 + 4000);
     return;
   }
 
-  // Event 2: Target lost
-  if (!target.detected && g_lastTargetDetectedState) {
+  // Event 2: Target lost stimulus (Debounced & Locked)
+  if (!is_detected && g_lastTargetDetectedState && g_target_presence_ema < 0.15f) {
     g_lastTargetDetectedState = false;
     uint32_t roll = esp_random() % 100;
-    // 75% EXPR_IDLE, 18% EXPR_ANGRY, 7% EXPR_SEDIH
-    Expression reactExpr = (roll < 75) ? EXPR_IDLE : ((roll < 93) ? EXPR_ANGRY : EXPR_SEDIH);
+    Expression reactExpr = (roll < 75) ? EXPR_IDLE : ((roll < 90) ? EXPR_SEDIH : EXPR_ANGRY);
     setNextExpression(reactExpr);
-    g_nextMoodShiftTime = now + (esp_random() % 4000 + 3500);
+    g_mood_lock_until = now + (esp_random() % 2500 + 4500); // 4.5 - 7s lock
+    g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 4000 + 4000);
     return;
   }
 
-  // Spontaneous Markov mood transitions (65%+ IDLE Dominance, Ultra-Rare 1% OVERLOAD)
+  // Spontaneous Markov mood transitions from Valence-Arousal equilibrium
   if (g_nextMoodShiftTime == 0) {
-    g_nextMoodShiftTime = now + (esp_random() % 6000 + 5000);
+    g_nextMoodShiftTime = now + (esp_random() % 6000 + 8000);
   }
 
   if (now >= g_nextMoodShiftTime) {
@@ -1058,56 +1219,57 @@ void updateBiologicalMoodEngine() {
 
     switch (currentExpr) {
       case EXPR_IDLE:
-        if (roll < 65) nextMood = EXPR_IDLE;          // 65% EXPR_IDLE (Dominant Idle)
-        else if (roll < 88) nextMood = EXPR_ANGRY;    // 23% EXPR_ANGRY
-        else if (roll < 94) nextMood = EXPR_JOY;      // 6% EXPR_JOY
-        else if (roll < 97) nextMood = EXPR_SEDIH;    // 3% EXPR_SEDIH
-        else if (roll < 99) nextMood = EXPR_SMIRK;    // 2% EXPR_SMIRK
-        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD (Ultra Rare)
+        if (roll < 65) nextMood = EXPR_IDLE;          // 65% Dominant Idle
+        else if (roll < 82) nextMood = EXPR_ANGRY;    // 17% ANGRY
+        else if (roll < 90) nextMood = EXPR_SMIRK;    // 8% SMIRK
+        else if (roll < 95) nextMood = EXPR_JOY;      // 5% JOY
+        else if (roll < 98) nextMood = EXPR_SEDIH;    // 3% SEDIH
+        else nextMood = EXPR_OVERLOAD;                // 2% OVERLOAD
         break;
 
       case EXPR_ANGRY:
-        if (roll < 65) nextMood = EXPR_IDLE;          // 65% Return to IDLE
-        else if (roll < 92) nextMood = EXPR_ANGRY;    // 27% Stay ANGRY
-        else if (roll < 99) nextMood = EXPR_SEDIH;    // 7% EXPR_SEDIH
-        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
+        if (roll < 70) nextMood = EXPR_IDLE;          // 70% Calm down to IDLE
+        else if (roll < 90) nextMood = EXPR_SMIRK;    // 20% Transition to Smirk
+        else nextMood = EXPR_SEDIH;                   // 10% SEDIH
         break;
 
       case EXPR_JOY:
-        if (roll < 75) nextMood = EXPR_IDLE;          // 75% Return to IDLE
-        else if (roll < 93) nextMood = EXPR_ANGRY;    // 18% EXPR_ANGRY
-        else if (roll < 99) nextMood = EXPR_SMIRK;    // 6% EXPR_SMIRK
-        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
+        if (roll < 75) nextMood = EXPR_IDLE;          // 75% IDLE
+        else if (roll < 95) nextMood = EXPR_SMIRK;    // 20% SMIRK
+        else nextMood = EXPR_ANGRY;                   // 5% ANGRY
         break;
 
       case EXPR_SMIRK:
-        if (roll < 65) nextMood = EXPR_IDLE;          // 65% Return to IDLE
-        else if (roll < 99) nextMood = EXPR_ANGRY;    // 34% EXPR_ANGRY
-        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
+        if (roll < 70) nextMood = EXPR_IDLE;          // 70% IDLE
+        else if (roll < 90) nextMood = EXPR_JOY;      // 20% JOY
+        else nextMood = EXPR_ANGRY;                   // 10% ANGRY
         break;
 
       case EXPR_SHOCK:
-        if (roll < 60) nextMood = EXPR_IDLE;          // 60% Return to IDLE
-        else if (roll < 99) nextMood = EXPR_ANGRY;    // 39% EXPR_ANGRY
-        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
+        if (roll < 70) nextMood = EXPR_IDLE;          // 70% IDLE
+        else if (roll < 90) nextMood = EXPR_SMIRK;    // 20% SMIRK
+        else nextMood = EXPR_ANGRY;                   // 10% ANGRY
         break;
 
       case EXPR_OVERLOAD:
-        if (roll < 70) nextMood = EXPR_IDLE;          // 70% Return to IDLE
-        else if (roll < 95) nextMood = EXPR_ANGRY;    // 25% EXPR_ANGRY
-        else nextMood = EXPR_SEDIH;                   // 5% EXPR_SEDIH
+        if (roll < 75) nextMood = EXPR_IDLE;
+        else nextMood = EXPR_SEDIH;
         break;
 
       case EXPR_SEDIH:
-        if (roll < 70) nextMood = EXPR_IDLE;          // 70% Return to IDLE
-        else if (roll < 92) nextMood = EXPR_ANGRY;    // 22% EXPR_ANGRY
-        else if (roll < 99) nextMood = EXPR_JOY;      // 7% EXPR_JOY
-        else nextMood = EXPR_OVERLOAD;                // 1% EXPR_OVERLOAD
+        if (roll < 70) nextMood = EXPR_IDLE;
+        else if (roll < 90) nextMood = EXPR_SMIRK;
+        else nextMood = EXPR_JOY;
         break;
     }
 
     setNextExpression(nextMood);
-    g_nextMoodShiftTime = now + (esp_random() % 7500 + 4500);
+    g_mood_lock_until = now + (esp_random() % 3000 + 5000); // 5 - 8s biological lock
+    if (nextMood == EXPR_IDLE) {
+      g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 8000 + 8000); // 8 - 16s in IDLE
+    } else {
+      g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 4000 + 5000); // 5 - 9s in other moods
+    }
   }
 }
 
@@ -1122,13 +1284,15 @@ void oledTask(void *pvParameters) {
   lcd.setRotation(2);
   lcd.setBrightness(128);
 
-  currentExpr = EXPR_IDLE;
-  drawFace(currentExpr, 1.0f, 0.0f, 0.0f);
+  // Initialize 1-bit monochrome off-screen canvas sprite (128x64 = 1024 bytes)
+  canvas.setColorDepth(1);
+  canvas.createSprite(128, 64);
 
-  float lastDrawnX = 999.0f;
-  float lastDrawnY = 999.0f;
+  currentExpr = EXPR_IDLE;
+  drawFace(currentExpr, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
 
   while (true) {
+    uint32_t frame_start_us = micros();
     unsigned long now = millis();
 
     #if ENABLE_TOUCH_PIN
@@ -1146,200 +1310,21 @@ void oledTask(void *pvParameters) {
     updateBiologicalMoodEngine();
 
     /* --- Recon State Transition Handoff ---
-     * Detects ACTIVE↔SLEEP state changes and initializes the incoming
-     * gaze controller from the current eye position to prevent jumps. */
+     * Seamlessly preserves current physical eye position when state changes */
     if (g_recon_state != g_prev_recon_state) {
-      if (g_recon_state == STATE_SLEEP_RECON) {
-        // ACTIVE → SLEEP: reset sleep oculomotor state from current position
-        g_sleep_inSaccade    = false;
-        g_sleep_inOvershoot  = false;
-        g_sleep_driftVx      = 0.0f;
-        g_sleep_driftVy      = 0.0f;
-        g_sleep_saccTargX    = currentOffsetX;
-        g_sleep_saccTargY    = currentOffsetY;
-        g_sleep_landX        = currentOffsetX;
-        g_sleep_landY        = currentOffsetY;
-        g_sleep_nextMicro_ms = now + 500;
-        g_sleep_lastFrame_ms = now;
-        nextGazeTime         = now + 600;  // grace period before first sleep saccade
-      } else {
-        // SLEEP → ACTIVE: re-initialize tracking pursuit from current position
-        trackInSaccade   = false;
-        inSaccade         = false;
-        smoothedTargetX  = currentOffsetX;
-        smoothedTargetY  = currentOffsetY;
-        eye_vx           = 0.0f;
-        eye_vy           = 0.0f;
-        nextGazeTime     = now + 400;
-      }
-      g_prev_recon_state = g_recon_state;
+      inSaccade            = false;
+      trackInSaccade       = false;
+      s_prevTargetDetected = false;
+      smoothedTargetX      = currentOffsetX;
+      smoothedTargetY      = currentOffsetY;
+      eye_vx               = 0.0f;
+      eye_vy               = 0.0f;
+      nextGazeTime         = now + 600;
+      g_prev_recon_state   = g_recon_state;
     }
 
-    /* --- Sleep Mode Ambient Gaze Kinematics --- */
-    if (g_recon_state == STATE_SLEEP_RECON) {
-
-      // Dynamic frame delta-time calculation for smooth 30/60 FPS pacing
-      float dt = (g_sleep_lastFrame_ms > 0) ? (float)(now - g_sleep_lastFrame_ms) * 0.001f : 0.016f;
-      dt = constrain(dt, 0.005f, 0.050f);
-      g_sleep_lastFrame_ms = now;
-
-      /* === PHASE 1: Biophysical Saccade Target & Dynamics Generator ===
-       * Generates intentional human gaze shifts with enforced minimum displacement (≥4.0px / ~6.8°)
-       * to completely eliminate sub-degree micro-twitches and zero-amplitude saccades. */
-      if (!g_sleep_inSaccade && !g_sleep_inOvershoot && now >= nextGazeTime) {
-        g_sleep_saccStartX = currentOffsetX;
-        g_sleep_saccStartY = currentOffsetY;
-
-        float distFromCenter = sqrtf(g_sleep_saccStartX * g_sleep_saccStartX + g_sleep_saccStartY * g_sleep_saccStartY);
-        uint32_t pick = esp_random() % 100;
-
-        if (pick < 35 && distFromCenter >= 3.5f) {
-          // Center Return Phase: Return to near-center foveal rest position
-          g_sleep_saccTargX = ((float)(esp_random() % 20) - 10.0f) * 0.1f;
-          g_sleep_saccTargY = ((float)(esp_random() % 16) - 8.0f) * 0.1f;
-        } else if (pick < 75) {
-          // Lateral Conjugate Scan: Shift gaze across horizontal axis to opposite quadrant
-          float signX = (g_sleep_saccStartX > 1.0f) ? -1.0f : ((g_sleep_saccStartX < -1.0f) ? 1.0f : ((esp_random() % 2 == 0) ? -1.0f : 1.0f));
-          g_sleep_saccTargX = signX * (5.5f + (float)(esp_random() % 850) * 0.01f);
-          g_sleep_saccTargY = ((float)(esp_random() % 600) - 300.0f) * 0.01f;
-        } else {
-          // Oblique Exploratory Gaze: Diagonal visual field inspection
-          float signX = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
-          float signY = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
-          g_sleep_saccTargX = signX * (4.5f + (float)(esp_random() % 650) * 0.01f);
-          g_sleep_saccTargY = signY * (3.0f + (float)(esp_random() % 450) * 0.01f);
-        }
-
-        // Clamp target within OLED screen safety boundaries
-        g_sleep_saccTargX = constrain(g_sleep_saccTargX, -16.0f, 16.0f);
-        g_sleep_saccTargY = constrain(g_sleep_saccTargY, -10.0f, 9.0f);
-
-        // Compute Euclidean amplitude distance
-        float dsx = g_sleep_saccTargX - g_sleep_saccStartX;
-        float dsy = g_sleep_saccTargY - g_sleep_saccStartY;
-        g_sleep_saccAmp = sqrtf(dsx * dsx + dsy * dsy);
-
-        // Enforce minimum amplitude boundary (≥4.0px / ~6.8°) to eliminate micro-twitches
-        if (g_sleep_saccAmp < 4.0f) {
-          g_sleep_saccTargX = g_sleep_saccStartX + ((dsx >= 0.0f ? 1.0f : -1.0f) * 5.0f);
-          g_sleep_saccTargY = g_sleep_saccStartY + ((dsy >= 0.0f ? 1.0f : -1.0f) * 3.0f);
-          g_sleep_saccTargX = constrain(g_sleep_saccTargX, -16.0f, 16.0f);
-          g_sleep_saccTargY = constrain(g_sleep_saccTargY, -10.0f, 9.0f);
-          dsx = g_sleep_saccTargX - g_sleep_saccStartX;
-          dsy = g_sleep_saccTargY - g_sleep_saccStartY;
-          g_sleep_saccAmp = sqrtf(dsx * dsx + dsy * dsy);
-        }
-
-        // Display Main Sequence: Duration T_dur = 110ms + 4.2*A_deg + 12.0*sqrt(A_deg)
-        // Calibrated to 95% human saccadic visual perception on 30/60 FPS displays
-        float ampDeg = g_sleep_saccAmp * PX_TO_DEG;
-        float dur_float = 110.0f + 4.2f * ampDeg + 12.0f * sqrtf(ampDeg);
-        g_sleep_saccDur_ms = (uint32_t)constrain(dur_float, 110.0f, 220.0f);
-
-        // Pre-compute post-saccadic glissadic overshoot amplitude (5-8% of amplitude)
-        g_sleep_overshootAmp = g_sleep_saccAmp * (0.05f + (float)(esp_random() % 30) * 0.001f);
-
-        g_sleep_saccStart_ms = now;
-        g_sleep_inSaccade = true;
-
-        // Gaussian-distributed inter-saccadic fixation pause (1.8s to 4.2s)
-        uint32_t isi = 1800 + (esp_random() % 800) + (esp_random() % 800) + (esp_random() % 800);
-        nextGazeTime = now + g_sleep_saccDur_ms + 60 + isi;
-      }
-
-      /* === PHASE 2: Oculomotor 5th-Order Minimum-Jerk Spline Trajectory ===
-       * Minimizes muscle jerk: s(p) = 10p^3 - 15p^4 + 6p^5
-       * Provides silky smooth acceleration and deceleration without mathematical singularities. */
-      if (g_sleep_inSaccade) {
-        float elapsed = (float)(now - g_sleep_saccStart_ms);
-        float p = elapsed / (float)g_sleep_saccDur_ms;
-
-        if (p >= 1.0f) {
-          // Saccade complete → transition to post-saccadic glissade overshoot phase
-          currentOffsetX = g_sleep_saccTargX;
-          currentOffsetY = g_sleep_saccTargY;
-          g_sleep_inSaccade = false;
-
-          if (g_sleep_saccAmp > 2.0f) {
-            float dsx = g_sleep_saccTargX - g_sleep_saccStartX;
-            float dsy = g_sleep_saccTargY - g_sleep_saccStartY;
-            g_sleep_overshootDirX = dsx / g_sleep_saccAmp;
-            g_sleep_overshootDirY = dsy / g_sleep_saccAmp;
-            g_sleep_landX = currentOffsetX;
-            g_sleep_landY = currentOffsetY;
-            g_sleep_overshootStart = now;
-            g_sleep_inOvershoot = true;
-          }
-        } else {
-          // 5th-order minimum-jerk spline: s(p) = p^3 * (10 - 15p + 6p^2)
-          float p2 = p * p;
-          float p3 = p2 * p;
-          float s = p3 * (10.0f + p * (-15.0f + 6.0f * p));
-
-          float dsx = g_sleep_saccTargX - g_sleep_saccStartX;
-          float dsy = g_sleep_saccTargY - g_sleep_saccStartY;
-          currentOffsetX = g_sleep_saccStartX + dsx * s;
-          currentOffsetY = g_sleep_saccStartY + dsy * s;
-        }
-      }
-
-      /* === PHASE 3: Critically Damped Post-Saccadic Glissade Overshoot ===
-       * OS(t) = A_os * e^(-ζ * ω_n * t) * cos(ω_d * t)
-       * Near-critically damped oculomotor muscle settling (ζ = 0.92, ω_n = 45 rad/s, ~60ms settling). */
-      else if (g_sleep_inOvershoot) {
-        float t_os = (float)(now - g_sleep_overshootStart) * 0.001f;
-        float omega_n = 45.0f;
-        float zeta    = 0.92f;
-
-        if (t_os > 0.060f) {
-          currentOffsetX = g_sleep_landX;
-          currentOffsetY = g_sleep_landY;
-          g_sleep_inOvershoot = false;
-        } else {
-          float decay = expf(-zeta * omega_n * t_os);
-          float ring  = cosf(omega_n * sqrtf(1.0f - zeta * zeta) * t_os);
-          currentOffsetX = g_sleep_landX + g_sleep_overshootAmp * decay * ring * g_sleep_overshootDirX;
-          currentOffsetY = g_sleep_landY + g_sleep_overshootAmp * decay * ring * g_sleep_overshootDirY;
-        }
-      }
-
-      /* === PHASE 4: Living Fixation Micro-Kinetics (Ocular Drift & Tremor) ===
-       * Mean-reverting Brownian random walk + sub-pixel micro-jitter during resting fixation. */
-      else {
-        // Mean-reverting Brownian drift noise
-        float u1 = ((float)(esp_random() % 1000) - 500.0f) * 0.001f;
-        float u2 = ((float)(esp_random() % 1000) - 500.0f) * 0.001f;
-        float drift_sigma = 0.04f * sqrtf(dt);
-        g_sleep_driftVx += u1 * drift_sigma;
-        g_sleep_driftVy += u2 * drift_sigma;
-
-        g_sleep_driftVx *= 0.90f;
-        g_sleep_driftVy *= 0.90f;
-
-        currentOffsetX += g_sleep_driftVx;
-        currentOffsetY += g_sleep_driftVy;
-
-        // Sub-pixel foveal tremor (0.05px - 0.15px micro-jumps at 1-2 Hz)
-        if (now >= g_sleep_nextMicro_ms) {
-          float mAmp = 0.05f + (float)(esp_random() % 10) * 0.01f;
-          float mAngle = (float)(esp_random() % 628) * 0.01f;
-          currentOffsetX += mAmp * cosf(mAngle);
-          currentOffsetY += mAmp * sinf(mAngle);
-
-          g_sleep_nextMicro_ms = now + 500 + (esp_random() % 500);
-        }
-      }
-
-      currentOffsetX = constrain(currentOffsetX, -17.5f, 17.5f);
-      currentOffsetY = constrain(currentOffsetY, -12.0f, 11.0f);
-    } else {
-      updateGazeSystem();
-    }
-
-    bool isTargetLocked = false;
-    portENTER_CRITICAL(&target_mutex);
-    isTargetLocked = current_target.detected;
-    portEXIT_CRITICAL(&target_mutex);
+    // Unified 60 FPS master gaze kinematics
+    updateGazeSystem();
 
     /* --- Non-Blocking Eyelid Blinking State Machine --- */
     bool canBlink = (currentExpr != EXPR_OVERLOAD && currentExpr != EXPR_SEDIH && currentExpr != EXPR_JOY);
@@ -1396,44 +1381,113 @@ void oledTask(void *pvParameters) {
       }
     }
 
-    /* --- OLED Buffer Render Dispatch --- */
+    /* --- Continuous OLED 60.0 FPS Rendering Dispatch via Single pushSprite --- */
     if (currentExpr == EXPR_OVERLOAD || currentExpr == EXPR_SEDIH) {
-      if (now - lastAnimUpdate > 25) {
-        lastAnimUpdate = now;
-        animFrame += 0.035f;
-        drawFace(currentExpr, g_blinkEyeHeight, currentOffsetX, currentOffsetY, animFrame);
-      }
-    } else {
-      bool isBlinking = (g_blinkState != BLINK_IDLE_STATE);
-      bool needRedraw = isTargetLocked || inSaccade || isBlinking || (g_recon_state == STATE_SLEEP_RECON) ||
-                        fabsf(currentOffsetX - lastDrawnX) > 0.04f ||
-                        fabsf(currentOffsetY - lastDrawnY) > 0.04f;
-      if (needRedraw) {
-        drawFace(currentExpr, g_blinkEyeHeight, currentOffsetX, currentOffsetY);
-        lastDrawnX = currentOffsetX;
-        lastDrawnY = currentOffsetY;
-      }
+      animFrame += 0.025f;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(16));
+    drawFace(currentExpr, g_blinkEyeHeight, currentOffsetX, currentOffsetY, animFrame, currentVergence, currentEyeScale);
+
+    /* --- Precision Hardware 60.0 FPS Microsecond Frame Pacing (16,666 µs) --- */
+    uint32_t frame_elapsed_us = micros() - frame_start_us;
+    if (frame_elapsed_us < 16666) {
+      uint32_t wait_us = 16666 - frame_elapsed_us;
+      if (wait_us > 3000) {
+        vTaskDelay(pdMS_TO_TICKS(wait_us / 1000 - 1));
+      }
+      while ((micros() - frame_start_us) < 16666) {
+        taskYIELD();
+      }
+    }
   }
 }
 
-// --- Kinematic State Predictor ---
-struct KinematicState2D {
-  float x;
-  float y;
-  float vx;
-  float vy;
-  float ax;
-  float ay;
+// --- 2D Discrete Linear Kalman Filter Architecture ---
+/**
+ * @struct KalmanFilter1D
+ * @brief Discrete Linear Kalman Filter tracking 1D position and velocity [p, v]^T.
+ */
+struct KalmanFilter1D {
+  float p;       // Estimated position (pixels)
+  float v;       // Estimated velocity (pixels/sec)
+  float P00;     // State covariance P[0,0]
+  float P01;     // State covariance P[0,1]
+  float P11;     // State covariance P[1,1]
+
+  void init(float init_p) {
+    p = init_p;
+    v = 0.0f;
+    P00 = 100.0f;
+    P01 = 0.0f;
+    P11 = 100.0f;
+  }
+
+  void predict(float dt, float q_accel) {
+    // F = [1, dt; 0, 1]
+    p = p + v * dt;
+    // Process noise covariance Q for constant velocity model with acceleration variance q
+    float dt2 = dt * dt;
+    float dt3 = dt2 * dt;
+    float dt4 = dt3 * dt;
+    float Q00 = 0.25f * dt4 * q_accel;
+    float Q01 = 0.50f * dt3 * q_accel;
+    float Q11 = dt2 * q_accel;
+
+    float P00_new = P00 + dt * (P01 + P01) + dt2 * P11 + Q00;
+    float P01_new = P01 + dt * P11 + Q01;
+    float P11_new = P11 + Q11;
+
+    P00 = P00_new;
+    P01 = P01_new;
+    P11 = P11_new;
+  }
+
+  void update(float z, float R) {
+    float y = z - p;               // Innovation residual
+    float S = P00 + R;             // Innovation covariance
+    if (S < 1e-4f) S = 1e-4f;
+    float invS = 1.0f / S;
+
+    float K0 = P00 * invS;         // Kalman gain for position
+    float K1 = P01 * invS;         // Kalman gain for velocity
+
+    p = p + K0 * y;
+    v = v + K1 * y;
+
+    // Joseph-stabilized / Standard algebraic covariance update
+    float P00_temp = (1.0f - K0) * P00;
+    float P01_temp = (1.0f - K0) * P01;
+    float P11_temp = P11 - K1 * P01;
+
+    P00 = fmaxf(1e-3f, P00_temp);
+    P01 = P01_temp;
+    P11 = fmaxf(1e-3f, P11_temp);
+  }
+};
+
+/**
+ * @struct KalmanTracker2D
+ * @brief Unified 2D Cartesian target kinematic tracking filter ([x, y, vx, vy]^T).
+ */
+struct KalmanTracker2D {
+  KalmanFilter1D kf_x;
+  KalmanFilter1D kf_y;
   float w;
   float h;
   bool active;
   uint32_t last_update_us;
+
+  void init() {
+    kf_x.init(320.0f);
+    kf_y.init(240.0f);
+    w = 160.0f;
+    h = 200.0f;
+    active = false;
+    last_update_us = 0;
+  }
 };
 
-static KinematicState2D k_state = { 320.0f, 240.0f, 0.0f, 0.0f, 0.0f, 0.0f, 160.0f, 200.0f, false, 0 };
+static KalmanTracker2D k_tracker;
 static float lock_confidence = 0.0f;
 static uint32_t last_valid_human_time = 0;
 static float ema_global_luminance = 100.0f;
@@ -1442,7 +1496,7 @@ static float debug_m00 = 0.0f;
 static int debug_skin_px = 0;
 static float debug_lock_conf = 0.0f;
 
-// --- Differential Computer Vision Engine (IRAM Executed) ---
+// --- Differential Computer Vision Engine with Dynamic Local Lighting & Kalman Tracking ---
 void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   if (!fb || !fb->buf || fb->len < 1024 || !small_rgb_buf || !prev_lum_buf || !mhi_buf || fb->format != PIXFORMAT_JPEG) return;
 
@@ -1457,17 +1511,16 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   int skin_pixel_count = 0;
   uint32_t total_luminance_sum = 0;
 
-  float delta_y_lux = fmaxf(0.0f, fminf(12.0f, (90.0f - ema_global_luminance) * 0.5f));
-  int min_cb = (int)(77.0f - delta_y_lux);
-  int max_cb = (int)(127.0f + delta_y_lux);
-  int min_cr = (int)(128.0f - delta_y_lux);
-  int max_cr = (int)(178.0f + delta_y_lux);
+  // Local grid illumination metrics (4 horizontal sectors x 3 vertical sectors)
+  uint32_t sec_lum_sum[3][4] = {0};
+  int sec_pixel_cnt[3][4] = {0};
 
   uint8_t* p_cur = cur_40x30;
-  bool* p_skin = skin_mask_40x30;
 
+  // Pass 1: Luminance conversion and local spatial lighting distribution analysis
   for (int y = 0; y < 30; y++) {
     int src_row_off = (y * 2) * 80;
+    int sec_y = y / 10;
     for (int x = 0; x < 40; x++) {
       uint16_t p = pixels[src_row_off + (x * 2)];
       int r = ((p >> 11) & 0x1F) << 3;
@@ -1478,19 +1531,71 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       *p_cur++ = y_lum;
       total_luminance_sum += y_lum;
 
-      int cb = 128 + (((-43 * r - 85 * g + 128 * b)) >> 8);
-      int cr = 128 + (((128 * r - 107 * g - 21 * b)) >> 8);
-
-      // Strict human skin locus: require R >= B and Cr - Cb >= 6 to reject purple walls and ambient blue/purple background lights
-      bool is_skin = (r >= b) && ((cr - cb) >= 6) && (r >= 10) && (cb >= min_cb && cb <= max_cb && cr >= min_cr && cr <= max_cr);
-      *p_skin++ = is_skin;
-      if (is_skin) skin_pixel_count++;
+      int sec_x = x / 10;
+      sec_lum_sum[sec_y][sec_x] += y_lum;
+      sec_pixel_cnt[sec_y][sec_x]++;
     }
   }
 
   float frame_mean_lum = (float)total_luminance_sum / 1200.0f;
   ema_global_luminance = 0.90f * ema_global_luminance + 0.10f * frame_mean_lum;
 
+  // Precompute local sector mean luminance
+  float sec_mean_lum[3][4];
+  for (int sy = 0; sy < 3; sy++) {
+    for (int sx = 0; sx < 4; sx++) {
+      sec_mean_lum[sy][sx] = sec_pixel_cnt[sy][sx] > 0 ? ((float)sec_lum_sum[sy][sx] / (float)sec_pixel_cnt[sy][sx]) : frame_mean_lum;
+    }
+  }
+
+  // Pass 2: Robust Local-Lighting Adaptive YCbCr Skin Classifier
+  bool* p_skin = skin_mask_40x30;
+  for (int y = 0; y < 30; y++) {
+    int src_row_off = (y * 2) * 80;
+    int sec_y = y / 10;
+    for (int x = 0; x < 40; x++) {
+      int sec_x = x / 10;
+      float local_lum = sec_mean_lum[sec_y][sec_x];
+
+      uint16_t p = pixels[src_row_off + (x * 2)];
+      int r = ((p >> 11) & 0x1F) << 3;
+      int g = ((p >> 5) & 0x3F) << 2;
+      int b = (p & 0x1F) << 3;
+
+      int cb = 128 + (((-43 * r - 85 * g + 128 * b)) >> 8);
+      int cr = 128 + (((128 * r - 107 * g - 21 * b)) >> 8);
+
+      // Local lighting compensation: adjust chrominance thresholds dynamically per sector
+      float delta_local = fmaxf(0.0f, fminf(16.0f, (95.0f - local_lum) * 0.45f));
+      int min_cb = (int)(75.0f - delta_local);
+      int max_cb = (int)(129.0f + delta_local);
+      int min_cr = (int)(127.0f - delta_local);
+      int max_cr = (int)(180.0f + delta_local);
+
+      // Shadow margin relaxation for severe backlighting/underexposed facial shadows
+      int shadow_margin = (local_lum < 65.0f) ? 4 : 0;
+      int min_r_thresh   = (local_lum < 65.0f) ? 8 : 10;
+      int min_cr_cb_diff = (local_lum < 65.0f) ? 4 : 6;
+
+      // Reject specular highlight glare
+      if (local_lum > 185.0f) {
+        min_cb += 3;
+        max_cb -= 3;
+        min_cr += 3;
+        max_cr -= 3;
+      }
+
+      bool is_skin = (r + shadow_margin >= b) && 
+                     ((cr - cb) >= min_cr_cb_diff) && 
+                     (r >= min_r_thresh) && 
+                     (cb >= min_cb && cb <= max_cb && cr >= min_cr && cr <= max_cr);
+
+      *p_skin++ = is_skin;
+      if (is_skin) skin_pixel_count++;
+    }
+  }
+
+  // 3x3 Spatial Box Smoothing for differential motion calculation
   static uint8_t smooth_40x30[1200] __attribute__((aligned(16)));
   for (int y = 1; y < 29; y++) {
     int y_off = y * 40;
@@ -1510,7 +1615,8 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     memcpy(prev_lum_buf, smooth_40x30, 1200);
     memset(mhi_buf, 0, 1200);
     first_frame = false;
-    k_state.last_update_us = micros();
+    k_tracker.init();
+    k_tracker.last_update_us = micros();
     return;
   }
 
@@ -1528,8 +1634,8 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
 
   float M00 = 0.0f, M10 = 0.0f, M01 = 0.0f, M20 = 0.0f, M02 = 0.0f, M11 = 0.0f;
 
-  float prev_grid_x = k_state.x * (1.0f / 16.0f);
-  float prev_grid_y = k_state.y * (1.0f / 16.0f);
+  float prev_grid_x = k_tracker.kf_x.p * (1.0f / 16.0f);
+  float prev_grid_y = k_tracker.kf_y.p * (1.0f / 16.0f);
 
   // 3-Sector Multi-Object Spatial Clustering Accumulators
   float sec_M00[3] = {0}, sec_M10[3] = {0}, sec_M01[3] = {0};
@@ -1588,7 +1694,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       float dy = (float)y;
 
       // Spatial Kernel Gating
-      if (k_state.active) {
+      if (k_tracker.active) {
         float dist_x = dx - prev_grid_x;
         float dist_y = dy - prev_grid_y;
         float norm_dist_sq = (dist_x * dist_x) * (1.0f / 64.0f) + (dist_y * dist_y) * (1.0f / 49.0f);
@@ -1641,6 +1747,10 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       float center_dist = fabsf(cx - 320.0f);
       float priority = 15.0f * sec_skin[s] + 1.8f * sec_motion[s] + 0.10f * sec_M00[s] - 0.06f * center_dist;
 
+      // Target proximity estimation Z from bounding box area
+      float area_norm = sqrtf(bw * bh);
+      float prox = constrain((area_norm - 140.0f) / 130.0f, 0.0f, 1.0f);
+
       temp_cand[active_cnt].active = true;
       temp_cand[active_cnt].cx = (int)cx;
       temp_cand[active_cnt].cy = (int)cy;
@@ -1649,6 +1759,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       temp_cand[active_cnt].priority_score = priority;
       temp_cand[active_cnt].skin_px = sec_skin[s];
       temp_cand[active_cnt].motion_energy = sec_motion[s];
+      temp_cand[active_cnt].proximity = prox;
       temp_cand[active_cnt].error_x = ((cx - 320.0f) / 320.0f) * 100.0f;
       temp_cand[active_cnt].error_y = ((cy - 240.0f) / 240.0f) * 100.0f;
       active_cnt++;
@@ -1698,25 +1809,22 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     g_inspected_candidate_idx = 0;
   }
 
-  float dt_sec = (k_state.last_update_us > 0) ? ((float)(now_us - k_state.last_update_us) * 1e-6f) : 0.033f;
+  float dt_sec = (k_tracker.last_update_us > 0) ? ((float)(now_us - k_tracker.last_update_us) * 1e-6f) : 0.033f;
   float dt = fmaxf(0.01f, fminf(0.20f, dt_sec));
-  k_state.last_update_us = now_us;
+  k_tracker.last_update_us = now_us;
 
-  float pred_x  = k_state.x + k_state.vx * dt + 0.5f * k_state.ax * dt * dt;
-  float pred_y  = k_state.y + k_state.vy * dt + 0.5f * k_state.ay * dt * dt;
-  float pred_vx = k_state.vx + k_state.ax * dt;
-  float pred_vy = k_state.vy + k_state.ay * dt;
-  float pred_ax = k_state.ax * 0.90f;
-  float pred_ay = k_state.ay * 0.90f;
+  // 2D Kalman Filter Prediction Step
+  float q_process = (skin_pixel_count >= 4) ? 850.0f : 450.0f;
+  k_tracker.kf_x.predict(dt, q_process);
+  k_tracker.kf_y.predict(dt, q_process);
 
-  pred_x = fmaxf(0.0f, fminf(640.0f, pred_x));
-  pred_y = fmaxf(0.0f, fminf(480.0f, pred_y));
-
-  float speed = sqrtf(fmaxf(0.0f, pred_vx * pred_vx + pred_vy * pred_vy));
+  float pred_x = k_tracker.kf_x.p;
+  float pred_y = k_tracker.kf_y.p;
+  float speed = sqrtf(k_tracker.kf_x.v * k_tracker.kf_x.v + k_tracker.kf_y.v * k_tracker.kf_y.v);
   float search_radius = fminf(250.0f, 60.0f + 0.25f * speed);
 
   bool candidate_found = false;
-  float cand_cx = pred_x, cand_cy = pred_y, cand_bw = k_state.w, cand_bh = k_state.h;
+  float cand_cx = pred_x, cand_cy = pred_y, cand_bw = k_tracker.w, cand_bh = k_tracker.h;
 
   if (M00 >= dynamic_threshold) {
     float inv_M00 = 1.0f / M00;
@@ -1732,7 +1840,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     float raw_cx = mean_x * 16.0f;
     float raw_cy = mean_y * 16.0f;
 
-    // Anatomically proportioned bounding box scaling for human head, face, and shoulders (140-240px width, 180-310px height)
+    // Anatomically proportioned bounding box scaling for human head, face, and shoulders
     float raw_bw = 2.4f * fmaxf(2.8f, sigma_x) * 16.0f;
     float raw_bh = 2.8f * fmaxf(3.2f, sigma_y) * 16.0f;
 
@@ -1742,7 +1850,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     cand_bw = fmaxf(140.0f, fminf(240.0f, raw_bw));
     cand_bh = fmaxf(180.0f, fminf(310.0f, coupled_bh));
 
-    if (!k_state.active) {
+    if (!k_tracker.active) {
       if (skin_pixel_count >= 4) {
         cand_cx = raw_cx;
         cand_cy = raw_cy;
@@ -1757,8 +1865,8 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
         candidate_found = true;
       }
     }
-  } else if (k_state.active && skin_pixel_count >= 8) {
-    // --- Static Target Persistence (Skin-Locus Centroid & Spatial Variance Fallback) ---
+  } else if (k_tracker.active && skin_pixel_count >= 8) {
+    // --- Static Target Persistence (Skin-Locus Centroid Fallback) ---
     float M00_skin = 0.0f, M10_skin = 0.0f, M01_skin = 0.0f;
     float M20_skin = 0.0f, M02_skin = 0.0f;
     for (int y = 1; y < 29; y++) {
@@ -1795,9 +1903,8 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       float coupled_bh_skin = fmaxf(raw_bh_skin, 1.25f * raw_bw_skin);
       coupled_bh_skin = fminf(coupled_bh_skin, 1.50f * raw_bw_skin);
 
-      // Preserve previous w and h via lower bounds to prevent bounding box collapse when stationary
-      cand_bw = fmaxf(k_state.w * 0.85f, fmaxf(140.0f, fminf(240.0f, raw_bw_skin)));
-      cand_bh = fmaxf(k_state.h * 0.85f, fmaxf(180.0f, fminf(310.0f, coupled_bh_skin)));
+      cand_bw = fmaxf(k_tracker.w * 0.85f, fmaxf(140.0f, fminf(240.0f, raw_bw_skin)));
+      cand_bh = fmaxf(k_tracker.h * 0.85f, fmaxf(180.0f, fminf(310.0f, coupled_bh_skin)));
 
       float effective_radius_skin = (skin_pixel_count >= 4) ? 400.0f : search_radius;
       float dist_sq_skin = (raw_cx_skin - pred_x) * (raw_cx_skin - pred_x) + (raw_cy_skin - pred_y) * (raw_cy_skin - pred_y);
@@ -1812,103 +1919,80 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   lock_confidence = lock_confidence * 0.85f + (candidate_found ? 1.0f : 0.0f) * 0.15f;
 
   if (candidate_found) {
-    float speed_norm = fminf(1.0f, speed / 450.0f);
-    float alpha = fminf(0.40f, 0.25f + 0.15f * speed_norm);
-    float beta  = fminf(0.25f, 0.10f + 0.10f * speed_norm);
-    float gamma = fminf(0.10f, 0.04f + 0.05f * speed_norm);
-
-    float rx = cand_cx - pred_x;
-    float ry = cand_cy - pred_y;
-
+    // 2D Kalman Measurement Update with Dynamic Noise Covariance R Tuning
+    float dist_innov = sqrtf((cand_cx - pred_x) * (cand_cx - pred_x) + (cand_cy - pred_y) * (cand_cy - pred_y));
+    
+    // Dynamic R adjustment:
+    // When stationary (dist < 6px) and high skin pixel count: increase R to eliminate discretization jitter.
+    // When moving rapidly (dist > 20px): reduce R to enable immediate responsive tracking with zero phase lag.
+    float R_base = 25.0f;
+    float R_dynamic;
     if (skin_pixel_count >= 4) {
-      // Adaptive Dynamic Responsiveness for Human Tracking:
-      // When stationary (dist < 5px), alpha = 0.20 (rock-solid, zero jitter, locked center).
-      // When body moves fast (dist > 25px), alpha scales up to 0.85 for instant 1-frame response!
-      float dist_to_target = sqrtf((cand_cx - k_state.x) * (cand_cx - k_state.x) + (cand_cy - k_state.y) * (cand_cy - k_state.y));
-      float adaptive_alpha = fminf(0.85f, 0.20f + 0.025f * dist_to_target);
-
-      k_state.x = k_state.x * (1.0f - adaptive_alpha) + cand_cx * adaptive_alpha;
-      k_state.y = k_state.y * (1.0f - adaptive_alpha) + cand_cy * adaptive_alpha;
-      k_state.vx = (cand_cx - k_state.x) * 2.0f;
-      k_state.vy = (cand_cy - k_state.y) * 2.0f;
-      k_state.ax = 0.0f;
-      k_state.ay = 0.0f;
-    } else {
-      float dist_r = sqrtf(rx * rx + ry * ry);
-
-      if (dist_r < 18.0f) {
-        // Foveal Deadzone & Centroid Lock Suppression:
-        float deadzone_alpha = 0.06f + 0.04f * (dist_r / 18.0f);
-        k_state.x = pred_x + deadzone_alpha * rx;
-        k_state.y = pred_y + deadzone_alpha * ry;
-
-        k_state.vx *= 0.65f;
-        k_state.vy *= 0.65f;
-        k_state.ax = 0.0f;
-        k_state.ay = 0.0f;
+      if (dist_innov < 6.0f) {
+        R_dynamic = R_base * (1.5f + 1.5f * lock_confidence);
       } else {
-        k_state.x = pred_x + alpha * rx;
-        k_state.y = pred_y + alpha * ry;
-
-        k_state.vx = fmaxf(-1200.0f, fminf(1200.0f, pred_vx + (beta / dt) * rx));
-        k_state.vy = fmaxf(-1200.0f, fminf(1200.0f, pred_vy + (beta / dt) * ry));
-
-        k_state.ax = fmaxf(-3000.0f, fminf(3000.0f, pred_ax + (2.0f * gamma / (dt * dt)) * rx));
-        k_state.ay = fmaxf(-3000.0f, fminf(3000.0f, pred_ay + (2.0f * gamma / (dt * dt)) * ry));
+        R_dynamic = R_base / (1.0f + 0.12f * (dist_innov - 6.0f));
       }
+    } else {
+      R_dynamic = R_base * 2.0f;
     }
+    R_dynamic = constrain(R_dynamic, 3.0f, 150.0f);
 
-    k_state.w = k_state.w * 0.70f + cand_bw * 0.30f;
-    k_state.h = k_state.h * 0.70f + cand_bh * 0.30f;
-    k_state.w = fmaxf(60.0f, fminf(400.0f, k_state.w));
-    k_state.h = fmaxf(80.0f, fminf(480.0f, k_state.h));
+    k_tracker.kf_x.update(cand_cx, R_dynamic);
+    k_tracker.kf_y.update(cand_cy, R_dynamic);
 
-    k_state.active = true;
+    k_tracker.w = k_tracker.w * 0.70f + cand_bw * 0.30f;
+    k_tracker.h = k_tracker.h * 0.70f + cand_bh * 0.30f;
+    k_tracker.w = fmaxf(60.0f, fminf(400.0f, k_tracker.w));
+    k_tracker.h = fmaxf(80.0f, fminf(480.0f, k_tracker.h));
+
+    k_tracker.active = true;
     last_valid_human_time = now_ms;
   } else {
-    k_state.x = pred_x;
-    k_state.y = pred_y;
-    k_state.vx = pred_vx * 0.85f;
-    k_state.vy = pred_vy * 0.85f;
-    k_state.ax = pred_ax * 0.50f;
-    k_state.ay = pred_ay * 0.50f;
+    // Predict-only decay when measurement is lost
+    k_tracker.kf_x.v *= 0.85f;
+    k_tracker.kf_y.v *= 0.85f;
 
     if (now_ms - last_valid_human_time > 450) {
-      k_state.active = false;
-      k_state.vx = 0.0f;
-      k_state.vy = 0.0f;
-      k_state.ax = 0.0f;
-      k_state.ay = 0.0f;
+      k_tracker.active = false;
+      k_tracker.kf_x.v = 0.0f;
+      k_tracker.kf_y.v = 0.0f;
     }
   }
 
-  k_state.x = fmaxf(0.0f, fminf(640.0f, k_state.x));
-  k_state.y = fmaxf(0.0f, fminf(480.0f, k_state.y));
+  // Constrain estimated position within image boundaries
+  k_tracker.kf_x.p = fmaxf(0.0f, fminf(640.0f, k_tracker.kf_x.p));
+  k_tracker.kf_y.p = fmaxf(0.0f, fminf(480.0f, k_tracker.kf_y.p));
+
+  // Compute Foveal Target Proximity Z in range [0.0, 1.0]
+  float current_area = sqrtf(k_tracker.w * k_tracker.h);
+  float proximity_z = constrain((current_area - 140.0f) / 130.0f, 0.0f, 1.0f);
 
   debug_m00 = (float)M00;
   debug_skin_px = skin_pixel_count;
   debug_lock_conf = lock_confidence;
 
-  if (k_state.active && lock_confidence > 0.25f) {
+  if (k_tracker.active && lock_confidence > 0.25f) {
     float center_x = frame_w / 2.0f;
     float center_y = frame_h / 2.0f;
-    float err_x = ((k_state.x - center_x) / center_x) * 100.0f;
-    float err_y = ((k_state.y - center_y) / center_y) * 100.0f;
+    float err_x = ((k_tracker.kf_x.p - center_x) / center_x) * 100.0f;
+    float err_y = ((k_tracker.kf_y.p - center_y) / center_y) * 100.0f;
 
     portENTER_CRITICAL(&target_mutex);
     current_target.detected = true;
-    current_target.x = (int)(k_state.x - k_state.w / 2.0f);
-    current_target.y = (int)(k_state.y - k_state.h / 2.0f);
-    current_target.w = (int)k_state.w;
-    current_target.h = (int)k_state.h;
-    current_target.cx = (int)k_state.x;
-    current_target.cy = (int)k_state.y;
+    current_target.x = (int)(k_tracker.kf_x.p - k_tracker.w / 2.0f);
+    current_target.y = (int)(k_tracker.kf_y.p - k_tracker.h / 2.0f);
+    current_target.w = (int)k_tracker.w;
+    current_target.h = (int)k_tracker.h;
+    current_target.cx = (int)k_tracker.kf_x.p;
+    current_target.cy = (int)k_tracker.kf_y.p;
     current_target.error_x = err_x;
     current_target.error_y = err_y;
     current_target.confidence = lock_confidence;
     current_target.total_energy = (float)M00;
-    current_target.vx = k_state.vx;
-    current_target.vy = k_state.vy;
+    current_target.vx = k_tracker.kf_x.v;
+    current_target.vy = k_tracker.kf_y.v;
+    current_target.proximity = proximity_z;
     current_target.last_seen_ms = now_ms;
     portEXIT_CRITICAL(&target_mutex);
   } else {
@@ -1920,12 +2004,13 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     current_target.total_energy = (float)M00;
     current_target.vx = 0.0f;
     current_target.vy = 0.0f;
+    current_target.proximity = 0.0f;
     portEXIT_CRITICAL(&target_mutex);
   }
 }
 
 /**
- * @brief Autonomous camera capture and computer vision processing task bound to Core 0.
+ * @brief Autonomous camera capture, vision processing & Dynamic Frequency Scaling task (Core 0).
  * @param pvParameters FreeRTOS task parameter payload pointer.
  */
 void cameraTask(void *pvParameters) {
@@ -1934,9 +2019,26 @@ void cameraTask(void *pvParameters) {
 
   uint32_t active_duration_ms = (esp_random() % 2000) + 5000; 
   uint32_t sleep_duration_ms  = (esp_random() % 4000) + 10000; 
+  bool last_wifi_ps_sleep = false;
 
   while (true) {
     uint32_t now = millis();
+
+    // Dynamic Wi-Fi Power Management: Enable modem sleep when no streaming clients are active
+    bool has_clients = false;
+    portENTER_CRITICAL(&g_stream_mutex);
+    has_clients = (g_stream_clients > 0);
+    portEXIT_CRITICAL(&g_stream_mutex);
+
+    if (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) {
+      if (!has_clients && !last_wifi_ps_sleep) {
+        WiFi.setSleep(WIFI_PS_MIN_MODEM);
+        last_wifi_ps_sleep = true;
+      } else if (has_clients && last_wifi_ps_sleep) {
+        WiFi.setSleep(WIFI_PS_NONE);
+        last_wifi_ps_sleep = false;
+      }
+    }
 
     if (g_recon_state == STATE_ACTIVE) {
       camera_fb_t *fb = esp_camera_fb_get();
@@ -1949,12 +2051,7 @@ void cameraTask(void *pvParameters) {
           }
           last_frame_time = now;
 
-          bool streaming_now = false;
-          portENTER_CRITICAL(&g_stream_mutex);
-          streaming_now = (g_stream_clients > 0);
-          portEXIT_CRITICAL(&g_stream_mutex);
-
-          if (streaming_now && g_latest_jpeg_buf) {
+          if (has_clients && g_latest_jpeg_buf) {
             if (fb->len <= 64 * 1024) {
               portENTER_CRITICAL(&g_stream_mutex);
               memcpy(g_latest_jpeg_buf, fb->buf, fb->len);
@@ -1972,6 +2069,11 @@ void cameraTask(void *pvParameters) {
       }
 
       if (now - g_state_timer > active_duration_ms) {
+        // Transition ACTIVE -> SLEEP_RECON:
+        // 1. Put camera sensor hardware into software standby via SCCB
+        setCameraSleep(true);
+        // 2. Scale down CPU clock to 80 MHz
+        setCpuFrequencyMhz(80);
         g_recon_state = STATE_SLEEP_RECON;
         g_state_timer = now;
         sleep_duration_ms = (esp_random() % 4000) + 10000; 
@@ -1981,6 +2083,24 @@ void cameraTask(void *pvParameters) {
       vTaskDelay(pdMS_TO_TICKS(100));
 
       if (now - g_state_timer > sleep_duration_ms) {
+        // Transition SLEEP_RECON -> ACTIVE:
+        // 1. Scale CPU clock back up to 240 MHz for real-time computer vision
+        setCpuFrequencyMhz(240);
+        // 2. Wake camera sensor from software standby
+        setCameraSleep(false);
+        vTaskDelay(pdMS_TO_TICKS(30)); // Allow sensor PLL and AGC to stabilize
+
+        k_tracker.init();
+        portENTER_CRITICAL(&target_mutex);
+        current_target.detected = false;
+        current_target.confidence = 0.0f;
+        current_target.error_x = 0.0f;
+        current_target.error_y = 0.0f;
+        current_target.vx = 0.0f;
+        current_target.vy = 0.0f;
+        current_target.proximity = 0.0f;
+        portEXIT_CRITICAL(&target_mutex);
+
         g_recon_state = STATE_ACTIVE;
         g_state_timer = now;
         active_duration_ms = (esp_random() % 2000) + 5000; 
@@ -2019,7 +2139,7 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
   portEXIT_CRITICAL(&target_mutex);
 
   snprintf(json, sizeof(json),
-    "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"m00\":%.1f,\"skin_px\":%d,\"lock_conf\":%.2f,\"vx\":%.1f,\"vy\":%.1f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_p\":%.1f}",
+    "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"m00\":%.1f,\"skin_px\":%d,\"lock_conf\":%.2f,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_p\":%.1f}",
     target.detected ? "true" : "false",
     target.x, target.y, target.w, target.h,
     target.cx, target.cy,
@@ -2031,6 +2151,7 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
     debug_skin_px,
     debug_lock_conf,
     target.vx, target.vy,
+    target.proximity,
     num_cands, insp_idx,
     cands[0].cx, cands[0].cy, cands[0].priority_score,
     cands[1].cx, cands[1].cy, cands[1].priority_score,
@@ -2208,9 +2329,27 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
+  // Initialize at full 240 MHz for fast boot and peripheral configuration
   setCpuFrequencyMhz(240);
 
   Serial.println("\n[KoRe] Biomechanical Face Tracker Starting...");
+
+  // Load Non-Volatile Storage (NVS) Wi-Fi Preferences
+  Preferences prefs;
+  prefs.begin("kore_cfg", false);
+  String stored_ssid = prefs.getString("ssid", "");
+  String stored_pass = prefs.getString("pass", "");
+
+  if (stored_ssid.length() > 0) {
+    strncpy(sta_ssid, stored_ssid.c_str(), sizeof(sta_ssid) - 1);
+    strncpy(sta_password, stored_pass.c_str(), sizeof(sta_password) - 1);
+    Serial.printf("[NVS] Loaded stored Wi-Fi credentials for SSID '%s'\n", sta_ssid);
+  } else {
+    strncpy(sta_ssid, sta_ssid_default, sizeof(sta_ssid) - 1);
+    strncpy(sta_password, sta_password_default, sizeof(sta_password) - 1);
+    Serial.println("[NVS] Using default hardcoded Wi-Fi credentials.");
+  }
+  prefs.end();
 
   if (!initCamera()) {
     Serial.println("FATAL: Camera initialization failed! Restarting...");
@@ -2244,7 +2383,7 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true);
   delay(150);
-  WiFi.setSleep(WIFI_PS_NONE);
+  WiFi.setSleep(WIFI_PS_MIN_MODEM);
   WiFi.setAutoReconnect(true);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
