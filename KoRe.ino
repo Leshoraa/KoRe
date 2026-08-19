@@ -515,6 +515,50 @@ void updateGazeSystem() {
   dt = constrain(dt, 0.005f, 0.040f);
   lastGazeTimeUs = nowUs;
 
+  /* === GAZE FREEZE during Expression Morph Transition ===
+   * During blink-morph transitions, freeze eye position to prevent the
+   * smooth pursuit spring-damper from jerking eyes left/right while the
+   * expression is changing. Only update target smoothing so pursuit resumes
+   * cleanly after the morph completes (no snap-to-target jump). */
+  if (g_is_transitioning) {
+    // Keep target filters warm but don't move the eyes
+    bool targetActive = (g_recon_state == STATE_ACTIVE) && (target.detected || ((now - target.last_seen_ms) < 300 && target.last_seen_ms > 0));
+    if (targetActive) {
+      float normX = constrain(target.error_x / 100.0f, -1.0f, 1.0f);
+      float normY = constrain(target.error_y / 100.0f, -1.0f, 1.0f);
+      float rawTargetX = normX * 22.0f;
+      float rawTargetY = normY * 14.0f;
+
+      if (!s_hasTargetLock || !s_prevTargetDetected) {
+        s_deadbandTargetX = rawTargetX;
+        s_deadbandTargetY = rawTargetY;
+        s_hasTargetLock = true;
+        s_prevTargetDetected = true;
+      } else {
+        float deltaX = rawTargetX - s_deadbandTargetX;
+        float deltaY = rawTargetY - s_deadbandTargetY;
+        float deltaDist = sqrtf(deltaX * deltaX + deltaY * deltaY);
+        const float DEADBAND_RADIUS = 1.35f;
+        if (deltaDist > DEADBAND_RADIUS) {
+          float excess = (deltaDist - DEADBAND_RADIUS) / deltaDist;
+          s_deadbandTargetX += deltaX * excess * 0.40f;
+          s_deadbandTargetY += deltaY * excess * 0.40f;
+        }
+      }
+
+      // Update smoothed target so pursuit doesn't snap when morph ends
+      float alpha = 1.0f - expf(-20.0f * dt);
+      smoothedTargetX += (s_deadbandTargetX - smoothedTargetX) * alpha;
+      smoothedTargetY += (s_deadbandTargetY - smoothedTargetY) * alpha;
+    }
+    // Zero velocity so pursuit starts clean after morph
+    eye_vx = 0.0f;
+    eye_vy = 0.0f;
+    trackInSaccade = false;
+    inSaccade = false;
+    return;
+  }
+
   /* === BRANCH 1: Active Target Vision Tracking === */
   bool targetActive = (g_recon_state == STATE_ACTIVE) && (target.detected || ((now - target.last_seen_ms) < 300 && target.last_seen_ms > 0));
   if (targetActive) {
@@ -550,7 +594,7 @@ void updateGazeSystem() {
       s_prevTargetDetected = true;
       float dist_init = sqrtf((effectiveTargetX - currentOffsetX) * (effectiveTargetX - currentOffsetX) + 
                               (effectiveTargetY - currentOffsetY) * (effectiveTargetY - currentOffsetY));
-      if (dist_init > 10.0f && !g_is_transitioning) {
+      if (dist_init > 10.0f) {
         trackInSaccade = true;
         trackSaccadeStart = now;
         trackSaccadeStartX = currentOffsetX;
@@ -577,12 +621,12 @@ void updateGazeSystem() {
     currentVergence = 0.0f;
     currentEyeScale = 1.0f;
 
-    // Check for large saccadic glance requirement (suppressed during morph transition)
+    // Check for large saccadic glance requirement
     float dx_eye = effectiveTargetX - currentOffsetX;
     float dy_eye = effectiveTargetY - currentOffsetY;
     float dist_eye = sqrtf(dx_eye * dx_eye + dy_eye * dy_eye);
 
-    if (dist_eye > 15.0f && !trackInSaccade && !g_is_transitioning) {
+    if (dist_eye > 15.0f && !trackInSaccade) {
       trackInSaccade = true;
       trackSaccadeStart = now;
       trackSaccadeDuration = (uint32_t)constrain(100.0f + dist_eye * 3.0f, 120.0f, 220.0f);
