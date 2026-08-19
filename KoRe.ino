@@ -34,6 +34,8 @@
 #define CAMERA_XCLK_FREQ 10000000         // 10 MHz (down from 16MHz, sufficient for VGA JPEG)
 #define FPS_ACTIVE_US 16666               // 60 FPS frame budget (microseconds)
 #define FPS_SLEEP_US  33333               // 30 FPS frame budget for sleep mode (saves I2C bus power)
+#define GAZE_GAIN_X   1.75f               // Horizontal gaze tracking sensitivity gain (compensates camera FOV)
+#define GAZE_GAIN_Y   1.45f               // Vertical gaze tracking sensitivity gain
 
 /**
  * @enum Expression
@@ -537,8 +539,8 @@ void updateGazeSystem() {
     // Keep target filters warm but don't move the eyes
     bool targetActive = (g_recon_state == STATE_ACTIVE) && (target.detected || ((now - target.last_seen_ms) < 300 && target.last_seen_ms > 0));
     if (targetActive) {
-      float normX = constrain(target.error_x / 100.0f, -1.0f, 1.0f);
-      float normY = constrain(target.error_y / 100.0f, -1.0f, 1.0f);
+      float normX = constrain((target.error_x / 100.0f) * GAZE_GAIN_X, -1.0f, 1.0f);
+      float normY = constrain((target.error_y / 100.0f) * GAZE_GAIN_Y, -1.0f, 1.0f);
       float rawTargetX = normX * 22.0f;
       float rawTargetY = normY * 14.0f;
 
@@ -575,8 +577,8 @@ void updateGazeSystem() {
   /* === BRANCH 1: Active Target Vision Tracking === */
   bool targetActive = (g_recon_state == STATE_ACTIVE) && (target.detected || ((now - target.last_seen_ms) < 300 && target.last_seen_ms > 0));
   if (targetActive) {
-    float normX = constrain(target.error_x / 100.0f, -1.0f, 1.0f);
-    float normY = constrain(target.error_y / 100.0f, -1.0f, 1.0f);
+    float normX = constrain((target.error_x / 100.0f) * GAZE_GAIN_X, -1.0f, 1.0f);
+    float normY = constrain((target.error_y / 100.0f) * GAZE_GAIN_Y, -1.0f, 1.0f);
 
     float rawTargetX = normX * 22.0f;
     float rawTargetY = normY * 14.0f;
@@ -1949,7 +1951,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   float pred_x = k_tracker.kf_x.p;
   float pred_y = k_tracker.kf_y.p;
   float speed = sqrtf(k_tracker.kf_x.v * k_tracker.kf_x.v + k_tracker.kf_y.v * k_tracker.kf_y.v);
-  float search_radius = fminf(250.0f, 60.0f + 0.25f * speed);
+  float search_radius = fminf(320.0f, 120.0f + 0.35f * speed);
 
   bool candidate_found = false;
   float cand_cx = pred_x, cand_cy = pred_y, cand_bw = k_tracker.w, cand_bh = k_tracker.h;
@@ -1985,7 +1987,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
         candidate_found = true;
       }
     } else {
-      float effective_radius = (skin_pixel_count >= 4) ? 400.0f : search_radius;
+      float effective_radius = (skin_pixel_count >= 4) ? 450.0f : search_radius;
       float dist_sq = (raw_cx - pred_x) * (raw_cx - pred_x) + (raw_cy - pred_y) * (raw_cy - pred_y);
       if (dist_sq <= (effective_radius * effective_radius)) {
         cand_cx = raw_cx;
@@ -2034,7 +2036,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       cand_bw = fmaxf(k_tracker.w * 0.85f, fmaxf(140.0f, fminf(240.0f, raw_bw_skin)));
       cand_bh = fmaxf(k_tracker.h * 0.85f, fmaxf(180.0f, fminf(310.0f, coupled_bh_skin)));
 
-      float effective_radius_skin = (skin_pixel_count >= 4) ? 400.0f : search_radius;
+      float effective_radius_skin = (skin_pixel_count >= 4) ? 450.0f : search_radius;
       float dist_sq_skin = (raw_cx_skin - pred_x) * (raw_cx_skin - pred_x) + (raw_cy_skin - pred_y) * (raw_cy_skin - pred_y);
       if (dist_sq_skin <= (effective_radius_skin * effective_radius_skin)) {
         cand_cx = raw_cx_skin;
