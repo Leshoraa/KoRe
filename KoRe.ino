@@ -498,6 +498,9 @@ void drawSensorOverlay() {
 static float trackSaccadeTargetX = 0.0f;
 static float trackSaccadeTargetY = 0.0f;
 static bool s_prevTargetDetected = false;
+static float s_deadbandTargetX = 0.0f;
+static float s_deadbandTargetY = 0.0f;
+static bool s_hasTargetLock = false;
 
 void updateGazeSystem() {
   TrackTarget target;
@@ -521,18 +524,39 @@ void updateGazeSystem() {
     float rawTargetX = normX * 22.0f;
     float rawTargetY = normY * 14.0f;
 
+    // Foveal Deadband & Noise Gate: suppress camera sensor micro-jitter & breathing noise (< 1.35 px)
+    if (!s_hasTargetLock || !s_prevTargetDetected) {
+      s_deadbandTargetX = rawTargetX;
+      s_deadbandTargetY = rawTargetY;
+      s_hasTargetLock = true;
+    } else {
+      float deltaX = rawTargetX - s_deadbandTargetX;
+      float deltaY = rawTargetY - s_deadbandTargetY;
+      float deltaDist = sqrtf(deltaX * deltaX + deltaY * deltaY);
+      
+      const float DEADBAND_RADIUS = 1.35f; // Ignore jitter within 1.35 px
+      if (deltaDist > DEADBAND_RADIUS) {
+        float excess = (deltaDist - DEADBAND_RADIUS) / deltaDist;
+        s_deadbandTargetX += deltaX * excess * 0.40f;
+        s_deadbandTargetY += deltaY * excess * 0.40f;
+      }
+    }
+
+    float effectiveTargetX = s_deadbandTargetX;
+    float effectiveTargetY = s_deadbandTargetY;
+
     // Detect first acquisition event or large target jump
     if (!s_prevTargetDetected) {
       s_prevTargetDetected = true;
-      float dist_init = sqrtf((rawTargetX - currentOffsetX) * (rawTargetX - currentOffsetX) + 
-                              (rawTargetY - currentOffsetY) * (rawTargetY - currentOffsetY));
+      float dist_init = sqrtf((effectiveTargetX - currentOffsetX) * (effectiveTargetX - currentOffsetX) + 
+                              (effectiveTargetY - currentOffsetY) * (effectiveTargetY - currentOffsetY));
       if (dist_init > 10.0f && !g_is_transitioning) {
         trackInSaccade = true;
         trackSaccadeStart = now;
         trackSaccadeStartX = currentOffsetX;
         trackSaccadeStartY = currentOffsetY;
-        trackSaccadeTargetX = rawTargetX;
-        trackSaccadeTargetY = rawTargetY;
+        trackSaccadeTargetX = effectiveTargetX;
+        trackSaccadeTargetY = effectiveTargetY;
         trackSaccadeDuration = (uint32_t)constrain(120.0f + dist_init * 3.5f, 130.0f, 260.0f);
       } else {
         trackInSaccade = false;
@@ -546,16 +570,16 @@ void updateGazeSystem() {
 
     // Continuous exponential low-pass filter
     float alpha = 1.0f - expf(-20.0f * dt);
-    smoothedTargetX += (rawTargetX - smoothedTargetX) * alpha;
-    smoothedTargetY += (rawTargetY - smoothedTargetY) * alpha;
+    smoothedTargetX += (effectiveTargetX - smoothedTargetX) * alpha;
+    smoothedTargetY += (effectiveTargetY - smoothedTargetY) * alpha;
 
     // Constant rigid inter-ocular distance (zero breathing/pinching)
     currentVergence = 0.0f;
     currentEyeScale = 1.0f;
 
     // Check for large saccadic glance requirement (suppressed during morph transition)
-    float dx_eye = rawTargetX - currentOffsetX;
-    float dy_eye = rawTargetY - currentOffsetY;
+    float dx_eye = effectiveTargetX - currentOffsetX;
+    float dy_eye = effectiveTargetY - currentOffsetY;
     float dist_eye = sqrtf(dx_eye * dx_eye + dy_eye * dy_eye);
 
     if (dist_eye > 15.0f && !trackInSaccade && !g_is_transitioning) {
@@ -564,8 +588,8 @@ void updateGazeSystem() {
       trackSaccadeDuration = (uint32_t)constrain(100.0f + dist_eye * 3.0f, 120.0f, 220.0f);
       trackSaccadeStartX = currentOffsetX;
       trackSaccadeStartY = currentOffsetY;
-      trackSaccadeTargetX = rawTargetX;
-      trackSaccadeTargetY = rawTargetY;
+      trackSaccadeTargetX = effectiveTargetX;
+      trackSaccadeTargetY = effectiveTargetY;
       eye_vx = 0.0f;
       eye_vy = 0.0f;
     }
@@ -599,6 +623,14 @@ void updateGazeSystem() {
       eye_vx += ax * dt;
       eye_vy += ay * dt;
 
+      // Micro-velocity noise damping when settled near target
+      if (fabsf(smoothedTargetX - currentOffsetX) < 0.30f && fabsf(eye_vx) < 1.2f) {
+        eye_vx *= 0.60f;
+      }
+      if (fabsf(smoothedTargetY - currentOffsetY) < 0.30f && fabsf(eye_vy) < 1.2f) {
+        eye_vy *= 0.60f;
+      }
+
       currentOffsetX += eye_vx * dt;
       currentOffsetY += eye_vy * dt;
     }
@@ -613,6 +645,7 @@ void updateGazeSystem() {
 
   /* === BRANCH 2 & 3: Ambient Spontaneous Fixations (Idle & Sleep) === */
   s_prevTargetDetected = false;
+  s_hasTargetLock = false;
   trackInSaccade = false;
 
   // Smoothly decay vergence and ocular scale
@@ -724,6 +757,24 @@ void updateGazeSystem() {
 }
 
 // --- 2D Facial Primitives (Rendered into 1-Bit LGFX Sprite - Rigid Group Synchronized) ---
+
+// Anti-Jitter Coordinate Hysteresis (Prevents 1px quantization twitching when stationary)
+static inline int getFilteredOx(float rawOffsetX) {
+  static float s_stable_ox = 0.0f;
+  if (fabsf(rawOffsetX - s_stable_ox) >= 0.55f) {
+    s_stable_ox = roundf(rawOffsetX);
+  }
+  return (int)s_stable_ox;
+}
+
+static inline int getFilteredOy(float rawOffsetY) {
+  static float s_stable_oy = 0.0f;
+  if (fabsf(rawOffsetY - s_stable_oy) >= 0.55f) {
+    s_stable_oy = roundf(rawOffsetY);
+  }
+  return (int)s_stable_oy;
+}
+
 void drawEyes(float eyeHeightFactor, int ox, int oy, uint16_t color, float vergence = 0.0f, float scale = 1.0f) {
   int lx = 32 + ox;
   int rx = 96 + ox;
@@ -989,8 +1040,8 @@ void drawFaceSedih(float eyeHeightFactor, int ox, int oy, float frame = 0.0f, fl
 }
 
 void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offsetY, float frame = 0.0f, float vergence = 0.0f, float scale = 1.0f) {
-  int ox = (int)roundf(offsetX);
-  int oy = (int)roundf(offsetY);
+  int ox = getFilteredOx(offsetX);
+  int oy = getFilteredOy(offsetY);
   switch (expr) {
     case EXPR_IDLE: drawFaceIdle(eyeHeightFactor, ox, oy, vergence, scale); break;
     case EXPR_JOY: drawFaceJoy(ox, oy, vergence, scale); break;
@@ -1058,8 +1109,8 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
     uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
     uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
 
-    int ox = (int)roundf(currentOffsetX);
-    int oy = (int)roundf(currentOffsetY);
+    int ox = getFilteredOx(currentOffsetX);
+    int oy = getFilteredOy(currentOffsetY);
 
     canvas.fillScreen(bgColor);
 
