@@ -24,6 +24,17 @@
 /* --- System Hardware & Configuration Parameters --- */
 #define ENABLE_TOUCH_PIN false 
 #define TOUCH_PIN 2            
+#define ENABLE_SERIAL_DEBUG false   // Set false for production to save ~2-3mA UART power
+
+/* --- Power Efficiency Configuration (3.7V 500mAh Battery) --- */
+#define WIFI_TX_POWER WIFI_POWER_8_5dBm  // 8.5dBm sufficient for <10m indoor range (saves ~50mA vs 19.5dBm)
+#define CPU_FREQ_ACTIVE 240               // MHz - Full speed for vision + streaming
+#define CPU_FREQ_SLEEP  40                // MHz - Minimum for OLED I2C @1MHz rendering
+#define OLED_BRIGHTNESS_ACTIVE 128        // Active mode brightness
+#define OLED_BRIGHTNESS_SLEEP  40         // Sleep mode dimmed brightness
+#define CAMERA_XCLK_FREQ 10000000         // 10 MHz (down from 16MHz, sufficient for VGA JPEG)
+#define FPS_ACTIVE_US 16666               // 60 FPS frame budget (microseconds)
+#define FPS_SLEEP_US  33333               // 30 FPS frame budget for sleep mode (saves I2C bus power)
 
 /**
  * @enum Expression
@@ -255,6 +266,10 @@ static float g_rand_target_x = 0.0f;
 static float g_rand_target_y = 0.0f;
 static uint32_t g_last_saccade_shift = 0;
 static uint32_t g_nextGazeTime = 4500;
+
+/* --- Progressive Sleep Escalation & OLED Power Management --- */
+static uint8_t g_sleep_miss_count = 0;       // Consecutive wake-ups without target detection
+static float g_current_brightness = 128.0f;  // Smooth OLED brightness for gradual dimming
 
 /* --- Camera Sensor Software Standby Low-Power Controller --- */
 void setCameraSleep(bool enable) {
@@ -1394,7 +1409,7 @@ void oledTask(void *pvParameters) {
 
   lcd.init();
   lcd.setRotation(2);
-  lcd.setBrightness(128);
+  lcd.setBrightness(OLED_BRIGHTNESS_ACTIVE);
 
   // Initialize 1-bit monochrome off-screen canvas sprite (128x64 = 1024 bytes)
   canvas.setColorDepth(1);
@@ -1430,6 +1445,13 @@ void oledTask(void *pvParameters) {
       s_prevTargetDetected = false;
       nextGazeTime         = now + 600;
       g_prev_recon_state   = g_recon_state;
+    }
+
+    /* --- Adaptive OLED Brightness Dimming (Gradual Transition) --- */
+    float target_brightness = (g_recon_state == STATE_SLEEP_RECON) ? (float)OLED_BRIGHTNESS_SLEEP : (float)OLED_BRIGHTNESS_ACTIVE;
+    if (fabsf(g_current_brightness - target_brightness) > 1.0f) {
+      g_current_brightness += (target_brightness - g_current_brightness) * 0.04f;
+      lcd.setBrightness((int)g_current_brightness);
     }
 
     if (currentExpr != prevExpr) {
@@ -1494,7 +1516,7 @@ void oledTask(void *pvParameters) {
         }
       }
 
-      /* --- Continuous OLED 60.0 FPS Rendering Dispatch via Single pushSprite --- */
+      /* --- Continuous OLED Rendering Dispatch via Single pushSprite --- */
       if (currentExpr == EXPR_OVERLOAD || currentExpr == EXPR_SEDIH) {
         animFrame += 0.025f;
       }
@@ -1502,14 +1524,15 @@ void oledTask(void *pvParameters) {
       drawFace(currentExpr, g_blinkEyeHeight, currentOffsetX, currentOffsetY, animFrame, currentVergence, currentEyeScale);
     }
 
-    /* --- Precision Hardware 60.0 FPS Microsecond Frame Pacing (16,666 µs) --- */
+    /* --- Adaptive Frame Pacing: 60 FPS Active / 30 FPS Sleep (Power Saving) --- */
+    uint32_t frame_budget_us = (g_recon_state == STATE_SLEEP_RECON) ? FPS_SLEEP_US : FPS_ACTIVE_US;
     uint32_t frame_elapsed_us = micros() - frame_start_us;
-    if (frame_elapsed_us < 16666) {
-      uint32_t wait_us = 16666 - frame_elapsed_us;
+    if (frame_elapsed_us < frame_budget_us) {
+      uint32_t wait_us = frame_budget_us - frame_elapsed_us;
       if (wait_us > 3000) {
         vTaskDelay(pdMS_TO_TICKS(wait_us / 1000 - 1));
       }
-      while ((micros() - frame_start_us) < 16666) {
+      while ((micros() - frame_start_us) < frame_budget_us) {
         taskYIELD();
       }
     }
@@ -2131,7 +2154,7 @@ void cameraTask(void *pvParameters) {
   uint32_t last_frame_time = millis();
   g_state_timer = millis();
 
-  // Power optimization: Short reconnaissance window (3-6s) vs Extended standby (1.5-3 minutes)
+  // Power optimization: Short reconnaissance window (3-6s) vs Extended standby (escalating)
   uint32_t active_duration_ms = (esp_random() % 3000) + 3000; 
   uint32_t sleep_duration_ms  = (esp_random() % 90000) + 90000; 
   bool last_wifi_ps_sleep = false;
@@ -2140,10 +2163,10 @@ void cameraTask(void *pvParameters) {
     uint32_t now = millis();
     bool web_active = isWebOrStreamActive(now);
 
-    // Dynamic Wi-Fi Power Management: Enable modem sleep only when no web/streaming clients are active
+    // Dynamic Wi-Fi Power Management: MAX_MODEM (light sleep) when idle, NONE when streaming
     if (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) {
       if (!web_active && !last_wifi_ps_sleep) {
-        WiFi.setSleep(WIFI_PS_MIN_MODEM);
+        WiFi.setSleep(WIFI_PS_MAX_MODEM);  // Light sleep: radio off between DTIM beacons
         last_wifi_ps_sleep = true;
       } else if (web_active && last_wifi_ps_sleep) {
         WiFi.setSleep(WIFI_PS_NONE);
@@ -2188,23 +2211,38 @@ void cameraTask(void *pvParameters) {
       // Keep awake if web stream is open OR a human target is actively being engaged
       if (web_active || target_engaged) {
         g_state_timer = now;
+        if (target_engaged) {
+          g_sleep_miss_count = 0;  // Reset escalation: target found
+        }
       } else if (now - g_state_timer > active_duration_ms) {
         // Transition ACTIVE -> SLEEP_RECON:
         // 1. Put camera sensor hardware into software standby via SCCB
         setCameraSleep(true);
-        // 2. Scale down CPU clock to 80 MHz
-        setCpuFrequencyMhz(80);
+        // 2. Scale down CPU to minimum (40 MHz) — I2C OLED @1MHz still works
+        setCpuFrequencyMhz(CPU_FREQ_SLEEP);
         g_recon_state = STATE_SLEEP_RECON;
         g_state_timer = now;
-        sleep_duration_ms = (esp_random() % 90000) + 90000; // 90 - 180 seconds (1.5 - 3 minutes)
+
+        // Progressive Sleep Escalation: longer sleep after consecutive misses
+        // Level 0 (0-2 misses):  90-180s   (1.5-3 min)
+        // Level 1 (3-5 misses): 180-300s   (3-5 min)
+        // Level 2 (6+ misses):  300-480s   (5-8 min)
+        g_sleep_miss_count++;
+        if (g_sleep_miss_count >= 6) {
+          sleep_duration_ms = (esp_random() % 180000) + 300000;  // 5-8 minutes deep idle
+        } else if (g_sleep_miss_count >= 3) {
+          sleep_duration_ms = (esp_random() % 120000) + 180000;  // 3-5 minutes extended
+        } else {
+          sleep_duration_ms = (esp_random() % 90000) + 90000;    // 1.5-3 minutes standard
+        }
       }
     } 
     else if (g_recon_state == STATE_SLEEP_RECON) {
-      // Immediate wake-up on web activity or when multi-minute sleep duration expires
+      // Immediate wake-up on web activity or when sleep duration expires
       if (web_active || (now - g_state_timer > sleep_duration_ms)) {
         // Transition SLEEP_RECON -> ACTIVE:
-        // 1. Scale CPU clock back up to 240 MHz for real-time computer vision & high-speed streaming
-        setCpuFrequencyMhz(240);
+        // 1. Scale CPU clock back up to full speed for real-time computer vision
+        setCpuFrequencyMhz(CPU_FREQ_ACTIVE);
         // 2. Wake camera sensor from software standby
         setCameraSleep(false);
         vTaskDelay(pdMS_TO_TICKS(30)); // Allow sensor PLL and AGC to stabilize
@@ -2395,7 +2433,7 @@ bool initCamera() {
   config.pin_pwdn     = PWDN_GPIO_NUM;
   config.pin_reset    = RESET_GPIO_NUM;
   
-  config.xclk_freq_hz = 16000000;
+  config.xclk_freq_hz = CAMERA_XCLK_FREQ;
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size   = FRAMESIZE_VGA;
   config.jpeg_quality = 8;
@@ -2449,16 +2487,43 @@ bool initCamera() {
 }
 
 /**
+ * @brief LCD boot status helper — shows status text on OLED during startup.
+ */
+void showBootStatus(const char* line1, const char* line2 = nullptr) {
+  lcd.fillScreen(TFT_BLACK);
+  lcd.setTextColor(TFT_WHITE);
+  lcd.setTextSize(1);
+  lcd.setCursor(4, 20);
+  lcd.print(line1);
+  if (line2) {
+    lcd.setCursor(4, 36);
+    lcd.print(line2);
+  }
+}
+
+/**
  * @brief Application entrypoint for hardware initialization and FreeRTOS task launching.
  */
 void setup() {
+  #if ENABLE_SERIAL_DEBUG
   Serial.begin(115200);
   delay(1000);
+  #else
+  delay(500);
+  #endif
 
   // Initialize at full 240 MHz for fast boot and peripheral configuration
-  setCpuFrequencyMhz(240);
+  setCpuFrequencyMhz(CPU_FREQ_ACTIVE);
 
+  // Initialize OLED early for boot status display
+  lcd.init();
+  lcd.setRotation(2);
+  lcd.setBrightness(OLED_BRIGHTNESS_ACTIVE);
+  showBootStatus("KoRe Starting...");
+
+  #if ENABLE_SERIAL_DEBUG
   Serial.println("\n[KoRe] Biomechanical Face Tracker Starting...");
+  #endif
 
   // Load Non-Volatile Storage (NVS) Wi-Fi Preferences
   Preferences prefs;
@@ -2469,20 +2534,30 @@ void setup() {
   if (stored_ssid.length() > 0) {
     strncpy(sta_ssid, stored_ssid.c_str(), sizeof(sta_ssid) - 1);
     strncpy(sta_password, stored_pass.c_str(), sizeof(sta_password) - 1);
+    #if ENABLE_SERIAL_DEBUG
     Serial.printf("[NVS] Loaded stored Wi-Fi credentials for SSID '%s'\n", sta_ssid);
+    #endif
   } else {
     strncpy(sta_ssid, sta_ssid_default, sizeof(sta_ssid) - 1);
     strncpy(sta_password, sta_password_default, sizeof(sta_password) - 1);
+    #if ENABLE_SERIAL_DEBUG
     Serial.println("[NVS] Using default hardcoded Wi-Fi credentials.");
+    #endif
   }
   prefs.end();
 
+  showBootStatus("Init Camera...");
   if (!initCamera()) {
+    showBootStatus("CAMERA FAIL!", "Restarting...");
+    #if ENABLE_SERIAL_DEBUG
     Serial.println("FATAL: Camera initialization failed! Restarting...");
+    #endif
     delay(3000);
     ESP.restart();
   }
+  #if ENABLE_SERIAL_DEBUG
   Serial.println("Camera initialized.");
+  #endif
 
   small_rgb_buf     = (uint8_t*)heap_caps_malloc(80 * 60 * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   prev_lum_buf      = (uint8_t*)heap_caps_malloc(40 * 30, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -2490,10 +2565,14 @@ void setup() {
 
   if (psramFound()) {
     g_latest_jpeg_buf = (uint8_t*)ps_malloc(64 * 1024);
+    #if ENABLE_SERIAL_DEBUG
     Serial.println("AI buffers allocated in Internal SRAM, Stream buffer in PSRAM.");
+    #endif
   } else {
     g_latest_jpeg_buf = (uint8_t*)malloc(64 * 1024);
+    #if ENABLE_SERIAL_DEBUG
     Serial.println("All buffers allocated in SRAM.");
+    #endif
   }
 
   if (!small_rgb_buf) small_rgb_buf = (uint8_t*)malloc(80 * 60 * 2);
@@ -2509,41 +2588,78 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true);
   delay(150);
-  WiFi.setSleep(WIFI_PS_MIN_MODEM);
+  WiFi.setSleep(WIFI_PS_MAX_MODEM);     // Start with aggressive power save
   WiFi.setAutoReconnect(true);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  WiFi.setTxPower(WIFI_TX_POWER);       // 8.5dBm — sufficient for <10m indoor
 
   if (USE_AP_MODE) {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ap_ssid, ap_password);
+    char ip_buf[40];
+    snprintf(ip_buf, sizeof(ip_buf), "IP: %s", WiFi.softAPIP().toString().c_str());
+    showBootStatus("AP Mode Active", ip_buf);
+    #if ENABLE_SERIAL_DEBUG
     Serial.println("\n[AP MODE] Access Point Active!");
     Serial.print("Access Web UI at IP: http://");
     Serial.println(WiFi.softAPIP());
+    #endif
+    delay(1500);
   } else {
+    char wifi_msg[40];
+    snprintf(wifi_msg, sizeof(wifi_msg), "WiFi: %s", sta_ssid);
+    showBootStatus(wifi_msg, "Connecting...");
+
     WiFi.begin(sta_ssid, sta_password);
+    #if ENABLE_SERIAL_DEBUG
     Serial.printf("\nConnecting to WiFi '%s'", sta_ssid);
+    #endif
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 50) {
       delay(400);
+      #if ENABLE_SERIAL_DEBUG
       Serial.print(".");
+      #endif
+      // Update OLED progress dots every 5 attempts
+      if (attempts % 5 == 0) {
+        char dots[12] = "Connecting";
+        int d = (attempts / 5) % 3;
+        for (int i = 0; i <= d; i++) strcat(dots, ".");
+        showBootStatus(wifi_msg, dots);
+      }
       attempts++;
     }
     if (WiFi.status() == WL_CONNECTED) {
+      char ip_buf[40];
+      snprintf(ip_buf, sizeof(ip_buf), "IP: %s", WiFi.localIP().toString().c_str());
+      showBootStatus("WiFi Connected!", ip_buf);
+      #if ENABLE_SERIAL_DEBUG
       Serial.println(" Connected!");
       Serial.print("Web UI: http://");
       Serial.println(WiFi.localIP());
+      #endif
+      delay(1500);
     } else {
+      #if ENABLE_SERIAL_DEBUG
       Serial.printf("\n[ERROR] Could not connect to '%s' (Status Code: %d)\n", sta_ssid, (int)WiFi.status());
+      #endif
       WiFi.mode(WIFI_AP);
       WiFi.softAP(ap_ssid, ap_password);
+      char ip_buf[40];
+      snprintf(ip_buf, sizeof(ip_buf), "IP: %s", WiFi.softAPIP().toString().c_str());
+      showBootStatus("AP Fallback", ip_buf);
+      #if ENABLE_SERIAL_DEBUG
       Serial.println("Fallback AP Mode active!");
       Serial.print("Access Web UI at IP: http://");
       Serial.println(WiFi.softAPIP());
+      #endif
+      delay(1500);
     }
   }
 
   startWebServer();
+  #if ENABLE_SERIAL_DEBUG
   Serial.println("Web server active.");
+  #endif
 
   xTaskCreatePinnedToCore(
     cameraTask,
@@ -2554,7 +2670,6 @@ void setup() {
     NULL,
     0
   );
-  Serial.println("Camera AI task started on Core 0.");
 
   xTaskCreatePinnedToCore(
     oledTask,
@@ -2565,7 +2680,9 @@ void setup() {
     NULL,
     1
   );
-  Serial.println("OLED rendering task started on Core 1.");
+  #if ENABLE_SERIAL_DEBUG
+  Serial.println("All tasks started.");
+  #endif
 }
 
 /**
