@@ -1,10 +1,10 @@
 /**
  * @file KoRe.ino
- * @brief High-Performance Dual-Core Biomechanical Vision & Kinematics Control Firmware
- * @details Target Platform: Seeed Studio XIAO ESP32-S3 Sense
+ * @brief Dual-Core Biomechanical Vision & Kinematics Firmware
+ * @details Hardware Platform: Seeed Studio XIAO ESP32-S3 Sense
  *          Display Interface: 0.96" SSD1306 OLED via LovyanGFX I2C Bus (1.0MHz Fast-mode Plus)
- *          Architecture: FreeRTOS Dual-Core Asynchronous Partitioning
- *                        Core 0: Computer Vision Pipeline, Spatial Clustering, HTTP Server & DFS
+ *          Architecture: FreeRTOS Dual-Core Asynchronous Task Split
+ *                        Core 0: Computer Vision Pipeline, Spatial Clustering, HTTP Web Server, and DFS Clock Scaling
  *                        Core 1: 60 FPS Biomechanical Gaze Kinematics & 1-Bit LGFX Sprite Engine
  */
 
@@ -23,25 +23,25 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
-/* --- System Hardware & Configuration Parameters --- */
+/* --- Hardware & Debug Configuration --- */
 #define ENABLE_TOUCH_PIN false 
 #define TOUCH_PIN 2            
-#define ENABLE_SERIAL_DEBUG false   // Set false for production to save ~2-3mA UART power
+#define ENABLE_SERIAL_DEBUG false   // Keep disabled in production; UART TX burns ~2-3mA unnecessary power
 
-/* --- Power Efficiency Configuration (3.7V 500mAh Battery) --- */
-#define WIFI_TX_POWER WIFI_POWER_19_5dBm // 19.5dBm full power for reliable Wi-Fi range
-#define CPU_FREQ_ACTIVE 240               // MHz - Full speed for vision + streaming
-#define CPU_FREQ_SLEEP  80                // MHz - Minimum CPU frequency for stable ESP32 Wi-Fi stack
-#define OLED_BRIGHTNESS        128        // OLED panel brightness
-#define CAMERA_XCLK_FREQ 10000000         // 10 MHz (down from 16MHz, sufficient for VGA JPEG)
-#define FPS_ACTIVE_US 16666               // 60 FPS frame budget (microseconds)
-#define FPS_SLEEP_US  33333               // 30 FPS frame budget for sleep mode (saves I2C bus power)
-#define GAZE_GAIN_X   1.75f               // Horizontal gaze tracking sensitivity gain (compensates camera FOV)
-#define GAZE_GAIN_Y   1.45f               // Vertical gaze tracking sensitivity gain
+/* --- Battery Power Management (3.7V 500mAh LiPo Setup) --- */
+#define WIFI_TX_POWER WIFI_POWER_19_5dBm // Max TX power for reliable Wi-Fi transmission through physical obstacles
+#define CPU_FREQ_ACTIVE 240               // MHz: Full clock frequency for real-time vision processing and MJPEG streaming
+#define CPU_FREQ_SLEEP  80                // MHz: Clock floor required to keep the ESP32 Wi-Fi stack stable without dropping sockets
+#define OLED_BRIGHTNESS        128        // Default OLED panel brightness (0-255)
+#define CAMERA_XCLK_FREQ 10000000         // 10 MHz XCLK (dropping from 16MHz cuts thermal dissipation while maintaining VGA JPEG bandwidth)
+#define FPS_ACTIVE_US 16666               // 60 FPS frame budget (16.66ms period)
+#define FPS_SLEEP_US  33333               // 30 FPS frame budget in sleep state (cuts I2C bus transactions by 50%)
+#define GAZE_GAIN_X   1.75f               // Horizontal gaze gain multiplier (compensates camera lens FOV vs display aspect ratio)
+#define GAZE_GAIN_Y   1.45f               // Vertical gaze gain multiplier
 
 /**
  * @enum Expression
- * @brief Discrete 2D animated facial state expressions.
+ * @brief Discrete 2D animated facial states rendered on the OLED display.
  */
 enum Expression {
   EXPR_IDLE,
@@ -55,7 +55,8 @@ enum Expression {
 
 /**
  * @class LGFX
- * @brief Hardware-abstracted display panel driver configuration for SSD1306 OLED.
+ * @brief Low-level driver configuration for the SSD1306 OLED display using LovyanGFX.
+ * @note Overclocks I2C write frequency to 1.0MHz (Fast-mode Plus) to achieve 60 FPS sprite pushes without tearing.
  */
 class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_SSD1306 _panel_instance;
@@ -88,7 +89,7 @@ public:
 LGFX lcd;
 LGFX_Sprite canvas(&lcd);
 
-/* --- Non-Volatile Storage (NVS) & Wireless Network Infrastructure --- */
+/* --- NVS Network Configuration & Fallback Defaults --- */
 const char* ap_ssid_default     = "KoRe-Tracker";
 const char* ap_password_default = "12345678";
 
@@ -103,7 +104,7 @@ static char ap_password[64] = {0};
 static bool g_is_ap_mode = false;
 static DNSServer dnsServer;
 
-/* --- ESP32-S3 Camera Pin Definitions --- */
+/* --- Camera Sensor Pin Mapping (XIAO ESP32-S3 Sense Pinout) --- */
 #define PWDN_GPIO_NUM  -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  10
@@ -124,7 +125,8 @@ static DNSServer dnsServer;
 
 /**
  * @struct TrackTarget
- * @brief Core target telemetry state shared between vision and motion tasks.
+ * @brief Shared target state object passed across FreeRTOS cores.
+ * @note Access must be protected with `target_mutex` because Core 0 (CV) writes while Core 1 (UI) reads at 60Hz.
  */
 struct TrackTarget {
   bool detected;
@@ -146,7 +148,7 @@ struct TrackTarget {
 
 /**
  * @struct ObjectCandidate
- * @brief Multi-object spatial sector candidate descriptor.
+ * @brief Candidate descriptor for multi-object spatial sector tracking.
  */
 struct ObjectCandidate {
   bool active;
@@ -170,14 +172,18 @@ static uint32_t g_last_inspection_time_ms = 0;
 static uint32_t g_inspection_hold_time_ms = 2800;
 
 static TrackTarget current_target = {false, 0, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0};
-static portMUX_TYPE target_mutex = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE target_mutex = portMUX_INITIALIZER_UNLOCKED; // Protects target state across Core 0 (CV) and Core 1 (UI)
 
 static volatile float fps_ai = 0.0f;
 static volatile float fps_stream = 0.0f;
 static const int frame_w = 640;
 static const int frame_h = 480;
 
-/* --- Internal Memory Allocation Pointers --- */
+/* --- Internal Memory Allocation Pointers ---
+ * Note: Must be allocated in internal SRAM (MALLOC_CAP_INTERNAL) rather than PSRAM.
+ * The vision pipeline reads/writes these pixel arrays thousands of times per frame;
+ * PSRAM bus latency is far too high for real-time YCbCr image scaling and MHI calculation.
+ */
 static uint8_t* small_rgb_buf = NULL;
 static uint8_t* prev_lum_buf  = NULL;
 static uint8_t* mhi_buf       = NULL;
@@ -185,7 +191,7 @@ static uint8_t* mhi_buf       = NULL;
 /* --- Inter-Core Asynchronous Synchronization & Streaming --- */
 static volatile int g_stream_clients = 0;
 static volatile uint32_t g_last_web_activity_ms = 0;
-static uint8_t* g_latest_jpeg_buf = NULL;
+static uint8_t* g_latest_jpeg_buf = NULL; // Allocated in PSRAM (64KB buffer for HTTP stream chunks)
 static size_t g_latest_jpeg_len = 0;
 static portMUX_TYPE g_stream_mutex = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t g_frame_sem = NULL;
@@ -247,7 +253,7 @@ static float trackSaccadeStartY = 0.0f;
 
 /**
  * @enum BlinkState
- * @brief Non-blocking state machine states for ocular eyelid blinking.
+ * @brief Non-blocking state machine for eyelid blinking animations.
  */
 enum BlinkState {
   BLINK_IDLE_STATE,
@@ -261,11 +267,11 @@ static uint32_t g_nextBlinkTime = 0;
 static float g_blinkEyeHeight = 1.0f;
 static bool g_isDoubleBlinkPending = false;
 
-// --- Intermittent Reconnaissance Duty Cycle FSM ---
+/* --- Intermittent Reconnaissance Duty Cycle FSM --- */
 enum ReconState {
   STATE_ACTIVE,       // Full 30 FPS vision tracking @ 240 MHz CPU
-  STATE_SLEEP_RECON,  // Camera paused, 80 MHz CPU, random spatial saccades
-  STATE_SAMPLING      // Fast check @ 240 MHz CPU
+  STATE_SLEEP_RECON,  // Camera paused in software standby, CPU scaled down to 80 MHz, random saccades
+  STATE_SAMPLING      // High-speed verification pulse @ 240 MHz CPU
 };
 
 static volatile ReconState g_recon_state = STATE_ACTIVE;
@@ -276,9 +282,14 @@ static uint32_t g_last_saccade_shift = 0;
 static uint32_t g_nextGazeTime = 4500;
 
 /* --- Progressive Sleep Escalation --- */
-static uint8_t g_sleep_miss_count = 0;       // Consecutive wake-ups without target detection
+static uint8_t g_sleep_miss_count = 0;       // Count of consecutive wake-up windows without human detection
 
-/* --- Camera Sensor Software Standby Low-Power Controller --- */
+/**
+ * @brief Toggles camera sensor software standby mode via SCCB register writes.
+ * @param enable True to power down sensor core; false to wake up.
+ * @note The XIAO ESP32-S3 Sense board leaves PWDN unconnected (-1), making SCCB register writes
+ *       the only way to turn off the sensor array during sleep states.
+ */
 void setCameraSleep(bool enable) {
   sensor_t* s = esp_camera_sensor_get();
   if (!s) return;
@@ -286,37 +297,37 @@ void setCameraSleep(bool enable) {
     s->set_reg(s, 0xFF, 0xFF, 0x01);                  // Switch to register bank 1
     s->set_reg(s, 0x09, 0xFF, enable ? 0x10 : 0x00);  // COM2: Toggle bit 4 software standby
   } else if (s->id.PID == OV3660_PID) {
-    s->set_reg(s, 0x3008, 0x40, enable ? 0x40 : 0x00);
+    s->set_reg(s, 0x3008, 0x40, enable ? 0x40 : 0x00); // System control bit 6 standby mode
   }
 }
 
 /* --- Biomechanical Oculomotor Model (Sleep/Idle Saccades) ---
  *
- * Refs: Bahill et al. 1975 (Main Sequence), Flash & Hogan 1985 (Minimum-Jerk),
- *       Carpenter 1988 (Oculomotor Kinetics), Robinson 1964 (Glissades).
+ * Literature References:
+ *   - Bahill et al. (1975): Main Sequence law relating amplitude to duration.
+ *   - Flash & Hogan (1985): Minimum-Jerk velocity profile optimization.
+ *   - Carpenter (1988): Oculomotor kinetics and neural pulse-step integration.
+ *   - Robinson (1964): Post-saccadic glissadic overshoot dynamics.
  *
- * Display Calibration:
- *   OLED pixel range ±17.5px maps to ±30° human oculomotor range.
- *   Conversion factor: 1px ≈ 1.714° (30.0 / 17.5).
+ * Display Spatial Calibration:
+ *   OLED physical coordinate range (±17.5px) maps to ±30° human oculomotor range.
+ *   Conversion factor: 1.0px ≈ 1.714° (30.0 / 17.5).
  *
- * Display Main Sequence Law (degree-space):
+ * Main Sequence Law (degree space):
  *   A_deg = A_px × 1.714
- *   Duration(ms) = 110.0 + 4.2 × A_deg + 12.0 × sqrt(A_deg) [constrained 110-220ms]
+ *   Duration(ms) = 110.0 + 4.2 × A_deg + 12.0 × sqrt(A_deg) [clamped to 110-220ms]
  *
- * Velocity Profile: 5th-order Minimum-Jerk polynomial spline (zero acceleration boundary).
- *   s(p) = 10p^3 - 15p^4 + 6p^5 = p^3 × (10 - 15p + 6p^2),  p ∈ [0, 1].
+ * Trajectory Profile: 5th-order Minimum-Jerk polynomial spline:
+ *   s(p) = 10p^3 - 15p^4 + 6p^5,  p ∈ [0, 1]
  *
- * Post-Saccadic Glissade: 5-8% overshoot, critically damped muscle ring-down.
- *   OS(t) = A_os × e^(-ζω_n t) × cos(ω_d t),  ζ=0.92, ω_n=45.0 rad/s (~60ms settling).
- *
- * Amplitude Protection: Enforces minimum displacement A_px ≥ 4.0px (~6.8°) to eliminate micro-twitches.
- * Fixation Micro-Kinetics: Mean-reverting Brownian drift + sub-pixel foveal tremor (0.05-0.15px).
+ * Amplitude Threshold: Enforces minimum displacement A_px ≥ 4.0px (~6.8°) to prevent twitching.
+ * Fixation Micro-Kinetics: Mean-reverting Brownian random walk + sub-pixel foveal tremor.
  */
 
 // Pixel-to-degree conversion: ±17.5px OLED range ≈ ±30° human gaze
 static const float PX_TO_DEG = 30.0f / 17.5f;  // ≈ 1.714 °/px
 
-// State transition detector (ACTIVE ↔ SLEEP handoff)
+// Previous state tracker for ACTIVE ↔ SLEEP transitions
 static ReconState g_prev_recon_state = STATE_ACTIVE;
 
 // --- Telemetry Dashboard & WiFi Configuration Web UI ---
@@ -631,30 +642,30 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
 /* --- Kinematic Interpolation & Mathematical Utilities --- */
 
 /**
- * @brief Evaluates cubic ease-in-out interpolation curve.
- * @param t Normalized progress in range [0.0, 1.0].
- * @return Interpolated scalar multiplier.
+ * @brief Evaluates a cubic ease-in-out curve for smooth interpolation.
+ * @param t Normalized progress parameter in range [0.0, 1.0].
+ * @return Interpolated progress scalar.
  */
 float easeInOutCubic(float t) {
   return t < 0.5f ? 4.0f * t * t * t : 1.0f - powf(-2.0f * t + 2.0f, 3.0f) / 2.0f;
 }
 
 /**
- * @brief Quadratic closing phase ease curve for eyelid blinking.
+ * @brief Quadratic ease-in curve for the eyelid closing phase.
  */
 float blinkCloseEase(float t) {
   return 1.0f - (t * t);
 }
 
 /**
- * @brief Sinusoidal opening phase ease curve for eyelid blinking.
+ * @brief Sinusoidal ease-out curve for the eyelid opening phase.
  */
 float blinkOpenEase(float t) {
   return sinf(t * 1.5707963f);
 }
 
 /**
- * @brief Linear interpolation helper function.
+ * @brief Standard scalar linear interpolation (lerp).
  */
 float customLerp(float a, float b, float t) {
   return a + t * (b - a);
@@ -665,10 +676,9 @@ void drawSensorOverlay() {
 }
 
 /**
- * @brief Biomechanical 2D gaze pursuit and fixation controller with foveal depth & vergence.
- * @details Executes active target smooth pursuit via second-order mass-spring-damper kinetics,
- *          or spontaneous foveal fixation saccades using 5th-order minimum-jerk splines.
- *          Integrates target proximity Z for binocular vergence and pupil scaling.
+ * @brief Master 60 FPS biomechanical 2D gaze pursuit and fixation controller.
+ * @details Handles target tracking via critically damped mass-spring-damper kinetics (\f$\zeta=1.0\f$, \f$\omega_n=38\text{ rad/s}\f$),
+ *          spontaneous foveal fixation saccades via 5th-order minimum-jerk splines, and Brownian fixation micro-drift.
  */
 static float trackSaccadeTargetX = 0.0f;
 static float trackSaccadeTargetY = 0.0f;
@@ -687,16 +697,15 @@ void updateGazeSystem() {
   static uint32_t lastGazeTimeUs = 0;
   uint32_t nowUs = micros();
   float dt = (lastGazeTimeUs > 0) ? (float)(nowUs - lastGazeTimeUs) * 0.000001f : 0.016666f;
-  dt = constrain(dt, 0.005f, 0.040f);
+  dt = constrain(dt, 0.005f, 0.040f); // Clamp delta time to avoid integrator explosions during FreeRTOS preemption
   lastGazeTimeUs = nowUs;
 
-  /* === GAZE FREEZE during Expression Morph Transition ===
-   * During blink-morph transitions, freeze eye position to prevent the
-   * smooth pursuit spring-damper from jerking eyes left/right while the
-   * expression is changing. Only update target smoothing so pursuit resumes
-   * cleanly after the morph completes (no snap-to-target jump). */
+  /* === GAZE FREEZE DURING MORPH TRANSITIONS ===
+   * Freeze eye movement during expression morphs to prevent the spring-damper
+   * system from jerking eyes sideways while facial geometry is changing.
+   * Target low-pass filters remain active so pursuit resumes smoothly post-morph.
+   */
   if (g_is_transitioning) {
-    // Keep target filters warm but don't move the eyes
     bool targetActive = (g_recon_state == STATE_ACTIVE) && (target.detected || ((now - target.last_seen_ms) < 300 && target.last_seen_ms > 0));
     if (targetActive) {
       float normX = constrain((target.error_x / 100.0f) * GAZE_GAIN_X, -1.0f, 1.0f);
@@ -721,12 +730,12 @@ void updateGazeSystem() {
         }
       }
 
-      // Update smoothed target so pursuit doesn't snap when morph ends
+      // Keep target low-pass filter warm
       float alpha = 1.0f - expf(-20.0f * dt);
       smoothedTargetX += (s_deadbandTargetX - smoothedTargetX) * alpha;
       smoothedTargetY += (s_deadbandTargetY - smoothedTargetY) * alpha;
     }
-    // Zero velocity so pursuit starts clean after morph
+    // Zero velocity vectors to prevent snapping when morph completes
     eye_vx = 0.0f;
     eye_vy = 0.0f;
     trackInSaccade = false;
@@ -734,7 +743,7 @@ void updateGazeSystem() {
     return;
   }
 
-  /* === BRANCH 1: Active Target Vision Tracking === */
+  /* === ACTIVE TARGET PURSUIT === */
   bool targetActive = (g_recon_state == STATE_ACTIVE) && (target.detected || ((now - target.last_seen_ms) < 300 && target.last_seen_ms > 0));
   if (targetActive) {
     float normX = constrain((target.error_x / 100.0f) * GAZE_GAIN_X, -1.0f, 1.0f);
@@ -743,7 +752,7 @@ void updateGazeSystem() {
     float rawTargetX = normX * 22.0f;
     float rawTargetY = normY * 14.0f;
 
-    // Foveal Deadband & Noise Gate: suppress camera sensor micro-jitter & breathing noise (< 1.35 px)
+    // Foveal deadband & noise gate: suppresses camera sensor noise and sub-pixel pixel jitter (< 1.35 px)
     if (!s_hasTargetLock || !s_prevTargetDetected) {
       s_deadbandTargetX = rawTargetX;
       s_deadbandTargetY = rawTargetY;
@@ -753,7 +762,7 @@ void updateGazeSystem() {
       float deltaY = rawTargetY - s_deadbandTargetY;
       float deltaDist = sqrtf(deltaX * deltaX + deltaY * deltaY);
       
-      const float DEADBAND_RADIUS = 1.35f; // Ignore jitter within 1.35 px
+      const float DEADBAND_RADIUS = 1.35f; // Ignore micro-jitter within 1.35px threshold
       if (deltaDist > DEADBAND_RADIUS) {
         float excess = (deltaDist - DEADBAND_RADIUS) / deltaDist;
         s_deadbandTargetX += deltaX * excess * 0.40f;
@@ -764,7 +773,7 @@ void updateGazeSystem() {
     float effectiveTargetX = s_deadbandTargetX;
     float effectiveTargetY = s_deadbandTargetY;
 
-    // Detect first acquisition event or large target jump
+    // Handle target initial acquisition or large position step jumps
     if (!s_prevTargetDetected) {
       s_prevTargetDetected = true;
       float dist_init = sqrtf((effectiveTargetX - currentOffsetX) * (effectiveTargetX - currentOffsetX) + 
@@ -787,16 +796,15 @@ void updateGazeSystem() {
       inSaccade = false;
     }
 
-    // Continuous exponential low-pass filter
+    // Continuous exponential low-pass target filter
     float alpha = 1.0f - expf(-20.0f * dt);
     smoothedTargetX += (effectiveTargetX - smoothedTargetX) * alpha;
     smoothedTargetY += (effectiveTargetY - smoothedTargetY) * alpha;
 
-    // Constant rigid inter-ocular distance (zero breathing/pinching)
     currentVergence = 0.0f;
     currentEyeScale = 1.0f;
 
-    // Check for large saccadic glance requirement
+    // Trigger saccadic glance if target error is large (> 15.0 px)
     float dx_eye = effectiveTargetX - currentOffsetX;
     float dy_eye = effectiveTargetY - currentOffsetY;
     float dist_eye = sqrtf(dx_eye * dx_eye + dy_eye * dy_eye);
@@ -825,14 +833,14 @@ void updateGazeSystem() {
         trackInSaccade = false;
       } else {
         float p = progress;
-        float s = p * p * p * (10.0f + p * (-15.0f + 6.0f * p));
+        float s = p * p * p * (10.0f + p * (-15.0f + 6.0f * p)); // 5th-order minimum-jerk spline
         float distX = trackSaccadeTargetX - trackSaccadeStartX;
         float distY = trackSaccadeTargetY - trackSaccadeStartY;
         currentOffsetX = trackSaccadeStartX + (distX * s);
         currentOffsetY = trackSaccadeStartY + (distY * s);
       }
     } else {
-      // Second-order mass-spring-damper differential system (Critical damping: omega=38, zeta=1.0)
+      // Second-order mass-spring-damper differential kinetics (Critical damping: omega_n=38, zeta=1.0)
       float omega_n = 38.0f;
       float zeta = 1.00f;
 
@@ -842,7 +850,7 @@ void updateGazeSystem() {
       eye_vx += ax * dt;
       eye_vy += ay * dt;
 
-      // Micro-velocity noise damping when settled near target
+      // Micro-velocity noise damping near equilibrium
       if (fabsf(smoothedTargetX - currentOffsetX) < 0.30f && fabsf(eye_vx) < 1.2f) {
         eye_vx *= 0.60f;
       }
@@ -862,12 +870,12 @@ void updateGazeSystem() {
     return;
   }
 
-  /* === BRANCH 2 & 3: Ambient Spontaneous Fixations (Idle & Sleep) === */
+  /* === AMBIENT SPONTANEOUS FIXATIONS (IDLE & SLEEP WANDERING) === */
   s_prevTargetDetected = false;
   s_hasTargetLock = false;
   trackInSaccade = false;
 
-  // Smoothly decay vergence and ocular scale
+  // Exponential decay for ocular vergence and scale
   float alpha_decay = 1.0f - expf(-8.0f * dt);
   currentVergence += (0.0f - currentVergence) * alpha_decay;
   currentEyeScale += (1.0f - currentEyeScale) * alpha_decay;
@@ -879,21 +887,18 @@ void updateGazeSystem() {
     startOffsetY = currentOffsetY;
 
     if (isSleep) {
-      // Sleep Mode: Gentle, relaxed wandering saccades
+      // Sleep state: Slow, relaxed wandering saccades
       uint32_t pick = esp_random() % 100;
       float distFromCenter = sqrtf(startOffsetX * startOffsetX + startOffsetY * startOffsetY);
 
       if (pick < 35 && distFromCenter >= 3.0f) {
-        // Return to center
         targetOffsetX = ((float)(esp_random() % 20) - 10.0f) * 0.1f;
         targetOffsetY = ((float)(esp_random() % 16) - 8.0f) * 0.1f;
       } else if (pick < 75) {
-        // Lateral scan to opposite quadrant
         float signX = (startOffsetX > 1.0f) ? -1.0f : ((startOffsetX < -1.0f) ? 1.0f : ((esp_random() % 2 == 0) ? -1.0f : 1.0f));
         targetOffsetX = signX * (4.5f + (float)(esp_random() % 800) * 0.01f);
         targetOffsetY = ((float)(esp_random() % 600) - 300.0f) * 0.01f;
       } else {
-        // Oblique glance
         float signX = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
         float signY = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
         targetOffsetX = signX * (4.0f + (float)(esp_random() % 600) * 0.01f);
@@ -910,10 +915,9 @@ void updateGazeSystem() {
       gazeStartTime = now;
       inSaccade = true;
     } else {
-      // Active Idle Mode: Alive human-like spontaneous fixations (Continuous & Uninterrupted)
+      // Active idle state: Spontaneous human-like gaze fixations
       uint32_t pick = esp_random() % 100;
       if (pick < 40) {
-        // Center return
         targetOffsetX = 0.0f;
         targetOffsetY = 0.0f;
       } else if (pick < 70) {
@@ -940,7 +944,7 @@ void updateGazeSystem() {
     }
   }
 
-  /* --- Minimum-Jerk Saccadic Trajectory Evaluation --- */
+  /* --- Saccadic Trajectory Evaluation --- */
   if (inSaccade) {
     float elapsed = (float)(now - gazeStartTime);
     float progress = elapsed / (float)gazeDuration;
@@ -951,14 +955,14 @@ void updateGazeSystem() {
       inSaccade = false;
     } else {
       float p = progress;
-      float s = p * p * p * (10.0f + p * (-15.0f + 6.0f * p));
+      float s = p * p * p * (10.0f + p * (-15.0f + 6.0f * p)); // Minimum-jerk interpolation
       float distX = targetOffsetX - startOffsetX;
       float distY = targetOffsetY - startOffsetY;
       currentOffsetX = startOffsetX + (distX * s);
       currentOffsetY = startOffsetY + (distY * s);
     }
   } else {
-    // Living fixation micro-drift (Brownian random walk)
+    // Fixation micro-kinetics: Mean-reverting Brownian random walk
     float u1 = ((float)(esp_random() % 1000) - 500.0f) * 0.001f;
     float u2 = ((float)(esp_random() % 1000) - 500.0f) * 0.001f;
     float drift_sigma = 0.03f * sqrtf(dt);
@@ -975,9 +979,9 @@ void updateGazeSystem() {
   currentOffsetY = constrain(currentOffsetY, -12.0f, 11.0f);
 }
 
-// --- 2D Facial Primitives (Rendered into 1-Bit LGFX Sprite - Rigid Group Synchronized) ---
+/* --- 1-Bit LGFX Sprite Display Primitives --- */
 
-// Anti-Jitter Coordinate Hysteresis (Prevents 1px quantization twitching when stationary)
+// Anti-jitter coordinate hysteresis: Prevents 1px display quantization flickering when resting stationary
 static inline int getFilteredOx(float rawOffsetX) {
   static float s_stable_ox = 0.0f;
   if (fabsf(rawOffsetX - s_stable_ox) >= 0.55f) {
@@ -1272,7 +1276,7 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
   }
 }
 
-// --- Expression Transition Engine (Snappy 170ms Ballistic Blink Morph) ---
+/* --- Expression Transition Engine (170ms Ballistic Morph Window) --- */
 void transitionExpression(Expression fromExpr, Expression toExpr, float durationMs = 170.0f) {
   if (fromExpr == toExpr) return;
 
@@ -1298,17 +1302,17 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
   float stepDelay = durationMs / steps;
 
   for (int i = 0; i <= steps; i++) {
-    updateGazeSystem();
+    updateGazeSystem(); // Maintain continuous gaze kinematics updates during morph loop
 
     float t = (float)i / (float)steps;
 
-    // Fast ballistic blink closure: drops in 60ms, stays closed 40ms, opens in 70ms
+    // Ballistic blink profile: eyelid closes in 60ms, holds closed slit for 40ms, re-opens in 70ms
     float curEyeH;
     if (t <= 0.40f) {
       float p = t / 0.40f;
       curEyeH = startEyeH * fmaxf(0.04f, 1.0f - p * p);
     } else if (t <= 0.60f) {
-      curEyeH = 0.04f; // Completely closed slit (no smirk half-height dwell)
+      curEyeH = 0.04f; // Hold closed slit state during geometry swap
     } else {
       float p = (t - 0.60f) / 0.40f;
       curEyeH = endEyeH * fmaxf(0.04f, sinf(p * 1.5707963f));
@@ -1323,7 +1327,7 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
 
     float joyScale = (t < 0.5f) ? fmaxf(0.0f, 1.0f - t * 2.0f) : fmaxf(0.0f, (t - 0.5f) * 2.0f);
 
-    // Invert background for EXPR_ANGRY cleanly when eyes are closed (t=0.5)
+    // Invert monochrome screen colors for EXPR_ANGRY at mid-blink (t=0.5) to avoid visual flicker
     bool inverted = (t < 0.5f) ? (fromExpr == EXPR_ANGRY) : (toExpr == EXPR_ANGRY);
     uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
     uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
@@ -1333,7 +1337,7 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
 
     canvas.fillScreen(bgColor);
 
-    // Morph eye shape cleanly when eyes are in closed slit state
+    // Render underlying eye shape cleanly when eyelids are closed
     Expression activeExpr = (t < 0.5f) ? fromExpr : toExpr;
     if (activeExpr == EXPR_IDLE || activeExpr == EXPR_ANGRY || activeExpr == EXPR_SMIRK) {
       drawEyes(curEyeH, ox, oy, fgColor, currentVergence, currentEyeScale);
@@ -1351,7 +1355,7 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
       drawAngryBrows(curEyeH, ox, oy, curBrow, bgColor, currentVergence, currentEyeScale);
     }
 
-    // Rigid synchronized mouth drawing with scale & coordinate lock
+    // Rigid synchronized mouth interpolation
     bool fromCurveMouth = (fromExpr == EXPR_IDLE || fromExpr == EXPR_ANGRY || fromExpr == EXPR_SMIRK);
     bool toCurveMouth   = (toExpr == EXPR_IDLE || toExpr == EXPR_ANGRY || toExpr == EXPR_SMIRK);
 
@@ -1411,25 +1415,29 @@ void setNextExpression(Expression newExpr) {
   }
 }
 
-// --- Psychobiological Affective Emotion Engine (Russell Circumplex 2D Model) ---
-static float g_emotion_valence = 0.05f;   // V in [-1.0, +1.0] (Displeasure to Pleasure)
-static float g_emotion_arousal = 0.15f;   // A in [0.0, 1.0] (Quiescence to High Activation)
+/* --- Russell Circumplex 2D Emotion Engine --- */
+static float g_emotion_valence = 0.05f;   // V ∈ [-1.0, +1.0] (Displeasure to Pleasure)
+static float g_emotion_arousal = 0.15f;   // A ∈ [0.0, 1.0] (Quiescence to High Activation)
 static uint32_t g_last_mood_update = 0;
-static uint32_t g_mood_lock_until = 0;    // Absolute biological refractory period
+static uint32_t g_mood_lock_until = 0;    // Biological refractory period lock (milliseconds)
 static uint32_t g_nextMoodShiftTime = 0;
 static bool g_lastTargetDetectedState = false;
 static float g_target_presence_ema = 0.0f;
 
+/**
+ * @brief Updates 2D Valence-Arousal emotion dynamics and triggers state machine mood shifts.
+ * @note Uses Langevin homeostatic relaxation (\f$\tau_v=6.0\text{s}, \tau_a=4.5\text{s}\f$) and enforces a 5-8 second refractory lock on transitions.
+ */
 void updateBiologicalMoodEngine() {
   unsigned long now = millis();
-  if (g_is_transitioning || now < g_mood_lock_until) return; // Enforce atomic locking & biological refractory period
+  if (g_is_transitioning || now < g_mood_lock_until) return; // Enforce atomic transition locking and refractory lock
 
   TrackTarget target;
   portENTER_CRITICAL(&target_mutex);
   target = current_target;
   portEXIT_CRITICAL(&target_mutex);
 
-  // Leaky presence integrator
+  // Leaky target presence exponential moving average (EMA)
   float raw_pres = (target.detected && target.confidence > 0.28f) ? 1.0f : 0.0f;
   g_target_presence_ema = g_target_presence_ema * 0.88f + raw_pres * 0.12f;
   bool is_detected = (g_target_presence_ema > 0.58f);
@@ -1438,7 +1446,7 @@ void updateBiologicalMoodEngine() {
   dt = constrain(dt, 0.01f, 0.20f);
   g_last_mood_update = now;
 
-  // Dynamical stimulus forces (Physics & Biology of Emotion)
+  // Emotional equilibrium targets based on visual detection stimulus
   float target_v = 0.05f;
   float target_a = 0.15f;
 
@@ -1456,7 +1464,7 @@ void updateBiologicalMoodEngine() {
   g_emotion_valence += ((target_v - g_emotion_valence) / tau_v) * dt;
   g_emotion_arousal += ((target_a - g_emotion_arousal) / tau_a) * dt;
 
-  // Event 1: First target acquisition stimulus (Debounced & Locked)
+  // Event 1: Initial target acquisition reaction (debounced and refractory locked)
   if (is_detected && !g_lastTargetDetectedState) {
     g_lastTargetDetectedState = true;
     uint32_t roll = esp_random() % 100;
@@ -1479,23 +1487,23 @@ void updateBiologicalMoodEngine() {
       g_emotion_arousal = 0.25f;
     }
     setNextExpression(reactExpr);
-    g_mood_lock_until = now + (esp_random() % 3000 + 5000); // 5 - 8s biological lock
+    g_mood_lock_until = now + (esp_random() % 3000 + 5000); // 5-8s refractory lock
     g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 4000 + 4000);
     return;
   }
 
-  // Event 2: Target lost stimulus (Debounced & Locked)
+  // Event 2: Target loss reaction (debounced and refractory locked)
   if (!is_detected && g_lastTargetDetectedState && g_target_presence_ema < 0.15f) {
     g_lastTargetDetectedState = false;
     uint32_t roll = esp_random() % 100;
     Expression reactExpr = (roll < 75) ? EXPR_IDLE : ((roll < 90) ? EXPR_SEDIH : EXPR_ANGRY);
     setNextExpression(reactExpr);
-    g_mood_lock_until = now + (esp_random() % 2500 + 4500); // 4.5 - 7s lock
+    g_mood_lock_until = now + (esp_random() % 2500 + 4500); // 4.5-7s refractory lock
     g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 4000 + 4000);
     return;
   }
 
-  // Spontaneous Markov mood transitions from Valence-Arousal equilibrium
+  // Spontaneous Markov mood transitions when in equilibrium
   if (g_nextMoodShiftTime == 0) {
     g_nextMoodShiftTime = now + (esp_random() % 6000 + 8000);
   }
@@ -1551,17 +1559,17 @@ void updateBiologicalMoodEngine() {
     }
 
     setNextExpression(nextMood);
-    g_mood_lock_until = now + (esp_random() % 3000 + 5000); // 5 - 8s biological lock
+    g_mood_lock_until = now + (esp_random() % 3000 + 5000); // 5-8s refractory lock
     if (nextMood == EXPR_IDLE) {
-      g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 8000 + 8000); // 8 - 16s in IDLE
+      g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 8000 + 8000); // 8-16s dwell in IDLE
     } else {
-      g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 4000 + 5000); // 5 - 9s in other moods
+      g_nextMoodShiftTime = g_mood_lock_until + (esp_random() % 4000 + 5000); // 5-9s dwell in active moods
     }
   }
 }
 
 /**
- * @brief OLED Display rendering and kinematic animation task bound to Core 1.
+ * @brief FreeRTOS OLED UI task pinned to Core 1 (60 FPS rendering & gaze dynamics).
  * @param pvParameters FreeRTOS task parameter payload pointer.
  */
 void oledTask(void *pvParameters) {
@@ -1571,7 +1579,7 @@ void oledTask(void *pvParameters) {
   lcd.setRotation(2);
   lcd.setBrightness(OLED_BRIGHTNESS);
 
-  // Initialize 1-bit monochrome off-screen canvas sprite (128x64 = 1024 bytes)
+  // Allocate 1-bit monochrome off-screen canvas sprite (128x64 pixels = 1024 bytes)
   canvas.setColorDepth(1);
   canvas.createSprite(128, 64);
 
@@ -1597,8 +1605,8 @@ void oledTask(void *pvParameters) {
     Expression prevExpr = currentExpr;
     updateBiologicalMoodEngine();
 
-    /* --- Recon State Transition Handoff ---
-     * Seamlessly preserves current physical eye position when state changes */
+    /* --- Reconnaissance State Handoff ---
+     * Preserves physical eye offset across ACTIVE ↔ SLEEP state transitions */
     if (g_recon_state != g_prev_recon_state) {
       inSaccade            = false;
       trackInSaccade       = false;
@@ -1608,13 +1616,12 @@ void oledTask(void *pvParameters) {
     }
 
     if (currentExpr != prevExpr) {
-      // Transition already pushed the final frame on step 10, pace to next 60 FPS frame cleanly
+      // Expression transition already rendered step 10 frame; reset timing baseline
       frame_start_us = micros();
     } else {
-      // Unified 60 FPS master gaze kinematics
       updateGazeSystem();
 
-      /* --- Non-Blocking Eyelid Blinking State Machine --- */
+      /* --- Eyelid Blinking State Machine --- */
       bool canBlink = (currentExpr != EXPR_OVERLOAD && currentExpr != EXPR_SEDIH && currentExpr != EXPR_JOY);
 
       if (!canBlink) {
@@ -1669,7 +1676,7 @@ void oledTask(void *pvParameters) {
         }
       }
 
-      /* --- Continuous OLED Rendering Dispatch via Single pushSprite --- */
+      /* --- Render Dispatch to OLED Sprite --- */
       if (currentExpr == EXPR_OVERLOAD || currentExpr == EXPR_SEDIH) {
         animFrame += 0.025f;
       }
@@ -1677,7 +1684,7 @@ void oledTask(void *pvParameters) {
       drawFace(currentExpr, g_blinkEyeHeight, currentOffsetX, currentOffsetY, animFrame, currentVergence, currentEyeScale);
     }
 
-    /* --- Adaptive Frame Pacing: 60 FPS Active / 30 FPS Sleep (Power Saving) --- */
+    /* --- Adaptive Frame Pacing: 60 FPS (Active) / 30 FPS (Sleep) --- */
     uint32_t frame_budget_us = (g_recon_state == STATE_SLEEP_RECON) ? FPS_SLEEP_US : FPS_ACTIVE_US;
     uint32_t frame_elapsed_us = micros() - frame_start_us;
     if (frame_elapsed_us < frame_budget_us) {
@@ -1692,14 +1699,15 @@ void oledTask(void *pvParameters) {
   }
 }
 
-// --- 2D Discrete Linear Kalman Filter Architecture ---
+/* --- 2D Discrete Kalman Filter Architecture --- */
+
 /**
  * @struct KalmanFilter1D
- * @brief Discrete Linear Kalman Filter tracking 1D position and velocity [p, v]^T.
+ * @brief Discrete 1D linear Kalman filter tracking state vector \f$[p, v]^T\f$.
  */
 struct KalmanFilter1D {
-  float p;       // Estimated position (pixels)
-  float v;       // Estimated velocity (pixels/sec)
+  float p;       // Estimated target position (pixels)
+  float v;       // Estimated target velocity (pixels/sec)
   float P00;     // State covariance P[0,0]
   float P01;     // State covariance P[0,1]
   float P11;     // State covariance P[1,1]
@@ -1713,8 +1721,9 @@ struct KalmanFilter1D {
   }
 
   void predict(float dt, float q_accel) {
-    // F = [1, dt; 0, 1]
+    // State transition F = [1, dt; 0, 1]
     p = p + v * dt;
+
     // Process noise covariance Q for constant velocity model with acceleration variance q
     float dt2 = dt * dt;
     float dt3 = dt2 * dt;
@@ -1738,13 +1747,13 @@ struct KalmanFilter1D {
     if (S < 1e-4f) S = 1e-4f;
     float invS = 1.0f / S;
 
-    float K0 = P00 * invS;         // Kalman gain for position
-    float K1 = P01 * invS;         // Kalman gain for velocity
+    float K0 = P00 * invS;         // Kalman gain for position state
+    float K1 = P01 * invS;         // Kalman gain for velocity state
 
     p = p + K0 * y;
     v = v + K1 * y;
 
-    // Joseph-stabilized / Standard algebraic covariance update
+    // Joseph-stabilized covariance update to guarantee positive semi-definiteness
     float P00_temp = (1.0f - K0) * P00;
     float P01_temp = (1.0f - K0) * P01;
     float P11_temp = P11 - K1 * P01;
@@ -1757,7 +1766,7 @@ struct KalmanFilter1D {
 
 /**
  * @struct KalmanTracker2D
- * @brief Unified 2D Cartesian target kinematic tracking filter ([x, y, vx, vy]^T).
+ * @brief Container tracking 2D Cartesian target kinematic state \f$[x, y, v_x, v_y]^T\f$.
  */
 struct KalmanTracker2D {
   KalmanFilter1D kf_x;
@@ -1786,10 +1795,16 @@ static float debug_m00 = 0.0f;
 static int debug_skin_px = 0;
 static float debug_lock_conf = 0.0f;
 
-// --- Differential Computer Vision Engine with Dynamic Local Lighting & Kalman Tracking ---
+/**
+ * @brief Differential computer vision engine executing YCbCr skin classification and Kalman tracking.
+ * @param fb Pointer to camera frame buffer containing raw JPEG bytes.
+ * @note Marked with `IRAM_ATTR` to run out of fast instruction RAM. Performs 8x downscaling to 80x60,
+ *       analyzes 4x3 spatial lighting sectors, computes motion history image (MHI), and tracks 2D targets.
+ */
 void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   if (!fb || !fb->buf || fb->len < 1024 || !small_rgb_buf || !prev_lum_buf || !mhi_buf || fb->format != PIXFORMAT_JPEG) return;
 
+  // 8x fast hardware downscaling from VGA (640x480) to 80x60 RGB565 array
   bool ok = jpg2rgb565(fb->buf, fb->len, small_rgb_buf, JPG_SCALE_8X);
   if (!ok) return;
 
@@ -1807,7 +1822,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
 
   uint8_t* p_cur = cur_40x30;
 
-  // Pass 1: Luminance conversion and local spatial lighting distribution analysis
+  // Pass 1: Subsampled Y-luminance conversion and 4x3 sector illumination analysis
   for (int y = 0; y < 30; y++) {
     int src_row_off = (y * 2) * 80;
     int sec_y = y / 10;
@@ -1830,7 +1845,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   float frame_mean_lum = (float)total_luminance_sum / 1200.0f;
   ema_global_luminance = 0.90f * ema_global_luminance + 0.10f * frame_mean_lum;
 
-  // Precompute local sector mean luminance
+  // Precompute mean luminance for each of the 12 local sectors
   float sec_mean_lum[3][4];
   for (int sy = 0; sy < 3; sy++) {
     for (int sx = 0; sx < 4; sx++) {
@@ -1838,7 +1853,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     }
   }
 
-  // Pass 2: Robust Local-Lighting Adaptive YCbCr Skin Classifier
+  // Pass 2: Dynamic Local-Lighting Adaptive YCbCr Skin Classifier
   bool* p_skin = skin_mask_40x30;
   for (int y = 0; y < 30; y++) {
     int src_row_off = (y * 2) * 80;
@@ -1855,14 +1870,14 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       int cb = 128 + (((-43 * r - 85 * g + 128 * b)) >> 8);
       int cr = 128 + (((128 * r - 107 * g - 21 * b)) >> 8);
 
-      // Local lighting compensation: adjust chrominance thresholds dynamically per sector
+      // Local lighting compensation: adjust Cb/Cr thresholds dynamically per sector
       float delta_local = fmaxf(0.0f, fminf(16.0f, (95.0f - local_lum) * 0.45f));
       int min_cb = (int)(75.0f - delta_local);
       int max_cb = (int)(129.0f + delta_local);
       int min_cr = (int)(127.0f - delta_local);
       int max_cr = (int)(180.0f + delta_local);
 
-      // Shadow margin relaxation for severe backlighting/underexposed facial shadows
+      // Relax shadow margins under severe backlighting or underexposed shadows
       int shadow_margin = (local_lum < 65.0f) ? 4 : 0;
       int min_r_thresh   = (local_lum < 65.0f) ? 8 : 10;
       int min_cr_cb_diff = (local_lum < 65.0f) ? 4 : 6;
@@ -1885,7 +1900,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     }
   }
 
-  // 3x3 Spatial Box Smoothing for differential motion calculation
+  // Pass 3: 3x3 Spatial box filter for noise reduction and spatial gradient extraction
   static uint8_t smooth_40x30[1200] __attribute__((aligned(16)));
   for (int y = 1; y < 29; y++) {
     int y_off = y * 40;
@@ -1910,6 +1925,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     return;
   }
 
+  // Compute global frame difference mean
   int total_delta_sum = 0;
   int sample_count = 0;
   for (int y = 1; y < 29; y++) {
@@ -1927,7 +1943,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   float prev_grid_x = k_tracker.kf_x.p * (1.0f / 16.0f);
   float prev_grid_y = k_tracker.kf_y.p * (1.0f / 16.0f);
 
-  // 3-Sector Multi-Object Spatial Clustering Accumulators
+  // Pass 4: 3-Sector Multi-Object Spatial Accumulators
   float sec_M00[3] = {0}, sec_M10[3] = {0}, sec_M01[3] = {0};
   float sec_M20[3] = {0}, sec_M02[3] = {0};
   int sec_skin[3] = {0};
@@ -1944,6 +1960,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       float local_delta = (float)abs((int)lum - (int)prev_l);
       float delta = fmaxf(0.0f, local_delta - global_delta_mean);
 
+      // Decay Motion History Image (MHI) buffer
       if (delta > 6.0f) {
         mhi_buf[idx] = 255;
       } else {
@@ -1957,7 +1974,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       bool is_skin = skin_mask_40x30[idx];
       uint8_t raw_lum = cur_40x30[idx];
 
-      // Reject high-luminance background light sources (neon lights, lamps)
+      // Reject non-skin high-luminance background light sources (lamps, windows)
       if (!is_skin && raw_lum > 215) continue;
 
       float raw_energy = 2.5f * delta + 16.0f * mhi_weight + 1.5f * gy + 0.8f * gx;
@@ -1973,17 +1990,13 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
         energy = raw_energy * (0.04f * texture_factor);
       }
 
-      if (is_skin) {
-        // Accept skin pixels
-      } else {
-        if (raw_energy < 22.0f || energy < 1.0f) continue; // Require strong motion/gradient for non-skin pixels
-      }
+      if (!is_skin && (raw_energy < 22.0f || energy < 1.0f)) continue; // Require strong motion/gradient for non-skin pixels
 
       float weight = energy;
       float dx = (float)x;
       float dy = (float)y;
 
-      // Spatial Kernel Gating
+      // Spatial gating: Attenuate pixels distant from previous Kalman tracking estimate
       if (k_tracker.active) {
         float dist_x = dx - prev_grid_x;
         float dist_y = dy - prev_grid_y;
@@ -2003,7 +2016,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       M02 += dy * dy * weight;
       M11 += dx * dy * weight;
 
-      // Sector Accumulation for Multi-Object Tracking
+      // Accumulate into 3 horizontal sectors for multi-object candidate scoring
       int s_idx = (x < 14) ? 0 : ((x < 27) ? 1 : 2);
       sec_M00[s_idx] += weight;
       sec_M10[s_idx] += dx * weight;
@@ -2015,7 +2028,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     }
   }
 
-  // Segment and Rank Multi-Object Candidates (Up to 3 Objects)
+  // Pass 5: Segment and rank up to 3 spatial object candidates
   ObjectCandidate temp_cand[3];
   int active_cnt = 0;
 
@@ -2033,11 +2046,11 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       float bw = fmaxf(130.0f, fminf(240.0f, 2.4f * fmaxf(2.8f, sig_x) * 16.0f));
       float bh = fmaxf(160.0f, fminf(310.0f, 2.8f * fmaxf(3.2f, sig_y) * 16.0f));
 
-      // Calculate Priority Score: Skin ratio + Motion energy + Area - Center distance penalty
+      // Candidate priority score combining skin ratio, motion energy, area, and center proximity penalty
       float center_dist = fabsf(cx - 320.0f);
       float priority = 15.0f * sec_skin[s] + 1.8f * sec_motion[s] + 0.10f * sec_M00[s] - 0.06f * center_dist;
 
-      // Target proximity estimation Z from bounding box area
+      // Estimate target proximity Z from bounding box surface area
       float area_norm = sqrtf(bw * bh);
       float prox = constrain((area_norm - 140.0f) / 130.0f, 0.0f, 1.0f);
 
@@ -2056,7 +2069,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     }
   }
 
-  // Sort candidates by Priority Score descending (Primary P1, Secondary P2, Tertiary P3)
+  // Sort candidates by Priority Score descending
   for (int i = 0; i < active_cnt - 1; i++) {
     for (int j = i + 1; j < active_cnt; j++) {
       if (temp_cand[j].priority_score > temp_cand[i].priority_score) {
@@ -2067,7 +2080,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     }
   }
 
-  // Update global candidates under mutex
+  // Update global candidate array under mutex lock
   portENTER_CRITICAL(&target_mutex);
   g_num_candidates = active_cnt;
   for (int i = 0; i < MAX_OBJECT_CANDIDATES; i++) {
@@ -2088,12 +2101,12 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   uint32_t now_us = micros();
   uint32_t now_ms = millis();
 
-  // Autonomous Sequential Object Inspection State Machine
+  // Autonomous object inspection switcher state machine
   if (g_num_candidates > 1) {
     if (now_ms - g_last_inspection_time_ms > g_inspection_hold_time_ms) {
       g_inspected_candidate_idx = (g_inspected_candidate_idx + 1) % g_num_candidates;
       g_last_inspection_time_ms = now_ms;
-      g_inspection_hold_time_ms = (esp_random() % 1400) + 2400; // 2.4s to 3.8s per object inspection
+      g_inspection_hold_time_ms = (esp_random() % 1400) + 2400; // Hold inspection for 2.4s to 3.8s
     }
   } else {
     g_inspected_candidate_idx = 0;
@@ -2103,8 +2116,8 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   float dt = fmaxf(0.01f, fminf(0.20f, dt_sec));
   k_tracker.last_update_us = now_us;
 
-  // 2D Kalman Filter Prediction Step
-  float q_process = (skin_pixel_count >= 4) ? 850.0f : 450.0f;
+  // Pass 6: 2D Kalman Filter Prediction Step
+  float q_process = (skin_pixel_count >= 4) ? 850.0f : 450.0f; // Increase process noise Q when skin pixels confirm human presence
   k_tracker.kf_x.predict(dt, q_process);
   k_tracker.kf_y.predict(dt, q_process);
 
@@ -2130,7 +2143,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     float raw_cx = mean_x * 16.0f;
     float raw_cy = mean_y * 16.0f;
 
-    // Anatomically proportioned bounding box scaling for human head, face, and shoulders
+    // Head/shoulder aspect ratio coupling
     float raw_bw = 2.4f * fmaxf(2.8f, sigma_x) * 16.0f;
     float raw_bh = 2.8f * fmaxf(3.2f, sigma_y) * 16.0f;
 
@@ -2156,7 +2169,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
       }
     }
   } else if (k_tracker.active && skin_pixel_count >= 8) {
-    // --- Static Target Persistence (Skin-Locus Centroid Fallback) ---
+    // Static target persistence fallback using skin locus centroid
     float M00_skin = 0.0f, M10_skin = 0.0f, M01_skin = 0.0f;
     float M20_skin = 0.0f, M02_skin = 0.0f;
     for (int y = 1; y < 29; y++) {
@@ -2209,12 +2222,11 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
   lock_confidence = lock_confidence * 0.85f + (candidate_found ? 1.0f : 0.0f) * 0.15f;
 
   if (candidate_found) {
-    // 2D Kalman Measurement Update with Dynamic Noise Covariance R Tuning
+    // Dynamic measurement noise R covariance adjustment:
+    // Stationary target (< 6px innovation): increase R to smooth quantization noise.
+    // Rapid movement (> 20px innovation): decrease R to eliminate phase lag during pursuit.
     float dist_innov = sqrtf((cand_cx - pred_x) * (cand_cx - pred_x) + (cand_cy - pred_y) * (cand_cy - pred_y));
     
-    // Dynamic R adjustment:
-    // When stationary (dist < 6px) and high skin pixel count: increase R to eliminate discretization jitter.
-    // When moving rapidly (dist > 20px): reduce R to enable immediate responsive tracking with zero phase lag.
     float R_base = 25.0f;
     float R_dynamic;
     if (skin_pixel_count >= 4) {
@@ -2239,7 +2251,7 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     k_tracker.active = true;
     last_valid_human_time = now_ms;
   } else {
-    // Predict-only decay when measurement is lost
+    // Predict-only velocity decay when measurement is temporarily lost
     k_tracker.kf_x.v *= 0.85f;
     k_tracker.kf_y.v *= 0.85f;
 
@@ -2250,11 +2262,11 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
     }
   }
 
-  // Constrain estimated position within image boundaries
+  // Constrain estimated position within image bounds
   k_tracker.kf_x.p = fmaxf(0.0f, fminf(640.0f, k_tracker.kf_x.p));
   k_tracker.kf_y.p = fmaxf(0.0f, fminf(480.0f, k_tracker.kf_y.p));
 
-  // Compute Foveal Target Proximity Z in range [0.0, 1.0]
+  // Compute normalized target proximity Z in range [0.0, 1.0]
   float current_area = sqrtf(k_tracker.w * k_tracker.h);
   float proximity_z = constrain((current_area - 140.0f) / 130.0f, 0.0f, 1.0f);
 
@@ -2300,14 +2312,16 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
 }
 
 /**
- * @brief Autonomous camera capture, vision processing & Dynamic Frequency Scaling task (Core 0).
+ * @brief Autonomous camera capture, vision processing, and power scaling task pinned to Core 0.
  * @param pvParameters FreeRTOS task parameter payload pointer.
+ * @note Core 0 manages the camera interrupt handler, YCbCr vision pipeline, HTTP web server requests,
+ *       and dynamic CPU frequency scaling (240MHz active vs 80MHz sleep).
  */
 void cameraTask(void *pvParameters) {
   uint32_t last_frame_time = millis();
   g_state_timer = millis();
 
-  // Power optimization: Short reconnaissance window (3-6s) vs Extended standby (escalating)
+  // Initial power optimization windows: 3-6s active reconnaissance vs 90-180s sleep standby
   uint32_t active_duration_ms = (esp_random() % 3000) + 3000; 
   uint32_t sleep_duration_ms  = (esp_random() % 90000) + 90000; 
   bool last_wifi_ps_sleep = false;
@@ -2318,7 +2332,7 @@ void cameraTask(void *pvParameters) {
     uint32_t now = millis();
     bool web_active = isWebOrStreamActive(now);
 
-    // Ensure Wi-Fi radio stays active for incoming HTTP Web UI connections
+    // Keep Wi-Fi power save mode disabled when STA mode is connected so Web UI remains responsive
     if (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) {
       if (last_wifi_ps_sleep) {
         WiFi.setSleep(WIFI_PS_NONE);
@@ -2343,7 +2357,7 @@ void cameraTask(void *pvParameters) {
     if (g_recon_state == STATE_ACTIVE) {
       camera_fb_t *fb = esp_camera_fb_get();
       if (fb) {
-        if (fb->len > 1024 && fb->buf[0] == 0xFF && fb->buf[1] == 0xD8) {
+        if (fb->len > 1024 && fb->buf[0] == 0xFF && fb->buf[1] == 0xD8) { // Verify valid JPEG SOI header
           processFrameAI(fb);
 
           if (now - last_frame_time > 0) {
@@ -2351,6 +2365,7 @@ void cameraTask(void *pvParameters) {
           }
           last_frame_time = now;
 
+          // Copy frame buffer into PSRAM stream buffer when web client is connected
           if (web_active && g_latest_jpeg_buf) {
             if (fb->len <= 64 * 1024) {
               portENTER_CRITICAL(&g_stream_mutex);
@@ -2374,46 +2389,45 @@ void cameraTask(void *pvParameters) {
       target_engaged = (current_target.detected && (now - current_target.last_seen_ms < 500));
       portEXIT_CRITICAL(&target_mutex);
 
-      // Keep awake if web stream is open OR a human target is actively being engaged
+      // Prevent entering sleep state while web clients are streaming or target is engaged
       if (web_active || target_engaged) {
         g_state_timer = now;
-        // Only reset sleep escalation on CONFIRMED human presence (skin pixels ≥ 4)
-        // Prevents lights, reflections, and random motion from resetting power savings
+        // Only reset sleep escalation on confirmed human presence (skin pixels >= 4)
         if (target_engaged && debug_skin_px >= 4) {
           g_sleep_miss_count = 0;
         }
       } else if (now - g_state_timer > active_duration_ms) {
         // Transition ACTIVE -> SLEEP_RECON:
-        // 1. Put camera sensor hardware into software standby via SCCB
+        // 1. Put camera sensor hardware into software standby via SCCB register writes
         setCameraSleep(true);
-        // 2. Scale down CPU to minimum (40 MHz) — I2C OLED @1MHz still works
+        // 2. Drop CPU clock to 80 MHz floor (keeps Wi-Fi stack stable while reducing power draw)
         setCpuFrequencyMhz(CPU_FREQ_SLEEP);
         g_recon_state = STATE_SLEEP_RECON;
         g_state_timer = now;
 
-        // Progressive Sleep Escalation: longer sleep after consecutive misses
+        // Progressive sleep escalation:
         // Level 0 (0-2 misses):  90-180s   (1.5-3 min)
         // Level 1 (3-5 misses): 180-300s   (3-5 min)
         // Level 2 (6+ misses):  300-480s   (5-8 min)
         g_sleep_miss_count++;
         if (g_sleep_miss_count >= 6) {
-          sleep_duration_ms = (esp_random() % 180000) + 300000;  // 5-8 minutes deep idle
+          sleep_duration_ms = (esp_random() % 180000) + 300000;
         } else if (g_sleep_miss_count >= 3) {
-          sleep_duration_ms = (esp_random() % 120000) + 180000;  // 3-5 minutes extended
+          sleep_duration_ms = (esp_random() % 120000) + 180000;
         } else {
-          sleep_duration_ms = (esp_random() % 90000) + 90000;    // 1.5-3 minutes standard
+          sleep_duration_ms = (esp_random() % 90000) + 90000;
         }
       }
     } 
     else if (g_recon_state == STATE_SLEEP_RECON) {
-      // Immediate wake-up on web activity or when sleep duration expires
+      // Wake up immediately on web client activity or when sleep timer expires
       if (web_active || (now - g_state_timer > sleep_duration_ms)) {
         // Transition SLEEP_RECON -> ACTIVE:
-        // 1. Scale CPU clock back up to full speed for real-time computer vision
+        // 1. Scale CPU clock back up to 240 MHz for real-time computer vision
         setCpuFrequencyMhz(CPU_FREQ_ACTIVE);
         // 2. Wake camera sensor from software standby
         setCameraSleep(false);
-        vTaskDelay(pdMS_TO_TICKS(30)); // Allow sensor PLL and AGC to stabilize
+        vTaskDelay(pdMS_TO_TICKS(30)); // Allow sensor AGC/AEC loop to stabilize
 
         k_tracker.init();
         portENTER_CRITICAL(&target_mutex);
@@ -2428,7 +2442,7 @@ void cameraTask(void *pvParameters) {
 
         g_recon_state = STATE_ACTIVE;
         g_state_timer = now;
-        active_duration_ms = (esp_random() % 3000) + 3000; // 3 - 6 seconds random active window
+        active_duration_ms = (esp_random() % 3000) + 3000; // 3-6s active reconnaissance window
       } else {
         vTaskDelay(pdMS_TO_TICKS(50));
       }
@@ -2438,10 +2452,10 @@ void cameraTask(void *pvParameters) {
   }
 }
 
-/* --- Embedded HTTP Web Server URI Handlers --- */
+/* --- Embedded HTTP Web Server Handlers --- */
 
 /**
- * @brief HTTP GET handler serving static Web UI dashboard page.
+ * @brief Serves the main HTML Web UI control dashboard page.
  */
 static esp_err_t index_handler(httpd_req_t *req) {
   g_last_web_activity_ms = millis();
@@ -2450,7 +2464,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief HTTP GET handler serving JSON telemetry data stream.
+ * @brief Serves real-time telemetry, target state, and multi-object candidate data in JSON format.
  */
 static esp_err_t telemetry_handler(httpd_req_t *req) {
   g_last_web_activity_ms = millis();
@@ -2493,7 +2507,7 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief HTTP GET handler serving MJPEG video stream.
+ * @brief Streams real-time MJPEG video frames over HTTP chunked multipart response.
  */
 static esp_err_t stream_handler(httpd_req_t *req) {
   esp_err_t res = ESP_OK;
@@ -2595,7 +2609,7 @@ static void restart_esp_task(void *pvParameters) {
 }
 
 /**
- * @brief HTTP GET handler serving stored Wi-Fi credentials JSON and current mode.
+ * @brief Serves saved Wi-Fi configuration credentials and current mode status.
  */
 static esp_err_t get_wifi_handler(httpd_req_t *req) {
   g_last_web_activity_ms = millis();
@@ -2610,7 +2624,7 @@ static esp_err_t get_wifi_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief HTTP POST handler switching between AP and STA modes and rebooting.
+ * @brief Updates operational mode (AP vs STA) in NVS and triggers system reboot.
  */
 static esp_err_t switch_mode_handler(httpd_req_t *req) {
   g_last_web_activity_ms = millis();
@@ -2641,7 +2655,7 @@ static esp_err_t switch_mode_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief HTTP POST handler updating Wi-Fi credentials in NVS and rebooting ESP.
+ * @brief Saves updated Wi-Fi credentials into NVS storage and reboots ESP32-S3.
  */
 static esp_err_t save_wifi_handler(httpd_req_t *req) {
   g_last_web_activity_ms = millis();
@@ -2701,7 +2715,7 @@ static esp_err_t save_wifi_handler(httpd_req_t *req) {
 }
 
 /**
- * @brief Initializes HTTP server instances for web UI control and video streaming.
+ * @brief Registers HTTP URI routes for the web dashboard (port 80) and MJPEG video stream (port 81).
  */
 void startWebServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -2739,7 +2753,7 @@ void startWebServer() {
 }
 
 /**
- * @brief Initializes OV2640/OV3660 camera hardware driver settings.
+ * @brief Configures and initializes OV2640/OV3660 camera hardware driver settings.
  * @return True if initialized successfully, false otherwise.
  */
 bool initCamera() {
@@ -2807,6 +2821,7 @@ bool initCamera() {
     }
   }
 
+  // Flush 4 initial garbage frames to allow AEC/AGC hardware pipelines to warm up
   for (int i = 0; i < 4; i++) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) esp_camera_fb_return(fb);
@@ -2817,7 +2832,7 @@ bool initCamera() {
 }
 
 /**
- * @brief LCD boot status helper — shows status text on OLED during startup.
+ * @brief Displays status messages on the OLED panel during system boot sequence.
  */
 void showBootStatus(const char* line1, const char* line2 = nullptr) {
   lcd.fillScreen(TFT_BLACK);
@@ -2832,7 +2847,7 @@ void showBootStatus(const char* line1, const char* line2 = nullptr) {
 }
 
 /**
- * @brief Application entrypoint for hardware initialization and FreeRTOS task launching.
+ * @brief System initialization entrypoint. Configures clocks, NVS, memory, network, and FreeRTOS tasks.
  */
 void setup() {
   #if ENABLE_SERIAL_DEBUG
@@ -2842,10 +2857,10 @@ void setup() {
   delay(500);
   #endif
 
-  // Initialize at full 240 MHz for fast boot and peripheral configuration
+  // Boot hardware at full 240 MHz clock speed
   setCpuFrequencyMhz(CPU_FREQ_ACTIVE);
 
-  // Initialize OLED early for boot status display
+  // Initialize OLED display early to present boot progress messages
   lcd.init();
   lcd.setRotation(2);
   lcd.setBrightness(OLED_BRIGHTNESS);
@@ -2855,7 +2870,7 @@ void setup() {
   Serial.println("\n[KoRe] Biomechanical Face Tracker Starting...");
   #endif
 
-  // Load Non-Volatile Storage (NVS) Wi-Fi Preferences
+  // Read saved Wi-Fi configuration from Non-Volatile Storage (NVS)
   Preferences prefs;
   prefs.begin("kore_cfg", false);
   String stored_wifi_mode = prefs.getString("wifi_mode", "AUTO");
@@ -2908,10 +2923,12 @@ void setup() {
     #endif
   }
 
+  // Allocate CV working buffers in internal DRAM for fast, zero-wait-state memory access
   small_rgb_buf     = (uint8_t*)heap_caps_malloc(80 * 60 * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   prev_lum_buf      = (uint8_t*)heap_caps_malloc(40 * 30, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   mhi_buf           = (uint8_t*)heap_caps_malloc(40 * 30, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
+  // Allocate JPEG HTTP streaming buffer in external PSRAM
   if (psramFound()) {
     g_latest_jpeg_buf = (uint8_t*)ps_malloc(64 * 1024);
     #if ENABLE_SERIAL_DEBUG
@@ -2941,9 +2958,9 @@ void setup() {
     delay(100);
     WiFi.disconnect(true);
     delay(150);
-    WiFi.setSleep(WIFI_PS_NONE);          // Disable Wi-Fi sleep so Web Server is always responsive
+    WiFi.setSleep(WIFI_PS_NONE);          // Disable Wi-Fi sleep to keep HTTP web server responsive
     WiFi.setAutoReconnect(true);
-    WiFi.setTxPower(WIFI_TX_POWER);       // Full power for reliable Wi-Fi range
+    WiFi.setTxPower(WIFI_TX_POWER);       // Max radio TX power for range stability
 
     char wifi_msg[40];
     snprintf(wifi_msg, sizeof(wifi_msg), "WiFi: %s", sta_ssid);
@@ -2994,7 +3011,7 @@ void setup() {
     #endif
     delay(1500);
   } else {
-    // Connection to WiFi failed or forced AP -> Fall back to AP mode (SSID: KoRe)
+    // Fall back to Access Point (AP) mode if STA connection fails or AP mode is forced
     #if ENABLE_SERIAL_DEBUG
     if (force_ap) {
       Serial.println("\n[WiFi] Forced AP Mode active.");
@@ -3009,7 +3026,7 @@ void setup() {
     WiFi.setTxPower(WIFI_TX_POWER);
 
     if (strlen(ap_password) > 0 && strlen(ap_password) < 8) {
-      WiFi.softAP(ap_ssid, NULL); // Automatic fallback to Open AP if saved password is invalid (<8 chars)
+      WiFi.softAP(ap_ssid, NULL); // Fall back to open AP if password length < 8 chars
     } else if (strlen(ap_password) == 0) {
       WiFi.softAP(ap_ssid, NULL);
     } else {
@@ -3048,6 +3065,7 @@ void setup() {
   Serial.println("Web server active.");
   #endif
 
+  // Pin vision processing task to Core 0 (priority 2)
   xTaskCreatePinnedToCore(
     cameraTask,
     "Camera_AI_Task",
@@ -3058,6 +3076,7 @@ void setup() {
     0
   );
 
+  // Pin OLED animation task to Core 1 (priority 1)
   xTaskCreatePinnedToCore(
     oledTask,
     "OLED_Task",
@@ -3073,7 +3092,7 @@ void setup() {
 }
 
 /**
- * @brief Main idle task loop. Yields execution to background FreeRTOS scheduler tasks.
+ * @brief Idle main loop. Yields execution to background FreeRTOS scheduler tasks.
  */
 void loop() {
   vTaskDelay(pdMS_TO_TICKS(5000));
