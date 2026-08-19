@@ -2211,8 +2211,10 @@ void cameraTask(void *pvParameters) {
       // Keep awake if web stream is open OR a human target is actively being engaged
       if (web_active || target_engaged) {
         g_state_timer = now;
-        if (target_engaged) {
-          g_sleep_miss_count = 0;  // Reset escalation: target found
+        // Only reset sleep escalation on CONFIRMED human presence (skin pixels ≥ 4)
+        // Prevents lights, reflections, and random motion from resetting power savings
+        if (target_engaged && debug_skin_px >= 4) {
+          g_sleep_miss_count = 0;
         }
       } else if (now - g_state_timer > active_duration_ms) {
         // Transition ACTIVE -> SLEEP_RECON:
