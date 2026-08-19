@@ -677,7 +677,7 @@ void drawSensorOverlay() {
 
 /**
  * @brief Master 60 FPS biomechanical 2D gaze pursuit and fixation controller.
- * @details Handles target tracking via critically damped mass-spring-damper kinetics (\f$\zeta=1.0\f$, \f$\omega_n=38\text{ rad/s}\f$),
+ * @details Handles target tracking via critically damped mass-spring-damper kinetics (zeta=1.0, omega_n=38 rad/s),
  *          spontaneous foveal fixation saccades via 5th-order minimum-jerk splines, and Brownian fixation micro-drift.
  */
 static float trackSaccadeTargetX = 0.0f;
@@ -1426,7 +1426,7 @@ static float g_target_presence_ema = 0.0f;
 
 /**
  * @brief Updates 2D Valence-Arousal emotion dynamics and triggers state machine mood shifts.
- * @note Uses Langevin homeostatic relaxation (\f$\tau_v=6.0\text{s}, \tau_a=4.5\text{s}\f$) and enforces a 5-8 second refractory lock on transitions.
+ * @note Uses Langevin homeostatic relaxation (tau_v=6.0s, tau_a=4.5s) and enforces a 5-8 second refractory lock on transitions.
  */
 void updateBiologicalMoodEngine() {
   unsigned long now = millis();
@@ -1703,7 +1703,7 @@ void oledTask(void *pvParameters) {
 
 /**
  * @struct KalmanFilter1D
- * @brief Discrete 1D linear Kalman filter tracking state vector \f$[p, v]^T\f$.
+ * @brief Discrete 1D linear Kalman filter tracking state vector [p, v]^T.
  */
 struct KalmanFilter1D {
   float p;       // Estimated target position (pixels)
@@ -1766,7 +1766,7 @@ struct KalmanFilter1D {
 
 /**
  * @struct KalmanTracker2D
- * @brief Container tracking 2D Cartesian target kinematic state \f$[x, y, v_x, v_y]^T\f$.
+ * @brief Container tracking 2D Cartesian target kinematic state [x, y, vx, vy]^T.
  */
 struct KalmanTracker2D {
   KalmanFilter1D kf_x;

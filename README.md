@@ -83,13 +83,17 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
 
 ### 4. Multi-Candidate Target Tracking & Autonomous Inspection
 - **Multi-Object Priority Engine:** Tracks up to 3 spatial candidate targets ($P_1$ Primary, $P_2$ Secondary, $P_3$ Tertiary) scored by skin area, motion energy, and foveal distance:
-  $$\text{Priority}_k = 15.0 \cdot \text{SkinPx}_k + 1.8 \cdot \text{Motion}_k + 0.10 \cdot M_{00, k} - 0.06 \cdot |\text{CenterDist}_k|$$
+
+$$\text{Priority}_k = 15.0 \cdot \text{SkinPx}_k + 1.8 \cdot \text{Motion}_k + 0.10 \cdot M_{00, k} - 0.06 \cdot |\text{CenterDist}_k|$$
+
 - **Autonomous Inspection Scanning:** While tracking primary target $P_1$, KoRe periodically executes autonomous saccadic glances every 2.4s to 3.8s to inspect candidate $P_2$ or $P_3$ before returning to $P_1$.
 
 ### 5. Biomechanical Oculomotor Dynamics & Minimum-Jerk Splines
 - **Smooth Pursuit ($\omega_n = 38.0\text{ rad/s}, \zeta = 1.00$):** Second-order mass-spring-damper differential kinetics configured for critical damping, providing smooth pursuit without overshooting or oscillation.
 - **Minimum-Jerk Saccadic Trajectories:** Ballistic eye movements follow a 5th-order jerk minimization polynomial:
-  $$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
+
+$$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
+
 - **Fixation Micro-Kinetics:** Mean-reverting Brownian random walk adds micro-drift ($\approx 0.03\sqrt{\Delta t}$) during fixations, mimicking human ocular physiology.
 - **Anti-Jitter Coordinate Hysteresis (`getFilteredOx`, `getFilteredOy`):** Filters out floating point sub-pixel jitter ($< 0.55\text{ px}$) to prevent 1px display quantization flickering on monochrome OLED pixel grids.
 
