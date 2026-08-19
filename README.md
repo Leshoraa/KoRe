@@ -8,7 +8,7 @@
 
 **KoRe** (*Kinematic Optical Recognition Engine*) is a lightweight, standalone embedded computer vision and biomechanical ocular synthesis system built for the **Seeed Studio XIAO ESP32-S3 Sense** (Xtensa LX7 Dual-Core @ 240 MHz).
 
-The firmware combines a real-time differential YCbCr computer vision pipeline, 4x3 spatial sector illumination analysis, multi-object candidate tracking, a 2D discrete Kalman tracking filter with dynamic measurement noise tuning, second-order mass-spring-damper gaze kinetics ($\omega_n = 38.0\text{ rad/s}, \zeta = 1.00$), 5th-order minimum-jerk saccades, a 1-bit LGFX sprite rendering engine (1.0 MHz Fast-Mode Plus I2C), a 2D Russell Circumplex affective emotion model, and dynamic power management (DFS clock scaling + SCCB sensor standby).
+The firmware combines a real-time differential YCbCr computer vision pipeline, 4x3 spatial sector illumination analysis, multi-object candidate tracking, a 2D discrete Kalman tracking filter with dynamic measurement noise tuning, second-order mass-spring-damper gaze kinetics (`omega_n = 38.0 rad/s`, `zeta = 1.00`), 5th-order minimum-jerk saccades, a 1-bit LGFX sprite rendering engine (1.0 MHz Fast-Mode Plus I2C), a 2D Russell Circumplex affective emotion model, and dynamic power management (DFS clock scaling + SCCB sensor standby).
 
 ---
 
@@ -64,46 +64,50 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
 
 ## Key Engineering Features
 
-### 1. 2D Discrete Kalman Filter with Dynamic Noise Covariance ($R$) Tuning
-- **State Vector ($\mathbf{x} = [p, v]^T$):** Independent 1D position-velocity filters for X and Y Cartesian coordinates tracking spatial target motion in pixel space.
-- **Adaptive Process Noise ($Q$):** Automatically increases process noise variance $Q$ ($450 \rightarrow 850$) when skin pixel detection confirms human presence.
-- **Dynamic Measurement Noise ($R$):**
-  - **Stationary Target ($\text{innovation} < 6\text{ px}$):** Increases $R$ up to $1.5\times - 3.0\times$ base to eliminate pixel discretization quantization jitter when a subject is resting still.
-  - **Rapid Movement ($\text{innovation} > 20\text{ px}$):** Dynamically scales $R$ down to enable zero-phase-lag tracking response during fast motion.
-- **Joseph-Stabilized Covariance Update:** Uses the Joseph algebraic update formula to guarantee positive semi-definiteness of state covariance matrix $P$.
+### 1. 2D Discrete Kalman Filter with Dynamic Noise Covariance (R) Tuning
+- **State Vector (`x = [p, v]^T`):** Independent 1D position-velocity filters for X and Y Cartesian coordinates tracking spatial target motion in pixel space.
+- **Adaptive Process Noise (`Q`):** Automatically increases process noise variance `Q` (450 -> 850) when skin pixel detection confirms human presence.
+- **Dynamic Measurement Noise (`R`):**
+  - **Stationary Target (`innovation < 6 px`):** Increases `R` up to 1.5x - 3.0x base to eliminate pixel discretization quantization jitter when a subject is resting still.
+  - **Rapid Movement (`innovation > 20 px`):** Dynamically scales `R` down to enable zero-phase-lag tracking response during fast motion.
+- **Joseph-Stabilized Covariance Update:** Uses the Joseph algebraic update formula to guarantee positive semi-definiteness of state covariance matrix `P`.
 
 ### 2. Local-Lighting Adaptive YCbCr Skin Classifier
-- **Sector Illumination Analysis:** Divides the downscaled image into 12 spatial grid sectors ($4 \times 3$), calculating mean local sector luminance.
-- **Dynamic Chrominance Thresholding:** Adjusts $C_b$ ($[75, 129]$) and $C_r$ ($[127, 180]$) bounds per sector based on local lighting conditions.
-- **Shadow Margin Relaxation & Glare Rejection:** Relaxes chrominance constraints in underexposed shadow regions ($\text{luminance} < 65$) while tightening bounds in overexposed glare regions ($\text{luminance} > 185$).
+- **Sector Illumination Analysis:** Divides the downscaled image into 12 spatial grid sectors (4 x 3), calculating mean local sector luminance.
+- **Dynamic Chrominance Thresholding:** Adjusts Cb (`[75, 129]`) and Cr (`[127, 180]`) bounds per sector based on local lighting conditions.
+- **Shadow Margin Relaxation & Glare Rejection:** Relaxes chrominance constraints in underexposed shadow regions (`luminance < 65`) while tightening bounds in overexposed glare regions (`luminance > 185`).
 
 ### 3. Geometric Face Centroid Lock (Feature-Motion Anti-Bias)
 - **Problem Solved:** Motion-weighted centroid algorithms shift target tracking crosshairs towards moving mouths or blinking eyes.
-- **Engineered Solution:** Pixels passing skin classification (`is_skin == true`) are assigned uniform spatial weighting ($\Phi_{\text{skin}} = 10.0 + 0.3(g_y + g_x)$). This forces spatial moments ($M_{10}/M_{00}$ and $M_{01}/M_{00}$) to calculate the **true geometric center of mass** of the human face/head, keeping the tracking lock centered regardless of lip movements or eye blinks.
+- **Engineered Solution:** Pixels passing skin classification (`is_skin == true`) are assigned uniform spatial weighting `Phi_skin = 10.0 + 0.3(g_y + g_x)`. This forces spatial moments (`M10/M00` and `M01/M00`) to calculate the **true geometric center of mass** of the human face/head, keeping the tracking lock centered regardless of lip movements or eye blinks.
 
 ### 4. Multi-Candidate Target Tracking & Autonomous Inspection
-- **Multi-Object Priority Engine:** Tracks up to 3 spatial candidate targets ($P_1$ Primary, $P_2$ Secondary, $P_3$ Tertiary) scored by skin area, motion energy, and foveal distance:
+- **Multi-Object Priority Engine:** Tracks up to 3 spatial candidate targets (`P1` Primary, `P2` Secondary, `P3` Tertiary) scored by skin area, motion energy, and foveal distance:
 
-$$\text{Priority}_k = 15.0 \cdot \text{SkinPx}_k + 1.8 \cdot \text{Motion}_k + 0.10 \cdot M_{00, k} - 0.06 \cdot |\text{CenterDist}_k|$$
+```
+Priority_k = 15.0 * SkinPx_k + 1.8 * Motion_k + 0.10 * M00_k - 0.06 * |CenterDist_k|
+```
 
-- **Autonomous Inspection Scanning:** While tracking primary target $P_1$, KoRe periodically executes autonomous saccadic glances every 2.4s to 3.8s to inspect candidate $P_2$ or $P_3$ before returning to $P_1$.
+- **Autonomous Inspection Scanning:** While tracking primary target `P1`, KoRe periodically executes autonomous saccadic glances every 2.4s to 3.8s to inspect candidate `P2` or `P3` before returning to `P1`.
 
 ### 5. Biomechanical Oculomotor Dynamics & Minimum-Jerk Splines
-- **Smooth Pursuit ($\omega_n = 38.0\text{ rad/s}, \zeta = 1.00$):** Second-order mass-spring-damper differential kinetics configured for critical damping, providing smooth pursuit without overshooting or oscillation.
+- **Smooth Pursuit (`omega_n = 38.0 rad/s`, `zeta = 1.00`):** Second-order mass-spring-damper differential kinetics configured for critical damping, providing smooth pursuit without overshooting or oscillation.
 - **Minimum-Jerk Saccadic Trajectories:** Ballistic eye movements follow a 5th-order jerk minimization polynomial:
 
-$$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
+```
+s(p) = 10*p^3 - 15*p^4 + 6*p^5,   where p in [0, 1]
+```
 
-- **Fixation Micro-Kinetics:** Mean-reverting Brownian random walk adds micro-drift ($\approx 0.03\sqrt{\Delta t}$) during fixations, mimicking human ocular physiology.
-- **Anti-Jitter Coordinate Hysteresis (`getFilteredOx`, `getFilteredOy`):** Filters out floating point sub-pixel jitter ($< 0.55\text{ px}$) to prevent 1px display quantization flickering on monochrome OLED pixel grids.
+- **Fixation Micro-Kinetics:** Mean-reverting Brownian random walk adds micro-drift (`~0.03 * sqrt(dt)`) during fixations, mimicking human ocular physiology.
+- **Anti-Jitter Coordinate Hysteresis (`getFilteredOx`, `getFilteredOy`):** Filters out floating point sub-pixel jitter (`< 0.55 px`) to prevent 1px display quantization flickering on monochrome OLED pixel grids.
 
 ### 6. Intermittent Reconnaissance Duty Cycle FSM & SCCB Standby
-- **State Machine (`STATE_ACTIVE` $\leftrightarrow$ `STATE_SLEEP_RECON`):** Cycles between active tracking (3-6s) and low-power reconnaissance standby (90-180s, escalating up to 8 minutes after consecutive misses).
+- **State Machine (`STATE_ACTIVE` <-> `STATE_SLEEP_RECON`):** Cycles between active tracking (3-6s) and low-power reconnaissance standby (90-180s, escalating up to 8 minutes after consecutive misses).
 - **Dynamic Frequency Scaling (DFS):** Scales CPU clock between 240 MHz (active CV/streaming) and 80 MHz (sleep standby, maintaining ESP32 Wi-Fi stack stability).
 - **SCCB Software Standby:** Writes directly to camera registers (OV2640 `0x09` bit 4 / OV3660 `0x3008` bit 6) to power down sensor core, compensating for the un-wired `PWDN` pin on the XIAO ESP32-S3 Sense board.
 
 ### 7. Russell Circumplex 2D Emotion Engine
-- **Valence-Arousal Model:** Tracks 2D emotional state ($V \in [-1.0, +1.0]$, $A \in [0.0, 1.0]$) using viscous homeostatic Langevin relaxation ($\tau_v = 6.0\text{s}, \tau_a = 4.5\text{s}$).
+- **Valence-Arousal Model:** Tracks 2D emotional state (`V in [-1.0, +1.0]`, `A in [0.0, 1.0]`) using viscous homeostatic Langevin relaxation (`tau_v = 6.0s`, `tau_a = 4.5s`).
 - **Refractory Lock:** Enforces a 5-8 second biological refractory period (`g_mood_lock_until`) between emotional state changes (`EXPR_IDLE`, `EXPR_ANGRY`, `EXPR_OVERLOAD`, `EXPR_JOY`, `EXPR_SEDIH`, `EXPR_SMIRK`, `EXPR_SHOCK`).
 
 ---
@@ -114,10 +118,10 @@ To maximize computer vision execution speed on the ESP32-S3 without hitting PSRA
 
 | Buffer Name | Allocation Cap | Storage Location | Size | Rationale |
 | :--- | :--- | :--- | :--- | :--- |
-| `small_rgb_buf` | `MALLOC_CAP_INTERNAL` | Fast Internal SRAM | $80 \times 60 \times 2\text{ bytes} \ (9.6\text{ KB})$ | Read/written thousands of times per frame during YCbCr downscaling. |
-| `prev_lum_buf` | `MALLOC_CAP_INTERNAL` | Fast Internal SRAM | $40 \times 30\text{ bytes} \ (1.2\text{ KB})$ | Frame difference buffer accessed in high-frequency CV loops. |
-| `mhi_buf` | `MALLOC_CAP_INTERNAL` | Fast Internal SRAM | $40 \times 30\text{ bytes} \ (1.2\text{ KB})$ | Motion History Image decay map accessed per pixel. |
-| `g_latest_jpeg_buf` | `ps_malloc` | External PSRAM | $64\text{ KB}$ | Double-buffered JPEG frame container used only for HTTP MJPEG streaming. |
+| `small_rgb_buf` | `MALLOC_CAP_INTERNAL` | Fast Internal SRAM | 80 x 60 x 2 bytes (9.6 KB) | Read/written thousands of times per frame during YCbCr downscaling. |
+| `prev_lum_buf` | `MALLOC_CAP_INTERNAL` | Fast Internal SRAM | 40 x 30 bytes (1.2 KB) | Frame difference buffer accessed in high-frequency CV loops. |
+| `mhi_buf` | `MALLOC_CAP_INTERNAL` | Fast Internal SRAM | 40 x 30 bytes (1.2 KB) | Motion History Image decay map accessed per pixel. |
+| `g_latest_jpeg_buf` | `ps_malloc` | External PSRAM | 64 KB | Double-buffered JPEG frame container used only for HTTP MJPEG streaming. |
 
 ---
 
@@ -127,13 +131,13 @@ To maximize computer vision execution speed on the ESP32-S3 without hitting PSRA
 | :--- | :--- | :--- |
 | **Microcontroller** | ESP32-S3 Dual-Core Xtensa LX7 @ 240 MHz | Hardware FPU Enabled |
 | **Camera Sensor** | OmniVision OV2640 / OV3660 | DVP Parallel Interface |
-| **Frame Resolution** | VGA ($640 \times 480$), Quality 8 JPEG | PSRAM Framebuffer |
-| **AI Subsampling Grid** | $40 \times 30$ Matrix ($1,200\text{ pixels}$) | 8x Hardware IDCT Scaling |
-| **AI Pipeline Latency** | **$< 0.5\text{ ms}$ / frame** | Executed on Core 0 (`IRAM_ATTR`) |
-| **Gaze Pursuit Frequency** | **$\omega_n = 38.0\text{ rad/s}$** | Mass-Spring-Damper Model ($\zeta=1.00$) |
-| **MJPEG Streaming FPS** | **$30+\text{ FPS}$** | Port 81 Dedicated Async Handler |
-| **Display Refresh Rate** | **$60\text{ FPS}$** | LovyanGFX I2C @ 1.0 MHz |
-| **Dynamic Memory Allocation** | $< 12\text{ KB}$ Internal SRAM | Zero Redundant Buffering |
+| **Frame Resolution** | VGA (640 x 480), Quality 8 JPEG | PSRAM Framebuffer |
+| **AI Subsampling Grid** | 40 x 30 Matrix (1,200 pixels) | 8x Hardware IDCT Scaling |
+| **AI Pipeline Latency** | **< 0.5 ms / frame** | Executed on Core 0 (`IRAM_ATTR`) |
+| **Gaze Pursuit Frequency** | **omega_n = 38.0 rad/s** | Mass-Spring-Damper Model (`zeta = 1.00`) |
+| **MJPEG Streaming FPS** | **30+ FPS** | Port 81 Dedicated Async Handler |
+| **Display Refresh Rate** | **60 FPS** | LovyanGFX I2C @ 1.0 MHz |
+| **Dynamic Memory Allocation** | < 12 KB Internal SRAM | Zero Redundant Buffering |
 
 ---
 
@@ -154,7 +158,7 @@ To maximize computer vision execution speed on the ESP32-S3 without hitting PSRA
 
 KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection, credential setup, and video streaming:
 
-- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the control panel interface rendering real-time target bounding boxes ($P_1$ Green, $P_2$ Cyan, $P_3$ Yellow), inspection badges, and telemetry overlays.
+- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the control panel interface rendering real-time target bounding boxes (`P1` Green, `P2` Cyan, `P3` Yellow), inspection badges, and telemetry overlays.
 - **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics and multi-candidate arrays:
   ```json
   {
