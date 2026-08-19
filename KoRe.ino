@@ -13,6 +13,8 @@
 #include "esp_http_server.h"
 #include "img_converters.h"
 #include <WiFi.h>
+#include <ESPmDNS.h>
+#include <DNSServer.h>
 #include <Preferences.h>
 #include <math.h>
 #include <esp_random.h>
@@ -27,9 +29,9 @@
 #define ENABLE_SERIAL_DEBUG false   // Set false for production to save ~2-3mA UART power
 
 /* --- Power Efficiency Configuration (3.7V 500mAh Battery) --- */
-#define WIFI_TX_POWER WIFI_POWER_8_5dBm  // 8.5dBm sufficient for <10m indoor range (saves ~50mA vs 19.5dBm)
+#define WIFI_TX_POWER WIFI_POWER_19_5dBm // 19.5dBm full power for reliable Wi-Fi range
 #define CPU_FREQ_ACTIVE 240               // MHz - Full speed for vision + streaming
-#define CPU_FREQ_SLEEP  40                // MHz - Minimum for OLED I2C @1MHz rendering
+#define CPU_FREQ_SLEEP  80                // MHz - Minimum CPU frequency for stable ESP32 Wi-Fi stack
 #define OLED_BRIGHTNESS        128        // OLED panel brightness
 #define CAMERA_XCLK_FREQ 10000000         // 10 MHz (down from 16MHz, sufficient for VGA JPEG)
 #define FPS_ACTIVE_US 16666               // 60 FPS frame budget (microseconds)
@@ -87,15 +89,19 @@ LGFX lcd;
 LGFX_Sprite canvas(&lcd);
 
 /* --- Non-Volatile Storage (NVS) & Wireless Network Infrastructure --- */
-#define USE_AP_MODE false
-const char* ap_ssid     = "KoRe-Tracker";
-const char* ap_password = "12345678";
+const char* ap_ssid_default     = "KoRe-Tracker";
+const char* ap_password_default = "12345678";
 
 const char* sta_ssid_default     = "Kasminingsih";
 const char* sta_password_default = "hidet4mp4n";
 
 static char sta_ssid[64] = {0};
 static char sta_password[64] = {0};
+static char ap_ssid[64] = {0};
+static char ap_password[64] = {0};
+
+static bool g_is_ap_mode = false;
+static DNSServer dnsServer;
 
 /* --- ESP32-S3 Camera Pin Definitions --- */
 #define PWDN_GPIO_NUM  -1
@@ -183,6 +189,7 @@ static uint8_t* g_latest_jpeg_buf = NULL;
 static size_t g_latest_jpeg_len = 0;
 static portMUX_TYPE g_stream_mutex = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t g_frame_sem = NULL;
+static bool g_camera_init_ok = false;
 
 static inline bool isWebOrStreamActive(uint32_t now) {
   bool has_clients = false;
@@ -312,26 +319,76 @@ static const float PX_TO_DEG = 30.0f / 17.5f;  // ≈ 1.714 °/px
 // State transition detector (ACTIVE ↔ SLEEP handoff)
 static ReconState g_prev_recon_state = STATE_ACTIVE;
 
-// --- Telemetry Dashboard Web UI (With Visibility-Aware Throttling) ---
+// --- Telemetry Dashboard & WiFi Configuration Web UI ---
 const char HTML_PAGE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html lang="en">
+<html lang="id">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>KoRe Telemetry Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KoRe Setup & Telemetry</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #000; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; overflow: hidden; }
-    .wrapper { position: relative; display: flex; justify-content: center; align-items: center; max-width: 100vw; max-height: 100vh; }
-    #stream-img { display: block; max-width: 100vw; max-height: 100vh; width: auto; height: auto; object-fit: contain; user-select: none; }
+    body { background-color: #f4f4f5; color: #18181b; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 16px; }
+    .card { background: #ffffff; border: 1px solid #e4e4e7; border-radius: 4px; max-width: 460px; width: 100%; padding: 24px; }
+    h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; color: #18181b; }
+    p.subtitle { font-size: 13px; color: #71717a; margin-bottom: 16px; }
+    .mode-badge { display: inline-block; width: 100%; text-align: center; padding: 6px 12px; font-size: 12px; font-weight: 600; border-radius: 4px; background: #e0f2fe; color: #0369a1; margin-bottom: 16px; border: 1px solid #bae6fd; }
+    .mode-badge.ap { background: #fef3c7; color: #b45309; border-color: #fde68a; }
+    .stream-box { position: relative; width: 100%; background: #000000; border-radius: 4px; overflow: hidden; margin-bottom: 16px; border: 1px solid #d4d4d8; text-align: center; display: flex; justify-content: center; align-items: center; }
+    .stream-box img { width: 100%; height: auto; display: block; object-fit: contain; }
     #hud-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+    .section-title { font-size: 14px; font-weight: 600; color: #27272a; margin-top: 16px; margin-bottom: 12px; border-bottom: 1px solid #f4f4f5; padding-bottom: 4px; }
+    .form-group { margin-bottom: 12px; }
+    label { display: block; font-size: 12px; font-weight: 500; color: #52525b; margin-bottom: 4px; }
+    input[type="text"], input[type="password"] { width: 100%; padding: 8px 10px; font-size: 14px; border: 1px solid #d4d4d8; border-radius: 4px; background: #ffffff; color: #18181b; outline: none; }
+    input[type="text"]:focus, input[type="password"]:focus { border-color: #18181b; }
+    button { width: 100%; padding: 10px; margin-top: 16px; background-color: #18181b; color: #ffffff; font-size: 14px; font-weight: 500; border: none; border-radius: 4px; cursor: pointer; }
+    button:hover { background-color: #3f3f46; }
+    button:disabled { background-color: #a1a1aa; cursor: not-allowed; }
+    .btn-switch-mode { background-color: #2563eb; color: #ffffff; margin-top: 0; margin-bottom: 16px; }
+    .btn-switch-mode:hover { background-color: #1d4ed8; }
+    #status { display: none; margin-top: 14px; padding: 10px; font-size: 13px; border-radius: 4px; border: 1px solid #d4d4d8; background: #fafafa; color: #18181b; text-align: center; }
   </style>
 </head>
 <body>
-  <div class="wrapper" id="wrapper">
-    <img id="stream-img" src="" alt="" crossorigin="anonymous">
-    <canvas id="hud-canvas"></canvas>
+  <div class="card">
+    <h1>Pengaturan WiFi & Telemetri KoRe</h1>
+    <p class="subtitle">Konfigurasi Access Point (AP), WiFi Client (STA) & Multi-Target Tracking</p>
+    
+    <div id="mode-badge" class="mode-badge">Memuat status mode...</div>
+
+    <div class="stream-box">
+      <img id="stream-img" src="" alt="Camera Stream" crossorigin="anonymous">
+      <canvas id="hud-canvas"></canvas>
+    </div>
+
+    <button type="button" id="btn-switch-mode" class="btn-switch-mode" style="display:none;"></button>
+
+    <form id="wifi-form">
+      <div class="section-title">WiFi Client (STA)</div>
+      <div class="form-group">
+        <label for="sta_ssid">SSID WiFi</label>
+        <input type="text" id="sta_ssid" name="sta_ssid" placeholder="Nama WiFi" required>
+      </div>
+      <div class="form-group">
+        <label for="sta_pass">Password WiFi</label>
+        <input type="password" id="sta_pass" name="sta_pass" placeholder="Password WiFi">
+      </div>
+
+      <div class="section-title">Access Point (AP)</div>
+      <div class="form-group">
+        <label for="ap_ssid">SSID Access Point</label>
+        <input type="text" id="ap_ssid" name="ap_ssid" placeholder="SSID ESP AP" required>
+      </div>
+      <div class="form-group">
+        <label for="ap_pass">Password Access Point</label>
+        <input type="password" id="ap_pass" name="ap_pass" placeholder="Password ESP AP (kosongkan atau min 8 karakter)">
+      </div>
+
+      <button type="submit" id="btn-save">Simpan & Hubungkan</button>
+    </form>
+    <div id="status"></div>
   </div>
 
   <script>
@@ -359,7 +416,6 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     let telemetryTimer = null;
 
     async function updateTelemetry() {
-      // Pause/Throttle polling when page is running in background tab
       if (document.visibilityState === 'hidden') {
         telemetryTimer = setTimeout(updateTelemetry, 1000);
         return;
@@ -443,7 +499,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
               ctx.lineWidth = 1.5;
               ctx.beginPath();
               ctx.moveTo(cX - 10, cY); ctx.lineTo(cX + 10, cY);
-              ctx.moveTo(cX, cY - 10); ctx.lineTo(cX + 10, cY);
+              ctx.moveTo(cX, cY - 10); ctx.lineTo(cX, cY + 10);
               ctx.stroke();
               ctx.beginPath(); ctx.arc(cX, cY, 4, 0, 2 * Math.PI); ctx.stroke();
             }
@@ -463,6 +519,110 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     });
 
     updateTelemetry();
+
+    // WiFi Setup & Mode Switcher Logic
+    fetch('/get_wifi')
+      .then(res => res.json())
+      .then(data => {
+        if (data.sta_ssid) document.getElementById('sta_ssid').value = data.sta_ssid;
+        if (data.sta_pass) document.getElementById('sta_pass').value = data.sta_pass;
+        if (data.ap_ssid) document.getElementById('ap_ssid').value = data.ap_ssid;
+        if (data.ap_pass) document.getElementById('ap_pass').value = data.ap_pass;
+
+        const badge = document.getElementById('mode-badge');
+        const btnSwitch = document.getElementById('btn-switch-mode');
+        
+        if (data.is_ap) {
+          badge.innerText = 'Mode Saat Ini: Access Point (AP)';
+          badge.classList.add('ap');
+          btnSwitch.innerText = 'Masuk ke STA Mode';
+          btnSwitch.dataset.targetMode = 'STA';
+        } else {
+          badge.innerText = 'Mode Saat Ini: WiFi Client (STA)';
+          badge.classList.remove('ap');
+          btnSwitch.innerText = 'Masuk ke AP Mode';
+          btnSwitch.dataset.targetMode = 'AP';
+        }
+        btnSwitch.style.display = 'block';
+      })
+      .catch(() => {});
+
+    document.getElementById('btn-switch-mode').addEventListener('click', function() {
+      const targetMode = this.dataset.targetMode;
+      const btn = this;
+      const status = document.getElementById('status');
+      
+      btn.disabled = true;
+      document.getElementById('btn-save').disabled = true;
+      status.style.display = 'block';
+
+      const apUrl = 'http://192.168.4.1';
+
+      if (targetMode === 'AP') {
+        btn.innerText = 'Beralih ke AP Mode...';
+        status.innerHTML = '<b>Beralih ke AP Mode...</b><br>ESP sedang reboot.<br>Hubungkan Wi-Fi laptop/HP Anda ke AP <b>KoRe-Tracker</b> lalu buka: <a href="' + apUrl + '" style="color:#2563eb;font-weight:bold;text-decoration:underline;">' + apUrl + '</a><br><small>Mengalihkan otomatis dalam 4 detik...</small>';
+
+        fetch('/switch_mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: targetMode })
+        }).finally(() => {
+          setTimeout(() => { window.location.href = apUrl; }, 4000);
+        });
+      } else {
+        const staSsid = document.getElementById('sta_ssid').value || 'WiFi Router';
+        const staUrl = 'http://kore.local';
+        btn.innerText = 'Beralih ke STA Mode...';
+        status.innerHTML = '<b>Beralih ke STA Mode...</b><br>ESP32 sedang reboot dan terhubung ke Router <b>' + staSsid + '</b>.<br>Buka URL STA: <a href="' + staUrl + '" style="color:#2563eb;font-weight:bold;text-decoration:underline;">' + staUrl + '</a><br><small>Mengalihkan otomatis ke ' + staUrl + ' dalam 6 detik...</small>';
+
+        fetch('/switch_mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: targetMode })
+        }).finally(() => {
+          setTimeout(() => { window.location.href = staUrl; }, 6000);
+        });
+      }
+    });
+
+    document.getElementById('wifi-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      const btn = document.getElementById('btn-save');
+      const status = document.getElementById('status');
+
+      const apPass = document.getElementById('ap_pass').value;
+      if (apPass.length > 0 && apPass.length < 8) {
+        status.style.display = 'block';
+        status.style.color = '#dc2626';
+        status.innerText = 'Error: Password AP harus dikosongkan (Open AP) atau minimal 8 karakter!';
+        return;
+      }
+
+      status.style.color = '#18181b';
+      btn.disabled = true;
+      document.getElementById('btn-switch-mode').disabled = true;
+      btn.innerText = 'Menyimpan...';
+      status.style.display = 'block';
+
+      const staSsid = document.getElementById('sta_ssid').value || 'WiFi Router';
+      const staUrl = 'http://kore.local';
+      status.innerHTML = '<b>Pengaturan Disimpan!</b><br>ESP32 sedang reboot dan terhubung ke Wi-Fi Router <b>' + staSsid + '</b>.<br>Buka URL STA: <a href="' + staUrl + '" style="color:#2563eb;font-weight:bold;text-decoration:underline;">' + staUrl + '</a><br><small>Mengalihkan otomatis ke ' + staUrl + ' dalam 6 detik...</small>';
+
+      const body = {
+        sta_ssid: document.getElementById('sta_ssid').value,
+        sta_pass: document.getElementById('sta_pass').value,
+        ap_ssid: document.getElementById('ap_ssid').value,
+        ap_pass: document.getElementById('ap_pass').value
+      };
+
+      fetch('/save_wifi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).finally(() => {
+        setTimeout(() => { window.location.href = staUrl; }, 6000);
+      });
+    });
   </script>
 </body>
 </html>
@@ -2152,19 +2312,32 @@ void cameraTask(void *pvParameters) {
   uint32_t sleep_duration_ms  = (esp_random() % 90000) + 90000; 
   bool last_wifi_ps_sleep = false;
 
+  uint32_t last_camera_retry_ms = 0;
+
   while (true) {
     uint32_t now = millis();
     bool web_active = isWebOrStreamActive(now);
 
-    // Dynamic Wi-Fi Power Management: MAX_MODEM (light sleep) when idle, NONE when streaming
+    // Ensure Wi-Fi radio stays active for incoming HTTP Web UI connections
     if (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) {
-      if (!web_active && !last_wifi_ps_sleep) {
-        WiFi.setSleep(WIFI_PS_MAX_MODEM);  // Light sleep: radio off between DTIM beacons
-        last_wifi_ps_sleep = true;
-      } else if (web_active && last_wifi_ps_sleep) {
+      if (last_wifi_ps_sleep) {
         WiFi.setSleep(WIFI_PS_NONE);
         last_wifi_ps_sleep = false;
       }
+    }
+
+    if (!g_camera_init_ok) {
+      if (now - last_camera_retry_ms > 5000) {
+        last_camera_retry_ms = now;
+        if (initCamera()) {
+          g_camera_init_ok = true;
+          #if ENABLE_SERIAL_DEBUG
+          Serial.println("[Camera_Task] Camera hardware initialized successfully!");
+          #endif
+        }
+      }
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
     }
 
     if (g_recon_state == STATE_ACTIVE) {
@@ -2327,6 +2500,11 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   char part_buf[64];
   uint32_t last_stream_time = millis();
 
+  if (!g_camera_init_ok) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera Offline");
+    return ESP_OK;
+  }
+
   res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
   if (res != ESP_OK) return res;
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -2341,7 +2519,10 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   g_last_web_activity_ms = millis();
 
   while (true) {
-    if (g_frame_sem && xSemaphoreTake(g_frame_sem, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (!g_camera_init_ok) {
+      break;
+    }
+    if (g_frame_sem && xSemaphoreTake(g_frame_sem, pdMS_TO_TICKS(200)) == pdTRUE) {
       size_t len = 0;
       if (stream_buf && g_latest_jpeg_buf) {
         portENTER_CRITICAL(&g_stream_mutex);
@@ -2365,6 +2546,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
         }
         last_stream_time = now;
       }
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(10));
     }
   }
 
@@ -2379,6 +2562,144 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return res;
 }
 
+static bool extract_json_value(const char* json, const char* key, char* out, size_t max_len) {
+  if (!json || !key || !out || max_len == 0) return false;
+  char pattern[64];
+  snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
+  const char* start = strstr(json, pattern);
+  if (!start) {
+    snprintf(pattern, sizeof(pattern), "%s=", key);
+    start = strstr(json, pattern);
+    if (!start) return false;
+    start += strlen(pattern);
+    size_t i = 0;
+    while (*start && *start != '&' && *start != ' ' && *start != '\r' && *start != '\n' && i < max_len - 1) {
+      out[i++] = *start++;
+    }
+    out[i] = '\0';
+    return true;
+  }
+  start += strlen(pattern);
+  const char* end = strchr(start, '"');
+  if (!end) return false;
+  size_t len = end - start;
+  if (len >= max_len) len = max_len - 1;
+  strncpy(out, start, len);
+  out[len] = '\0';
+  return true;
+}
+
+static void restart_esp_task(void *pvParameters) {
+  vTaskDelay(pdMS_TO_TICKS(1500));
+  esp_restart();
+}
+
+/**
+ * @brief HTTP GET handler serving stored Wi-Fi credentials JSON and current mode.
+ */
+static esp_err_t get_wifi_handler(httpd_req_t *req) {
+  g_last_web_activity_ms = millis();
+  char json[320];
+  snprintf(json, sizeof(json),
+    "{\"sta_ssid\":\"%s\",\"sta_pass\":\"%s\",\"ap_ssid\":\"%s\",\"ap_pass\":\"%s\",\"is_ap\":%s}",
+    sta_ssid, sta_password, ap_ssid, ap_password, g_is_ap_mode ? "true" : "false"
+  );
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, json, strlen(json));
+}
+
+/**
+ * @brief HTTP POST handler switching between AP and STA modes and rebooting.
+ */
+static esp_err_t switch_mode_handler(httpd_req_t *req) {
+  g_last_web_activity_ms = millis();
+  char buf[256];
+  int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (ret <= 0) return ESP_FAIL;
+  buf[ret] = '\0';
+
+  char target_mode[16] = {0};
+  extract_json_value(buf, "mode", target_mode, sizeof(target_mode));
+
+  Preferences prefs;
+  prefs.begin("kore_cfg", false);
+  if (strcasecmp(target_mode, "AP") == 0) {
+    prefs.putString("wifi_mode", "AP");
+  } else if (strcasecmp(target_mode, "STA") == 0) {
+    prefs.putString("wifi_mode", "STA");
+  }
+  prefs.end();
+
+  const char* resp = "{\"status\":\"ok\",\"message\":\"Mode beralih. ESP reboot...\"}";
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, resp, strlen(resp));
+
+  xTaskCreate(restart_esp_task, "restart_task", 2048, NULL, 1, NULL);
+  return ESP_OK;
+}
+
+/**
+ * @brief HTTP POST handler updating Wi-Fi credentials in NVS and rebooting ESP.
+ */
+static esp_err_t save_wifi_handler(httpd_req_t *req) {
+  g_last_web_activity_ms = millis();
+  char buf[512];
+  int ret, remaining = req->content_len;
+  if (remaining >= sizeof(buf)) remaining = sizeof(buf) - 1;
+
+  ret = httpd_req_recv(req, buf, remaining);
+  if (ret <= 0) {
+    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+      httpd_resp_send_408(req);
+    }
+    return ESP_FAIL;
+  }
+  buf[ret] = '\0';
+
+  char new_sta_ssid[64] = {0};
+  char new_sta_pass[64] = {0};
+  char new_ap_ssid[64]  = {0};
+  char new_ap_pass[64]  = {0};
+
+  bool has_sta_s = extract_json_value(buf, "sta_ssid", new_sta_ssid, sizeof(new_sta_ssid));
+  bool has_sta_p = extract_json_value(buf, "sta_pass", new_sta_pass, sizeof(new_sta_pass));
+  bool has_ap_s  = extract_json_value(buf, "ap_ssid", new_ap_ssid, sizeof(new_ap_ssid));
+  bool has_ap_p  = extract_json_value(buf, "ap_pass", new_ap_pass, sizeof(new_ap_pass));
+
+  Preferences prefs;
+  prefs.begin("kore_cfg", false);
+  if (has_sta_s && strlen(new_sta_ssid) > 0) {
+    prefs.putString("sta_ssid", new_sta_ssid);
+    prefs.putString("ssid", new_sta_ssid);
+    prefs.putString("wifi_mode", "STA");
+    strncpy(sta_ssid, new_sta_ssid, sizeof(sta_ssid) - 1);
+  }
+  if (has_sta_p) {
+    prefs.putString("sta_pass", new_sta_pass);
+    prefs.putString("pass", new_sta_pass);
+    strncpy(sta_password, new_sta_pass, sizeof(sta_password) - 1);
+  }
+  if (has_ap_s && strlen(new_ap_ssid) > 0) {
+    prefs.putString("ap_ssid", new_ap_ssid);
+    strncpy(ap_ssid, new_ap_ssid, sizeof(ap_ssid) - 1);
+  }
+  if (has_ap_p) {
+    prefs.putString("ap_pass", new_ap_pass);
+    strncpy(ap_password, new_ap_pass, sizeof(ap_password) - 1);
+  }
+  prefs.end();
+
+  const char* resp = "{\"status\":\"ok\",\"message\":\"Pengaturan disimpan. ESP reboot...\"}";
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, resp, strlen(resp));
+
+  xTaskCreate(restart_esp_task, "restart_task", 2048, NULL, 1, NULL);
+  return ESP_OK;
+}
+
 /**
  * @brief Initializes HTTP server instances for web UI control and video streaming.
  */
@@ -2386,12 +2707,26 @@ void startWebServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
 
-  httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL };
-  httpd_uri_t telemetry_uri = { .uri = "/telemetry", .method = HTTP_GET, .handler = telemetry_handler, .user_ctx = NULL };
+  httpd_uri_t index_uri       = { .uri = "/",                   .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
+  httpd_uri_t telemetry_uri   = { .uri = "/telemetry",           .method = HTTP_GET,  .handler = telemetry_handler,   .user_ctx = NULL };
+  httpd_uri_t get_wifi_uri    = { .uri = "/get_wifi",            .method = HTTP_GET,  .handler = get_wifi_handler,    .user_ctx = NULL };
+  httpd_uri_t save_wifi_uri   = { .uri = "/save_wifi",           .method = HTTP_POST, .handler = save_wifi_handler,   .user_ctx = NULL };
+  httpd_uri_t switch_mode_uri = { .uri = "/switch_mode",         .method = HTTP_POST, .handler = switch_mode_handler, .user_ctx = NULL };
+  httpd_uri_t captive_1       = { .uri = "/generate_204",        .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
+  httpd_uri_t captive_2       = { .uri = "/gen_204",             .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
+  httpd_uri_t captive_3       = { .uri = "/hotspot-detect.html", .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
+  httpd_uri_t captive_4       = { .uri = "/connecttest.txt",     .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
 
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &telemetry_uri);
+    httpd_register_uri_handler(camera_httpd, &get_wifi_uri);
+    httpd_register_uri_handler(camera_httpd, &save_wifi_uri);
+    httpd_register_uri_handler(camera_httpd, &switch_mode_uri);
+    httpd_register_uri_handler(camera_httpd, &captive_1);
+    httpd_register_uri_handler(camera_httpd, &captive_2);
+    httpd_register_uri_handler(camera_httpd, &captive_3);
+    httpd_register_uri_handler(camera_httpd, &captive_4);
   }
 
   config.server_port = 81;
@@ -2523,36 +2858,55 @@ void setup() {
   // Load Non-Volatile Storage (NVS) Wi-Fi Preferences
   Preferences prefs;
   prefs.begin("kore_cfg", false);
-  String stored_ssid = prefs.getString("ssid", "");
-  String stored_pass = prefs.getString("pass", "");
+  String stored_wifi_mode = prefs.getString("wifi_mode", "AUTO");
+  String stored_sta_ssid  = prefs.getString("sta_ssid", prefs.getString("ssid", ""));
+  String stored_sta_pass  = prefs.getString("sta_pass", prefs.getString("pass", ""));
+  String stored_ap_ssid   = prefs.getString("ap_ssid", "");
+  String stored_ap_pass   = prefs.getString("ap_pass", "");
 
-  if (stored_ssid.length() > 0) {
-    strncpy(sta_ssid, stored_ssid.c_str(), sizeof(sta_ssid) - 1);
-    strncpy(sta_password, stored_pass.c_str(), sizeof(sta_password) - 1);
+  if (stored_sta_ssid.length() > 0) {
+    strncpy(sta_ssid, stored_sta_ssid.c_str(), sizeof(sta_ssid) - 1);
+    strncpy(sta_password, stored_sta_pass.c_str(), sizeof(sta_password) - 1);
     #if ENABLE_SERIAL_DEBUG
-    Serial.printf("[NVS] Loaded stored Wi-Fi credentials for SSID '%s'\n", sta_ssid);
+    Serial.printf("[NVS] Loaded stored STA Wi-Fi credentials for SSID '%s'\n", sta_ssid);
     #endif
   } else {
     strncpy(sta_ssid, sta_ssid_default, sizeof(sta_ssid) - 1);
     strncpy(sta_password, sta_password_default, sizeof(sta_password) - 1);
     #if ENABLE_SERIAL_DEBUG
-    Serial.println("[NVS] Using default hardcoded Wi-Fi credentials.");
+    Serial.println("[NVS] Using default STA Wi-Fi credentials.");
+    #endif
+  }
+
+  if (stored_ap_ssid.length() > 0) {
+    strncpy(ap_ssid, stored_ap_ssid.c_str(), sizeof(ap_ssid) - 1);
+    strncpy(ap_password, stored_ap_pass.c_str(), sizeof(ap_password) - 1);
+    #if ENABLE_SERIAL_DEBUG
+    Serial.printf("[NVS] Loaded stored AP Wi-Fi credentials for SSID '%s'\n", ap_ssid);
+    #endif
+  } else {
+    strncpy(ap_ssid, ap_ssid_default, sizeof(ap_ssid) - 1);
+    strncpy(ap_password, ap_password_default, sizeof(ap_password) - 1);
+    #if ENABLE_SERIAL_DEBUG
+    Serial.println("[NVS] Using default AP Wi-Fi credentials.");
     #endif
   }
   prefs.end();
 
   showBootStatus("Init Camera...");
   if (!initCamera()) {
-    showBootStatus("CAMERA FAIL!", "Restarting...");
+    g_camera_init_ok = false;
+    showBootStatus("Camera Offline", "Web Mode Active");
     #if ENABLE_SERIAL_DEBUG
-    Serial.println("FATAL: Camera initialization failed! Restarting...");
+    Serial.println("WARNING: Camera initialization failed! Starting Web UI in Web-Only Mode...");
     #endif
-    delay(3000);
-    ESP.restart();
+    delay(1500);
+  } else {
+    g_camera_init_ok = true;
+    #if ENABLE_SERIAL_DEBUG
+    Serial.println("Camera initialized successfully.");
+    #endif
   }
-  #if ENABLE_SERIAL_DEBUG
-  Serial.println("Camera initialized.");
-  #endif
 
   small_rgb_buf     = (uint8_t*)heap_caps_malloc(80 * 60 * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   prev_lum_buf      = (uint8_t*)heap_caps_malloc(40 * 30, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -2579,76 +2933,114 @@ void setup() {
   if (prev_lum_buf) memset(prev_lum_buf, 0, 40 * 30);
   if (mhi_buf) memset(mhi_buf, 0, 40 * 30);
 
-  WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true);
-  delay(150);
-  WiFi.setSleep(WIFI_PS_MAX_MODEM);     // Start with aggressive power save
-  WiFi.setAutoReconnect(true);
-  WiFi.setTxPower(WIFI_TX_POWER);       // 8.5dBm — sufficient for <10m indoor
+  bool force_ap = (stored_wifi_mode == "AP");
+  bool connected = false;
 
-  if (USE_AP_MODE) {
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(ap_ssid, ap_password);
-    char ip_buf[40];
-    snprintf(ip_buf, sizeof(ip_buf), "IP: %s", WiFi.softAPIP().toString().c_str());
-    showBootStatus("AP Mode Active", ip_buf);
-    #if ENABLE_SERIAL_DEBUG
-    Serial.println("\n[AP MODE] Access Point Active!");
-    Serial.print("Access Web UI at IP: http://");
-    Serial.println(WiFi.softAPIP());
-    #endif
-    delay(1500);
-  } else {
+  if (!force_ap && strlen(sta_ssid) > 0) {
+    WiFi.mode(WIFI_STA);
+    delay(100);
+    WiFi.disconnect(true);
+    delay(150);
+    WiFi.setSleep(WIFI_PS_NONE);          // Disable Wi-Fi sleep so Web Server is always responsive
+    WiFi.setAutoReconnect(true);
+    WiFi.setTxPower(WIFI_TX_POWER);       // Full power for reliable Wi-Fi range
+
     char wifi_msg[40];
     snprintf(wifi_msg, sizeof(wifi_msg), "WiFi: %s", sta_ssid);
     showBootStatus(wifi_msg, "Connecting...");
 
-    WiFi.begin(sta_ssid, sta_password);
     #if ENABLE_SERIAL_DEBUG
-    Serial.printf("\nConnecting to WiFi '%s'", sta_ssid);
+    Serial.printf("\nConnecting to WiFi '%s'...", sta_ssid);
     #endif
+
+    if (strlen(sta_password) > 0) {
+      WiFi.begin(sta_ssid, sta_password);
+    } else {
+      WiFi.begin(sta_ssid);
+    }
+
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 50) {
-      delay(400);
+      delay(300);
       #if ENABLE_SERIAL_DEBUG
       Serial.print(".");
       #endif
-      // Update OLED progress dots every 5 attempts
-      if (attempts % 5 == 0) {
-        char dots[12] = "Connecting";
-        int d = (attempts / 5) % 3;
+      if (attempts % 4 == 0) {
+        char dots[16] = "Connecting";
+        int d = (attempts / 4) % 3;
         for (int i = 0; i <= d; i++) strcat(dots, ".");
         showBootStatus(wifi_msg, dots);
       }
       attempts++;
     }
+
     if (WiFi.status() == WL_CONNECTED) {
-      char ip_buf[40];
-      snprintf(ip_buf, sizeof(ip_buf), "IP: %s", WiFi.localIP().toString().c_str());
-      showBootStatus("WiFi Connected!", ip_buf);
-      #if ENABLE_SERIAL_DEBUG
-      Serial.println(" Connected!");
-      Serial.print("Web UI: http://");
-      Serial.println(WiFi.localIP());
-      #endif
-      delay(1500);
-    } else {
-      #if ENABLE_SERIAL_DEBUG
-      Serial.printf("\n[ERROR] Could not connect to '%s' (Status Code: %d)\n", sta_ssid, (int)WiFi.status());
-      #endif
-      WiFi.mode(WIFI_AP);
-      WiFi.softAP(ap_ssid, ap_password);
-      char ip_buf[40];
-      snprintf(ip_buf, sizeof(ip_buf), "IP: %s", WiFi.softAPIP().toString().c_str());
-      showBootStatus("AP Fallback", ip_buf);
-      #if ENABLE_SERIAL_DEBUG
-      Serial.println("Fallback AP Mode active!");
-      Serial.print("Access Web UI at IP: http://");
-      Serial.println(WiFi.softAPIP());
-      #endif
-      delay(1500);
+      connected = true;
     }
+  }
+
+  if (connected) {
+    g_is_ap_mode = false;
+    if (MDNS.begin("kore")) {
+      MDNS.addService("http", "tcp", 80);
+    }
+    char sta_ip_buf[40];
+    snprintf(sta_ip_buf, sizeof(sta_ip_buf), "IP: %s", WiFi.localIP().toString().c_str());
+    showBootStatus("WiFi Connected!", sta_ip_buf);
+    #if ENABLE_SERIAL_DEBUG
+    Serial.println(" Connected to WiFi!");
+    Serial.print("Web UI: http://");
+    Serial.println(WiFi.localIP());
+    #endif
+    delay(1500);
+  } else {
+    // Connection to WiFi failed or forced AP -> Fall back to AP mode (SSID: KoRe)
+    #if ENABLE_SERIAL_DEBUG
+    if (force_ap) {
+      Serial.println("\n[WiFi] Forced AP Mode active.");
+    } else {
+      Serial.printf("\n[WiFi] Could not connect to '%s'. Entering AP Fallback Mode...\n", sta_ssid);
+    }
+    #endif
+    WiFi.disconnect(true);
+    delay(100);
+    WiFi.mode(WIFI_AP);
+    WiFi.setSleep(WIFI_PS_NONE);
+    WiFi.setTxPower(WIFI_TX_POWER);
+
+    if (strlen(ap_password) > 0 && strlen(ap_password) < 8) {
+      WiFi.softAP(ap_ssid, NULL); // Automatic fallback to Open AP if saved password is invalid (<8 chars)
+    } else if (strlen(ap_password) == 0) {
+      WiFi.softAP(ap_ssid, NULL);
+    } else {
+      WiFi.softAP(ap_ssid, ap_password);
+    }
+
+    dnsServer.start(53, "*", WiFi.softAPIP());
+    g_is_ap_mode = true;
+
+    xTaskCreate([](void* arg) {
+      while (true) {
+        if (g_is_ap_mode) {
+          dnsServer.processNextRequest();
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+    }, "AP_DNS_Task", 2048, NULL, 1, NULL);
+
+    char ap_ip_buf[40];
+    if (!force_ap && strlen(sta_ssid) > 0) {
+      showBootStatus("STA Fail -> AP Mode", WiFi.softAPIP().toString().c_str());
+    } else {
+      snprintf(ap_ip_buf, sizeof(ap_ip_buf), "AP IP: %s", WiFi.softAPIP().toString().c_str());
+      showBootStatus("AP Mode Active", ap_ip_buf);
+    }
+    #if ENABLE_SERIAL_DEBUG
+    Serial.println("AP Mode active!");
+    Serial.print("Web UI: http://");
+    Serial.println(WiFi.softAPIP());
+    #endif
+    delay(1500);
   }
 
   startWebServer();
