@@ -166,10 +166,21 @@ static uint8_t* mhi_buf       = NULL;
 
 /* --- Inter-Core Asynchronous Synchronization & Streaming --- */
 static volatile int g_stream_clients = 0;
+static volatile uint32_t g_last_web_activity_ms = 0;
 static uint8_t* g_latest_jpeg_buf = NULL;
 static size_t g_latest_jpeg_len = 0;
 static portMUX_TYPE g_stream_mutex = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t g_frame_sem = NULL;
+
+static inline bool isWebOrStreamActive(uint32_t now) {
+  bool has_clients = false;
+  portENTER_CRITICAL(&g_stream_mutex);
+  has_clients = (g_stream_clients > 0);
+  portEXIT_CRITICAL(&g_stream_mutex);
+  if (has_clients) return true;
+  if (g_last_web_activity_ms > 0 && (now - g_last_web_activity_ms < 6000)) return true;
+  return false;
+}
 
 /* --- Embedded HTTP Service Handles --- */
 httpd_handle_t stream_httpd = NULL;
@@ -314,6 +325,11 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     const canvas = document.getElementById('hud-canvas');
     const ctx = canvas.getContext('2d');
     img.src = 'http://' + host + ':81/stream';
+    img.onerror = function() {
+      setTimeout(function() {
+        img.src = 'http://' + host + ':81/stream?t=' + Date.now();
+      }, 1000);
+    };
 
     function resizeCanvas() {
       if (img.clientWidth > 0 && img.clientHeight > 0) {
@@ -508,15 +524,19 @@ void updateGazeSystem() {
     // Detect first acquisition event or large target jump
     if (!s_prevTargetDetected) {
       s_prevTargetDetected = true;
-      trackInSaccade = true;
-      trackSaccadeStart = now;
-      trackSaccadeStartX = currentOffsetX;
-      trackSaccadeStartY = currentOffsetY;
-      trackSaccadeTargetX = rawTargetX;
-      trackSaccadeTargetY = rawTargetY;
       float dist_init = sqrtf((rawTargetX - currentOffsetX) * (rawTargetX - currentOffsetX) + 
                               (rawTargetY - currentOffsetY) * (rawTargetY - currentOffsetY));
-      trackSaccadeDuration = (uint32_t)constrain(120.0f + dist_init * 3.5f, 130.0f, 260.0f);
+      if (dist_init > 10.0f && !g_is_transitioning) {
+        trackInSaccade = true;
+        trackSaccadeStart = now;
+        trackSaccadeStartX = currentOffsetX;
+        trackSaccadeStartY = currentOffsetY;
+        trackSaccadeTargetX = rawTargetX;
+        trackSaccadeTargetY = rawTargetY;
+        trackSaccadeDuration = (uint32_t)constrain(120.0f + dist_init * 3.5f, 130.0f, 260.0f);
+      } else {
+        trackInSaccade = false;
+      }
       smoothedTargetX = currentOffsetX;
       smoothedTargetY = currentOffsetY;
       eye_vx = 0.0f;
@@ -602,7 +622,7 @@ void updateGazeSystem() {
 
   bool isSleep = (g_recon_state == STATE_SLEEP_RECON);
 
-  if (!inSaccade && now >= nextGazeTime) {
+  if (!inSaccade && !g_is_transitioning && now >= nextGazeTime) {
     startOffsetX = currentOffsetX;
     startOffsetY = currentOffsetY;
 
@@ -635,61 +655,37 @@ void updateGazeSystem() {
                        (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
       gazeDuration = (uint32_t)constrain(140.0f + ds * 4.0f, 150.0f, 280.0f);
       nextGazeTime = now + gazeDuration + (esp_random() % 2000 + 3000);
+      gazeStartTime = now;
+      inSaccade = true;
     } else {
-      // Active Idle Mode: Alive human-like spontaneous fixations
-      if (currentExpr == EXPR_IDLE) {
-        uint32_t pick = esp_random() % 100;
-        if (pick < 40) {
-          // Center return
-          targetOffsetX = 0.0f;
-          targetOffsetY = 0.0f;
-        } else if (pick < 70) {
-          targetOffsetX = -1.0f * (float)(esp_random() % 9 + 6);
-          targetOffsetY = (float)(esp_random() % 7) - 3.0f;
-        } else {
-          targetOffsetX = (float)(esp_random() % 9 + 6);
-          targetOffsetY = (float)(esp_random() % 7) - 3.0f;
-        }
-        
-        targetOffsetX = constrain(targetOffsetX, -16.5f, 16.5f);
-        targetOffsetY = constrain(targetOffsetY, -10.0f, 9.0f);
-
-        float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
-                         (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
-        gazeDuration = (uint32_t)constrain(120.0f + ds * 3.5f, 130.0f, 240.0f);
-        nextGazeTime = now + gazeDuration + (esp_random() % 1800 + 2200);
-      } 
-      else if (currentExpr == EXPR_SHOCK) {
-        // Alert, centered startle fixation
-        targetOffsetX = currentOffsetX * 0.35f;
-        targetOffsetY = currentOffsetY * 0.35f;
-        float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
-                         (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
-        gazeDuration = (uint32_t)constrain(90.0f + ds * 2.5f, 100.0f, 160.0f);
-        nextGazeTime = now + gazeDuration + (esp_random() % 1500 + 2000);
-      } 
-      else if (currentExpr == EXPR_SEDIH) {
-        // Downward gaze
-        float dir = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
-        targetOffsetX = dir * (float)(esp_random() % 8);
-        targetOffsetY = (float)(esp_random() % 5 + 4);
-        float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
-                         (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
-        gazeDuration = (uint32_t)constrain(140.0f + ds * 4.0f, 150.0f, 260.0f);
-        nextGazeTime = now + gazeDuration + (esp_random() % 2500 + 2500);
+      // Active Idle Mode: Alive human-like spontaneous fixations (Continuous & Uninterrupted)
+      uint32_t pick = esp_random() % 100;
+      if (pick < 40) {
+        // Center return
+        targetOffsetX = 0.0f;
+        targetOffsetY = 0.0f;
+      } else if (pick < 70) {
+        targetOffsetX = -1.0f * (float)(esp_random() % 9 + 6);
+        targetOffsetY = (float)(esp_random() % 7) - 3.0f;
       } else {
-        // SMIRK, JOY, ANGRY: gentle centering
-        targetOffsetX = currentOffsetX * 0.5f;
-        targetOffsetY = currentOffsetY * 0.5f;
-        float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
-                         (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
-        gazeDuration = (uint32_t)constrain(110.0f + ds * 3.0f, 120.0f, 190.0f);
-        nextGazeTime = now + gazeDuration + 3000;
+        targetOffsetX = (float)(esp_random() % 9 + 6);
+        targetOffsetY = (float)(esp_random() % 7) - 3.0f;
       }
-    }
 
-    gazeStartTime = now;
-    inSaccade = true;
+      if (currentExpr == EXPR_SEDIH) {
+        targetOffsetY += 4.0f;
+      }
+      
+      targetOffsetX = constrain(targetOffsetX, -16.5f, 16.5f);
+      targetOffsetY = constrain(targetOffsetY, -10.0f, 9.0f);
+
+      float ds = sqrtf((targetOffsetX - startOffsetX) * (targetOffsetX - startOffsetX) + 
+                       (targetOffsetY - startOffsetY) * (targetOffsetY - startOffsetY));
+      gazeDuration = (uint32_t)constrain(120.0f + ds * 3.5f, 130.0f, 240.0f);
+      nextGazeTime = now + gazeDuration + (esp_random() % 1800 + 2200);
+      gazeStartTime = now;
+      inSaccade = true;
+    }
   }
 
   /* --- Minimum-Jerk Saccadic Trajectory Evaluation --- */
@@ -805,22 +801,32 @@ void drawShockEyes(int ox, int oy, uint16_t color, float vergence = 0.0f, float 
   int ry = 28 + oy;
 
   int w = 28;
-  int h = 36;
+  int h = (int)roundf(36.0f * scale);
+  if (h <= 3) {
+    canvas.fillRoundRect(lx - w / 2, ly - 1, w, 3, 1, color);
+    canvas.fillRoundRect(rx - w / 2, ry - 1, w, 3, 1, color);
+    return;
+  }
+  int rad = (h < 24) ? h / 2 : 12;
+  canvas.drawRoundRect(lx - w / 2, ly - h / 2, w, h, rad, color);
+  if (h > 12) {
+    canvas.drawRoundRect(lx - w / 2 + 1, ly - h / 2 + 1, w - 2, h - 2, (rad > 1 ? rad - 1 : 1), color);
+  }
+  int pupilRad = (h > 18) ? 3 : (h > 8 ? 2 : 1);
+  canvas.fillCircle(lx, ly, pupilRad, color);
 
-  canvas.drawRoundRect(lx - w / 2, ly - h / 2, w, h, 12, color);
-  canvas.drawRoundRect(lx - w / 2 + 1, ly - h / 2 + 1, w - 2, h - 2, 11, color);
-  canvas.fillCircle(lx, ly, 3, color);
-
-  canvas.drawRoundRect(rx - w / 2, ry - h / 2, w, h, 12, color);
-  canvas.drawRoundRect(rx - w / 2 + 1, ry - h / 2 + 1, w - 2, h - 2, 11, color);
-  canvas.fillCircle(rx, ry, 3, color);
+  canvas.drawRoundRect(rx - w / 2, ry - h / 2, w, h, rad, color);
+  if (h > 12) {
+    canvas.drawRoundRect(rx - w / 2 + 1, ry - h / 2 + 1, w - 2, h - 2, (rad > 1 ? rad - 1 : 1), color);
+  }
+  canvas.fillCircle(rx, ry, pupilRad, color);
 }
 
 void drawSpiralEye(int cx, int cy, float rotAngle, uint16_t color, float scale = 1.0f) {
   float prevX = cx;
   float prevY = cy;
   for (float theta = 0.2f; theta <= 13.5f; theta += 0.35f) {
-    float r = 0.85f * theta;
+    float r = 0.85f * theta * scale;
     float angle = theta + rotAngle;
     float x = cx + r * cosf(angle);
     float y = cy + r * sinf(angle);
@@ -836,6 +842,11 @@ void drawSpiralEyes(int ox, int oy, float rotAngle, uint16_t color, float vergen
   int ly = 28 + oy;
   int ry = 28 + oy;
 
+  if (scale <= 0.05f) {
+    canvas.fillRoundRect(lx - 14, ly - 1, 28, 3, 1, color);
+    canvas.fillRoundRect(rx - 14, ry - 1, 28, 3, 1, color);
+    return;
+  }
   drawSpiralEye(lx, ly, rotAngle, color, scale);
   drawSpiralEye(rx, ry, -rotAngle, color, scale);
 }
@@ -847,8 +858,14 @@ void drawSedihEyes(int ox, int oy, uint16_t color, float vergence = 0.0f, float 
   int ry = 28 + oy;
 
   float halfW = 11.0f;
+  if (scale <= 0.05f) {
+    canvas.fillRoundRect(lx - 14, ly - 1, 28, 3, 1, color);
+    canvas.fillRoundRect(rx - 14, ry - 1, 28, 3, 1, color);
+    return;
+  }
   for (float x = -halfW; x <= halfW; x += 0.4f) {
-    float y = (float)ly + (4.0f - 0.065f * x * x);
+    float normX = x / halfW;
+    float y = (float)ly + (4.0f * scale * (1.0f - normX * normX));
     canvas.fillCircle(lx + (int)roundf(x), (int)roundf(y), 1, color);
     canvas.fillCircle(rx + (int)roundf(x), (int)roundf(y), 1, color);
   }
@@ -1307,6 +1324,7 @@ void oledTask(void *pvParameters) {
     }
     #endif
 
+    Expression prevExpr = currentExpr;
     updateBiologicalMoodEngine();
 
     /* --- Recon State Transition Handoff ---
@@ -1315,78 +1333,79 @@ void oledTask(void *pvParameters) {
       inSaccade            = false;
       trackInSaccade       = false;
       s_prevTargetDetected = false;
-      smoothedTargetX      = currentOffsetX;
-      smoothedTargetY      = currentOffsetY;
-      eye_vx               = 0.0f;
-      eye_vy               = 0.0f;
       nextGazeTime         = now + 600;
       g_prev_recon_state   = g_recon_state;
     }
 
-    // Unified 60 FPS master gaze kinematics
-    updateGazeSystem();
-
-    /* --- Non-Blocking Eyelid Blinking State Machine --- */
-    bool canBlink = (currentExpr != EXPR_OVERLOAD && currentExpr != EXPR_SEDIH && currentExpr != EXPR_JOY);
-
-    if (!canBlink) {
-      g_blinkState = BLINK_IDLE_STATE;
-      g_blinkEyeHeight = 1.0f;
+    if (currentExpr != prevExpr) {
+      // Transition already pushed the final frame on step 10, pace to next 60 FPS frame cleanly
+      frame_start_us = micros();
     } else {
-      if (g_blinkState == BLINK_IDLE_STATE) {
-        if (g_nextBlinkTime == 0) {
-          uint32_t initInterval = (currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
-          g_nextBlinkTime = now + initInterval;
-        }
-        if (now >= g_nextBlinkTime) {
-          g_blinkState = BLINK_CLOSING_STATE;
-          g_blinkStartTime = now;
-          if (g_isDoubleBlinkPending) {
-            g_isDoubleBlinkPending = false;
-          } else if ((esp_random() % 100) < 14) { 
-            g_isDoubleBlinkPending = true;
-          }
-        }
-      }
+      // Unified 60 FPS master gaze kinematics
+      updateGazeSystem();
 
-      if (g_blinkState == BLINK_CLOSING_STATE) {
-        float elapsed = (float)(now - g_blinkStartTime);
-        float duration = (currentExpr == EXPR_ANGRY) ? 35.0f : 50.0f;
-        if (elapsed >= duration) {
-          g_blinkEyeHeight = 0.0f;
-          g_blinkState = BLINK_OPENING_STATE;
-          g_blinkStartTime = now;
-        } else {
-          float t = elapsed / duration;
-          g_blinkEyeHeight = blinkCloseEase(t);
-        }
-      } else if (g_blinkState == BLINK_OPENING_STATE) {
-        float elapsed = (float)(now - g_blinkStartTime);
-        float duration = (currentExpr == EXPR_ANGRY) ? 80.0f : 110.0f;
-        if (elapsed >= duration) {
-          g_blinkEyeHeight = 1.0f;
-          g_blinkState = BLINK_IDLE_STATE;
-          if (g_isDoubleBlinkPending) {
-            g_nextBlinkTime = now + 120;
-          } else {
-            uint32_t interval = (currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
-            g_nextBlinkTime = now + interval;
-          }
-        } else {
-          float t = elapsed / duration;
-          g_blinkEyeHeight = blinkOpenEase(t);
-        }
-      } else {
+      /* --- Non-Blocking Eyelid Blinking State Machine --- */
+      bool canBlink = (currentExpr != EXPR_OVERLOAD && currentExpr != EXPR_SEDIH && currentExpr != EXPR_JOY);
+
+      if (!canBlink) {
+        g_blinkState = BLINK_IDLE_STATE;
         g_blinkEyeHeight = 1.0f;
+      } else {
+        if (g_blinkState == BLINK_IDLE_STATE) {
+          if (g_nextBlinkTime == 0) {
+            uint32_t initInterval = (currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
+            g_nextBlinkTime = now + initInterval;
+          }
+          if (now >= g_nextBlinkTime) {
+            g_blinkState = BLINK_CLOSING_STATE;
+            g_blinkStartTime = now;
+            if (g_isDoubleBlinkPending) {
+              g_isDoubleBlinkPending = false;
+            } else if ((esp_random() % 100) < 14) { 
+              g_isDoubleBlinkPending = true;
+            }
+          }
+        }
+
+        if (g_blinkState == BLINK_CLOSING_STATE) {
+          float elapsed = (float)(now - g_blinkStartTime);
+          float duration = (currentExpr == EXPR_ANGRY) ? 35.0f : 50.0f;
+          if (elapsed >= duration) {
+            g_blinkEyeHeight = 0.0f;
+            g_blinkState = BLINK_OPENING_STATE;
+            g_blinkStartTime = now;
+          } else {
+            float t = elapsed / duration;
+            g_blinkEyeHeight = blinkCloseEase(t);
+          }
+        } else if (g_blinkState == BLINK_OPENING_STATE) {
+          float elapsed = (float)(now - g_blinkStartTime);
+          float duration = (currentExpr == EXPR_ANGRY) ? 80.0f : 110.0f;
+          if (elapsed >= duration) {
+            g_blinkEyeHeight = 1.0f;
+            g_blinkState = BLINK_IDLE_STATE;
+            if (g_isDoubleBlinkPending) {
+              g_nextBlinkTime = now + 120;
+            } else {
+              uint32_t interval = (currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
+              g_nextBlinkTime = now + interval;
+            }
+          } else {
+            float t = elapsed / duration;
+            g_blinkEyeHeight = blinkOpenEase(t);
+          }
+        } else {
+          g_blinkEyeHeight = 1.0f;
+        }
       }
-    }
 
-    /* --- Continuous OLED 60.0 FPS Rendering Dispatch via Single pushSprite --- */
-    if (currentExpr == EXPR_OVERLOAD || currentExpr == EXPR_SEDIH) {
-      animFrame += 0.025f;
-    }
+      /* --- Continuous OLED 60.0 FPS Rendering Dispatch via Single pushSprite --- */
+      if (currentExpr == EXPR_OVERLOAD || currentExpr == EXPR_SEDIH) {
+        animFrame += 0.025f;
+      }
 
-    drawFace(currentExpr, g_blinkEyeHeight, currentOffsetX, currentOffsetY, animFrame, currentVergence, currentEyeScale);
+      drawFace(currentExpr, g_blinkEyeHeight, currentOffsetX, currentOffsetY, animFrame, currentVergence, currentEyeScale);
+    }
 
     /* --- Precision Hardware 60.0 FPS Microsecond Frame Pacing (16,666 µs) --- */
     uint32_t frame_elapsed_us = micros() - frame_start_us;
@@ -2017,24 +2036,21 @@ void cameraTask(void *pvParameters) {
   uint32_t last_frame_time = millis();
   g_state_timer = millis();
 
-  uint32_t active_duration_ms = (esp_random() % 2000) + 5000; 
-  uint32_t sleep_duration_ms  = (esp_random() % 4000) + 10000; 
+  // Power optimization: Short reconnaissance window (3-6s) vs Extended standby (1.5-3 minutes)
+  uint32_t active_duration_ms = (esp_random() % 3000) + 3000; 
+  uint32_t sleep_duration_ms  = (esp_random() % 90000) + 90000; 
   bool last_wifi_ps_sleep = false;
 
   while (true) {
     uint32_t now = millis();
+    bool web_active = isWebOrStreamActive(now);
 
-    // Dynamic Wi-Fi Power Management: Enable modem sleep when no streaming clients are active
-    bool has_clients = false;
-    portENTER_CRITICAL(&g_stream_mutex);
-    has_clients = (g_stream_clients > 0);
-    portEXIT_CRITICAL(&g_stream_mutex);
-
+    // Dynamic Wi-Fi Power Management: Enable modem sleep only when no web/streaming clients are active
     if (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) {
-      if (!has_clients && !last_wifi_ps_sleep) {
+      if (!web_active && !last_wifi_ps_sleep) {
         WiFi.setSleep(WIFI_PS_MIN_MODEM);
         last_wifi_ps_sleep = true;
-      } else if (has_clients && last_wifi_ps_sleep) {
+      } else if (web_active && last_wifi_ps_sleep) {
         WiFi.setSleep(WIFI_PS_NONE);
         last_wifi_ps_sleep = false;
       }
@@ -2051,7 +2067,7 @@ void cameraTask(void *pvParameters) {
           }
           last_frame_time = now;
 
-          if (has_clients && g_latest_jpeg_buf) {
+          if (web_active && g_latest_jpeg_buf) {
             if (fb->len <= 64 * 1024) {
               portENTER_CRITICAL(&g_stream_mutex);
               memcpy(g_latest_jpeg_buf, fb->buf, fb->len);
@@ -2068,7 +2084,16 @@ void cameraTask(void *pvParameters) {
         esp_camera_fb_return(fb);
       }
 
-      if (now - g_state_timer > active_duration_ms) {
+      // Check if target is actively engaged by vision AI
+      bool target_engaged = false;
+      portENTER_CRITICAL(&target_mutex);
+      target_engaged = (current_target.detected && (now - current_target.last_seen_ms < 500));
+      portEXIT_CRITICAL(&target_mutex);
+
+      // Keep awake if web stream is open OR a human target is actively being engaged
+      if (web_active || target_engaged) {
+        g_state_timer = now;
+      } else if (now - g_state_timer > active_duration_ms) {
         // Transition ACTIVE -> SLEEP_RECON:
         // 1. Put camera sensor hardware into software standby via SCCB
         setCameraSleep(true);
@@ -2076,15 +2101,14 @@ void cameraTask(void *pvParameters) {
         setCpuFrequencyMhz(80);
         g_recon_state = STATE_SLEEP_RECON;
         g_state_timer = now;
-        sleep_duration_ms = (esp_random() % 4000) + 10000; 
+        sleep_duration_ms = (esp_random() % 90000) + 90000; // 90 - 180 seconds (1.5 - 3 minutes)
       }
     } 
     else if (g_recon_state == STATE_SLEEP_RECON) {
-      vTaskDelay(pdMS_TO_TICKS(100));
-
-      if (now - g_state_timer > sleep_duration_ms) {
+      // Immediate wake-up on web activity or when multi-minute sleep duration expires
+      if (web_active || (now - g_state_timer > sleep_duration_ms)) {
         // Transition SLEEP_RECON -> ACTIVE:
-        // 1. Scale CPU clock back up to 240 MHz for real-time computer vision
+        // 1. Scale CPU clock back up to 240 MHz for real-time computer vision & high-speed streaming
         setCpuFrequencyMhz(240);
         // 2. Wake camera sensor from software standby
         setCameraSleep(false);
@@ -2103,7 +2127,9 @@ void cameraTask(void *pvParameters) {
 
         g_recon_state = STATE_ACTIVE;
         g_state_timer = now;
-        active_duration_ms = (esp_random() % 2000) + 5000; 
+        active_duration_ms = (esp_random() % 3000) + 3000; // 3 - 6 seconds random active window
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(50));
       }
     }
 
@@ -2117,6 +2143,7 @@ void cameraTask(void *pvParameters) {
  * @brief HTTP GET handler serving static Web UI dashboard page.
  */
 static esp_err_t index_handler(httpd_req_t *req) {
+  g_last_web_activity_ms = millis();
   httpd_resp_set_type(req, "text/html");
   return httpd_resp_send(req, HTML_PAGE, strlen(HTML_PAGE));
 }
@@ -2125,6 +2152,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
  * @brief HTTP GET handler serving JSON telemetry data stream.
  */
 static esp_err_t telemetry_handler(httpd_req_t *req) {
+  g_last_web_activity_ms = millis();
   char json[512];
   TrackTarget target;
   int num_cands = 0;
@@ -2177,10 +2205,12 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
   uint8_t* stream_buf = (uint8_t*)ps_malloc(64 * 1024);
   if (!stream_buf) stream_buf = (uint8_t*)malloc(64 * 1024);
+  if (!stream_buf) return ESP_FAIL;
 
   portENTER_CRITICAL(&g_stream_mutex);
   g_stream_clients++;
   portEXIT_CRITICAL(&g_stream_mutex);
+  g_last_web_activity_ms = millis();
 
   while (true) {
     if (g_frame_sem && xSemaphoreTake(g_frame_sem, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -2201,6 +2231,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
         if (res != ESP_OK) break;
 
         uint32_t now = millis();
+        g_last_web_activity_ms = now;
         if (now - last_stream_time > 0) {
           fps_stream = 1000.0f / (float)(now - last_stream_time);
         }
