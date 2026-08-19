@@ -30,8 +30,7 @@
 #define WIFI_TX_POWER WIFI_POWER_8_5dBm  // 8.5dBm sufficient for <10m indoor range (saves ~50mA vs 19.5dBm)
 #define CPU_FREQ_ACTIVE 240               // MHz - Full speed for vision + streaming
 #define CPU_FREQ_SLEEP  40                // MHz - Minimum for OLED I2C @1MHz rendering
-#define OLED_BRIGHTNESS_ACTIVE 128        // Active mode brightness
-#define OLED_BRIGHTNESS_SLEEP  40         // Sleep mode dimmed brightness
+#define OLED_BRIGHTNESS        128        // OLED panel brightness
 #define CAMERA_XCLK_FREQ 10000000         // 10 MHz (down from 16MHz, sufficient for VGA JPEG)
 #define FPS_ACTIVE_US 16666               // 60 FPS frame budget (microseconds)
 #define FPS_SLEEP_US  33333               // 30 FPS frame budget for sleep mode (saves I2C bus power)
@@ -267,9 +266,8 @@ static float g_rand_target_y = 0.0f;
 static uint32_t g_last_saccade_shift = 0;
 static uint32_t g_nextGazeTime = 4500;
 
-/* --- Progressive Sleep Escalation & OLED Power Management --- */
+/* --- Progressive Sleep Escalation --- */
 static uint8_t g_sleep_miss_count = 0;       // Consecutive wake-ups without target detection
-static float g_current_brightness = 128.0f;  // Smooth OLED brightness for gradual dimming
 
 /* --- Camera Sensor Software Standby Low-Power Controller --- */
 void setCameraSleep(bool enable) {
@@ -1409,7 +1407,7 @@ void oledTask(void *pvParameters) {
 
   lcd.init();
   lcd.setRotation(2);
-  lcd.setBrightness(OLED_BRIGHTNESS_ACTIVE);
+  lcd.setBrightness(OLED_BRIGHTNESS);
 
   // Initialize 1-bit monochrome off-screen canvas sprite (128x64 = 1024 bytes)
   canvas.setColorDepth(1);
@@ -1445,13 +1443,6 @@ void oledTask(void *pvParameters) {
       s_prevTargetDetected = false;
       nextGazeTime         = now + 600;
       g_prev_recon_state   = g_recon_state;
-    }
-
-    /* --- Adaptive OLED Brightness Dimming (Gradual Transition) --- */
-    float target_brightness = (g_recon_state == STATE_SLEEP_RECON) ? (float)OLED_BRIGHTNESS_SLEEP : (float)OLED_BRIGHTNESS_ACTIVE;
-    if (fabsf(g_current_brightness - target_brightness) > 1.0f) {
-      g_current_brightness += (target_brightness - g_current_brightness) * 0.04f;
-      lcd.setBrightness((int)g_current_brightness);
     }
 
     if (currentExpr != prevExpr) {
@@ -2520,7 +2511,7 @@ void setup() {
   // Initialize OLED early for boot status display
   lcd.init();
   lcd.setRotation(2);
-  lcd.setBrightness(OLED_BRIGHTNESS_ACTIVE);
+  lcd.setBrightness(OLED_BRIGHTNESS);
   showBootStatus("KoRe Starting...");
 
   #if ENABLE_SERIAL_DEBUG
