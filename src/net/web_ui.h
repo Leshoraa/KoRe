@@ -226,6 +226,58 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     .btn-switch-mode:hover {
       background-color: #27272a;
     }
+    .expr-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .btn-expr {
+      width: 100%;
+      padding: 7px 4px;
+      margin-top: 0;
+      font-size: 10px;
+      font-weight: 600;
+      background: #121214;
+      border: 1px solid #27272a;
+      color: #a1a1aa;
+      border-radius: 2px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .btn-expr:hover {
+      background: #27272a;
+      color: #f4f4f5;
+      border-color: #3f3f46;
+    }
+    .btn-expr.active {
+      background: #1e293b;
+      border-color: #38bdf8;
+      color: #38bdf8;
+    }
+    .btn-expr-auto {
+      width: 100%;
+      padding: 8px 10px;
+      margin-top: 0;
+      margin-bottom: 14px;
+      font-size: 11px;
+      font-weight: 600;
+      background: #18181b;
+      border: 1px solid #3f3f46;
+      color: #e4e4e7;
+      border-radius: 2px;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+    }
+    .btn-expr-auto:hover {
+      background: #27272a;
+    }
+    .btn-expr-auto.active {
+      border-color: #38bdf8;
+      color: #38bdf8;
+      background: #0f172a;
+    }
     #status {
       display: none;
       margin-top: 12px;
@@ -293,6 +345,19 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         <span id="tel-prox" class="telemetry-val">0%</span>
       </div>
     </div>
+
+    <div class="section-title">Kontrol Ekspresi Wajah</div>
+    <div class="expr-grid">
+      <button type="button" class="btn-expr" data-expr="0">IDLE</button>
+      <button type="button" class="btn-expr" data-expr="1">JOY</button>
+      <button type="button" class="btn-expr" data-expr="2">ANGRY</button>
+      <button type="button" class="btn-expr" data-expr="3">SMIRK</button>
+      <button type="button" class="btn-expr" data-expr="4">SHOCK</button>
+      <button type="button" class="btn-expr" data-expr="5">OVERLOAD</button>
+      <button type="button" class="btn-expr" data-expr="6">SEDIH</button>
+      <button type="button" class="btn-expr" data-expr="7">DEADPAN</button>
+    </div>
+    <button type="button" id="btn-expr-auto" class="btn-expr-auto active">Kembalikan ke Default (Auto Mood)</button>
 
     <button type="button" id="btn-switch-mode" class="btn-switch-mode" style="display:none;"></button>
 
@@ -463,6 +528,25 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         } else {
           renderBoxes = [];
         }
+
+        /* Update active expression indicator */
+        const isManual = (data.is_manual === true || data.is_manual === 'true');
+        const currentExpr = (data.expr !== undefined) ? parseInt(data.expr, 10) : -1;
+        const btnAuto = document.getElementById('btn-expr-auto');
+
+        if (!isManual) {
+          if (btnAuto) btnAuto.classList.add('active');
+          document.querySelectorAll('.btn-expr').forEach(btn => btn.classList.remove('active'));
+        } else {
+          if (btnAuto) btnAuto.classList.remove('active');
+          document.querySelectorAll('.btn-expr').forEach(btn => {
+            if (parseInt(btn.dataset.expr, 10) === currentExpr) {
+              btn.classList.add('active');
+            } else {
+              btn.classList.remove('active');
+            }
+          });
+        }
       } catch (e) {}
       telemetryTimer = setTimeout(updateTelemetry, 100);
     }
@@ -475,6 +559,37 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     });
 
     updateTelemetry();
+
+    /* Expression Control Logic */
+    document.querySelectorAll('.btn-expr').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const exprId = this.dataset.expr;
+        document.querySelectorAll('.btn-expr').forEach(b => b.classList.remove('active'));
+        const btnAuto = document.getElementById('btn-expr-auto');
+        if (btnAuto) btnAuto.classList.remove('active');
+        this.classList.add('active');
+
+        fetch('/set_expression', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expr: parseInt(exprId, 10) })
+        }).catch(() => {});
+      });
+    });
+
+    const btnExprAuto = document.getElementById('btn-expr-auto');
+    if (btnExprAuto) {
+      btnExprAuto.addEventListener('click', function() {
+        document.querySelectorAll('.btn-expr').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+
+        fetch('/set_expression', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expr: 'auto' })
+        }).catch(() => {});
+      });
+    }
 
     /* Wi-Fi Configuration Logic */
     fetch('/get_wifi')

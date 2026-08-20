@@ -25,6 +25,10 @@ static uint32_t s_mood_lock_until = 0;
 static uint32_t s_nextMoodShiftTime = 0;
 static bool s_lastTargetDetectedState = false;
 static float s_target_presence_ema = 0.0f;
+static volatile bool s_manual_override = false;
+static volatile int s_manual_expr_code = -1;
+static volatile bool s_manual_expr_pending = false;
+static volatile int s_pending_expr_code = -1;
 
 extern void transitionExpression(Expression fromExpr, Expression toExpr, float durationMs);
 
@@ -34,6 +38,33 @@ float getEmotionValence(void) {
 
 float getEmotionArousal(void) {
     return s_emotion_arousal;
+}
+
+void setManualExpression(int expr_code) {
+    s_pending_expr_code = expr_code;
+    s_manual_expr_pending = true;
+}
+
+int getManualExpression(void) {
+    return s_manual_expr_code;
+}
+
+bool isManualExpressionActive(void) {
+    return s_manual_override;
+}
+
+const char* getExpressionName(Expression expr) {
+    switch (expr) {
+        case EXPR_IDLE:     return "IDLE";
+        case EXPR_JOY:      return "JOY";
+        case EXPR_ANGRY:    return "ANGRY";
+        case EXPR_SMIRK:    return "SMIRK";
+        case EXPR_SHOCK:    return "SHOCK";
+        case EXPR_OVERLOAD: return "OVERLOAD";
+        case EXPR_SEDIH:    return "SEDIH";
+        case EXPR_DEADPAN:  return "DEADPAN";
+        default:            return "IDLE";
+    }
 }
 
 void setNextExpression(Expression newExpr) {
@@ -49,6 +80,25 @@ void setNextExpression(Expression newExpr) {
 }
 
 void updateBiologicalMoodEngine(void) {
+    if (s_manual_expr_pending) {
+        s_manual_expr_pending = false;
+        int code = s_pending_expr_code;
+        if (code < 0 || code > 7) {
+            s_manual_override = false;
+            s_manual_expr_code = -1;
+            s_mood_lock_until = 0;
+            s_nextMoodShiftTime = millis() + 4000;
+            setNextExpression(EXPR_IDLE);
+        } else {
+            s_manual_override = true;
+            s_manual_expr_code = code;
+            setNextExpression((Expression)code);
+        }
+        return;
+    }
+
+    if (s_manual_override) return;
+
     unsigned long now = millis();
     if (g_is_transitioning || now < s_mood_lock_until) return;
 
@@ -85,18 +135,22 @@ void updateBiologicalMoodEngine(void) {
         s_lastTargetDetectedState = true;
         uint32_t roll = esp_random() % 100;
         Expression reactExpr = EXPR_IDLE;
-        if (roll < 45) {
+        if (roll < 40) {
             reactExpr = EXPR_ANGRY;
             s_emotion_valence = -0.6f;
             s_emotion_arousal = 0.75f;
-        } else if (roll < 65) {
+        } else if (roll < 60) {
             reactExpr = EXPR_SHOCK;
             s_emotion_valence = -0.2f;
             s_emotion_arousal = 0.85f;
-        } else if (roll < 85) {
+        } else if (roll < 75) {
             reactExpr = EXPR_SMIRK;
             s_emotion_valence = 0.45f;
             s_emotion_arousal = 0.35f;
+        } else if (roll < 88) {
+            reactExpr = EXPR_DEADPAN;
+            s_emotion_valence = 0.0f;
+            s_emotion_arousal = 0.15f;
         } else {
             reactExpr = EXPR_IDLE;
             s_emotion_valence = 0.10f;
@@ -111,7 +165,7 @@ void updateBiologicalMoodEngine(void) {
     if (!is_detected && s_lastTargetDetectedState && s_target_presence_ema < 0.15f) {
         s_lastTargetDetectedState = false;
         uint32_t roll = esp_random() % 100;
-        Expression reactExpr = (roll < 75) ? EXPR_IDLE : ((roll < 90) ? EXPR_SEDIH : EXPR_ANGRY);
+        Expression reactExpr = (roll < 65) ? EXPR_IDLE : ((roll < 80) ? EXPR_DEADPAN : ((roll < 90) ? EXPR_SEDIH : EXPR_ANGRY));
         setNextExpression(reactExpr);
         s_mood_lock_until = now + (esp_random() % 2500 + 4500);
         s_nextMoodShiftTime = s_mood_lock_until + (esp_random() % 4000 + 4000);
@@ -128,35 +182,40 @@ void updateBiologicalMoodEngine(void) {
 
         switch (g_currentExpr) {
             case EXPR_IDLE:
-                if (roll < 65) nextMood = EXPR_IDLE;
-                else if (roll < 82) nextMood = EXPR_ANGRY;
-                else if (roll < 90) nextMood = EXPR_SMIRK;
+                if (roll < 58) nextMood = EXPR_IDLE;
+                else if (roll < 73) nextMood = EXPR_ANGRY;
+                else if (roll < 82) nextMood = EXPR_SMIRK;
+                else if (roll < 90) nextMood = EXPR_DEADPAN;
                 else if (roll < 95) nextMood = EXPR_JOY;
                 else if (roll < 98) nextMood = EXPR_SEDIH;
                 else nextMood = EXPR_OVERLOAD;
                 break;
 
             case EXPR_ANGRY:
-                if (roll < 70) nextMood = EXPR_IDLE;
-                else if (roll < 90) nextMood = EXPR_SMIRK;
+                if (roll < 65) nextMood = EXPR_IDLE;
+                else if (roll < 80) nextMood = EXPR_SMIRK;
+                else if (roll < 90) nextMood = EXPR_DEADPAN;
                 else nextMood = EXPR_SEDIH;
                 break;
 
             case EXPR_JOY:
-                if (roll < 75) nextMood = EXPR_IDLE;
-                else if (roll < 95) nextMood = EXPR_SMIRK;
+                if (roll < 70) nextMood = EXPR_IDLE;
+                else if (roll < 88) nextMood = EXPR_SMIRK;
+                else if (roll < 95) nextMood = EXPR_DEADPAN;
                 else nextMood = EXPR_ANGRY;
                 break;
 
             case EXPR_SMIRK:
-                if (roll < 70) nextMood = EXPR_IDLE;
-                else if (roll < 90) nextMood = EXPR_JOY;
+                if (roll < 65) nextMood = EXPR_IDLE;
+                else if (roll < 80) nextMood = EXPR_DEADPAN;
+                else if (roll < 92) nextMood = EXPR_JOY;
                 else nextMood = EXPR_ANGRY;
                 break;
 
             case EXPR_SHOCK:
-                if (roll < 70) nextMood = EXPR_IDLE;
-                else if (roll < 90) nextMood = EXPR_SMIRK;
+                if (roll < 65) nextMood = EXPR_IDLE;
+                else if (roll < 80) nextMood = EXPR_DEADPAN;
+                else if (roll < 92) nextMood = EXPR_SMIRK;
                 else nextMood = EXPR_ANGRY;
                 break;
 
@@ -166,9 +225,17 @@ void updateBiologicalMoodEngine(void) {
                 break;
 
             case EXPR_SEDIH:
-                if (roll < 70) nextMood = EXPR_IDLE;
-                else if (roll < 90) nextMood = EXPR_SMIRK;
+                if (roll < 65) nextMood = EXPR_IDLE;
+                else if (roll < 80) nextMood = EXPR_DEADPAN;
+                else if (roll < 92) nextMood = EXPR_SMIRK;
                 else nextMood = EXPR_JOY;
+                break;
+
+            case EXPR_DEADPAN:
+                if (roll < 65) nextMood = EXPR_IDLE;
+                else if (roll < 80) nextMood = EXPR_SMIRK;
+                else if (roll < 92) nextMood = EXPR_JOY;
+                else nextMood = EXPR_ANGRY;
                 break;
         }
 

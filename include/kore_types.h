@@ -26,7 +26,8 @@ typedef enum {
     EXPR_SMIRK,
     EXPR_SHOCK,
     EXPR_OVERLOAD,
-    EXPR_SEDIH
+    EXPR_SEDIH,
+    EXPR_DEADPAN
 } Expression;
 
 /**

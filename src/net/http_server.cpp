@@ -8,6 +8,7 @@
 #include "src/net/wifi_manager.h"
 #include "include/kore_config.h"
 #include "include/kore_types.h"
+#include "include/kore_affective.h"
 #include "esp_camera.h"
 #include <Arduino.h>
 
@@ -27,7 +28,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
 
 static esp_err_t telemetry_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
-    char json[512];
+    char json[640];
     TrackTarget target;
     int num_cands = 0;
     int insp_idx = 0;
@@ -41,7 +42,7 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
     portEXIT_CRITICAL(&g_target_mutex);
 
     snprintf(json, sizeof(json),
-        "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_p\":%.1f}",
+        "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_p\":%.1f,\"expr\":%d,\"expr_name\":\"%s\",\"is_manual\":%s}",
         target.detected ? "true" : "false",
         target.x, target.y, target.w, target.h,
         target.cx, target.cy,
@@ -54,7 +55,10 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
         num_cands, insp_idx,
         cands[0].cx, cands[0].cy, cands[0].priority_score,
         cands[1].cx, cands[1].cy, cands[1].priority_score,
-        cands[2].cx, cands[2].cy, cands[2].priority_score
+        cands[2].cx, cands[2].cy, cands[2].priority_score,
+        (int)g_currentExpr,
+        getExpressionName(g_currentExpr),
+        isManualExpressionActive() ? "true" : "false"
     );
 
     httpd_resp_set_type(req, "application/json");
@@ -130,29 +134,50 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
 static bool extract_json_value(const char* json, const char* key, char* out, size_t max_len) {
     if (!json || !key || !out || max_len == 0) return false;
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
-    const char* start = strstr(json, pattern);
-    if (!start) {
-        snprintf(pattern, sizeof(pattern), "%s=", key);
-        start = strstr(json, pattern);
-        if (!start) return false;
-        start += strlen(pattern);
+
+    char key_pattern[64];
+    snprintf(key_pattern, sizeof(key_pattern), "\"%s\"", key);
+    const char* p = strstr(json, key_pattern);
+
+    if (p) {
+        p += strlen(key_pattern);
+        while (*p && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++;
+        if (*p == ':') {
+            p++;
+            while (*p && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++;
+            if (*p == '"') {
+                p++;
+                const char* end = strchr(p, '"');
+                if (!end) return false;
+                size_t len = end - p;
+                if (len >= max_len) len = max_len - 1;
+                strncpy(out, p, len);
+                out[len] = '\0';
+                return true;
+            } else {
+                size_t i = 0;
+                while (*p && *p != ',' && *p != '}' && *p != ']' && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n' && i < max_len - 1) {
+                    out[i++] = *p++;
+                }
+                out[i] = '\0';
+                return (i > 0);
+            }
+        }
+    }
+
+    snprintf(key_pattern, sizeof(key_pattern), "%s=", key);
+    p = strstr(json, key_pattern);
+    if (p) {
+        p += strlen(key_pattern);
         size_t i = 0;
-        while (*start && *start != '&' && *start != ' ' && *start != '\r' && *start != '\n' && i < max_len - 1) {
-            out[i++] = *start++;
+        while (*p && *p != '&' && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n' && i < max_len - 1) {
+            out[i++] = *p++;
         }
         out[i] = '\0';
-        return true;
+        return (i > 0);
     }
-    start += strlen(pattern);
-    const char* end = strchr(start, '"');
-    if (!end) return false;
-    size_t len = end - start;
-    if (len >= max_len) len = max_len - 1;
-    strncpy(out, start, len);
-    out[len] = '\0';
-    return true;
+
+    return false;
 }
 
 static esp_err_t get_wifi_handler(httpd_req_t *req) {
@@ -220,23 +245,58 @@ static esp_err_t save_wifi_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t set_expression_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char buf[128];
+    int remaining = req->content_len;
+    if (remaining >= (int)sizeof(buf)) remaining = sizeof(buf) - 1;
+
+    int ret = httpd_req_recv(req, buf, remaining);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_408(req);
+        }
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    char expr_val[16] = {0};
+    if (extract_json_value(buf, "expr", expr_val, sizeof(expr_val))) {
+        if (strcmp(expr_val, "auto") == 0 || strcmp(expr_val, "-1") == 0) {
+            setManualExpression(-1);
+        } else {
+            int code = atoi(expr_val);
+            if (code >= 0 && code <= 7) {
+                setManualExpression(code);
+            }
+        }
+    }
+
+    const char* resp = "{\"status\":\"ok\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
 void startWebServer(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_PORT_WEB_CONTROL;
 
-    httpd_uri_t index_uri       = { .uri = "/",                   .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
-    httpd_uri_t telemetry_uri   = { .uri = "/telemetry",           .method = HTTP_GET,  .handler = telemetry_handler,   .user_ctx = NULL };
-    httpd_uri_t get_wifi_uri    = { .uri = "/get_wifi",            .method = HTTP_GET,  .handler = get_wifi_handler,    .user_ctx = NULL };
-    httpd_uri_t save_wifi_uri   = { .uri = "/save_wifi",           .method = HTTP_POST, .handler = save_wifi_handler,   .user_ctx = NULL };
-    httpd_uri_t switch_mode_uri = { .uri = "/switch_mode",         .method = HTTP_POST, .handler = switch_mode_handler, .user_ctx = NULL };
-    httpd_uri_t captive_1       = { .uri = "/generate_204",        .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
-    httpd_uri_t captive_2       = { .uri = "/gen_204",             .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
-    httpd_uri_t captive_3       = { .uri = "/hotspot-detect.html", .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
-    httpd_uri_t captive_4       = { .uri = "/connecttest.txt",     .method = HTTP_GET,  .handler = index_handler,       .user_ctx = NULL };
+    httpd_uri_t index_uri          = { .uri = "/",                   .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
+    httpd_uri_t telemetry_uri      = { .uri = "/telemetry",           .method = HTTP_GET,  .handler = telemetry_handler,      .user_ctx = NULL };
+    httpd_uri_t set_expression_uri = { .uri = "/set_expression",      .method = HTTP_POST, .handler = set_expression_handler, .user_ctx = NULL };
+    httpd_uri_t get_wifi_uri       = { .uri = "/get_wifi",            .method = HTTP_GET,  .handler = get_wifi_handler,       .user_ctx = NULL };
+    httpd_uri_t save_wifi_uri      = { .uri = "/save_wifi",           .method = HTTP_POST, .handler = save_wifi_handler,      .user_ctx = NULL };
+    httpd_uri_t switch_mode_uri    = { .uri = "/switch_mode",         .method = HTTP_POST, .handler = switch_mode_handler,    .user_ctx = NULL };
+    httpd_uri_t captive_1          = { .uri = "/generate_204",        .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
+    httpd_uri_t captive_2          = { .uri = "/gen_204",             .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
+    httpd_uri_t captive_3          = { .uri = "/hotspot-detect.html", .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
+    httpd_uri_t captive_4          = { .uri = "/connecttest.txt",     .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
 
     if (httpd_start(&g_camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(g_camera_httpd, &index_uri);
         httpd_register_uri_handler(g_camera_httpd, &telemetry_uri);
+        httpd_register_uri_handler(g_camera_httpd, &set_expression_uri);
         httpd_register_uri_handler(g_camera_httpd, &get_wifi_uri);
         httpd_register_uri_handler(g_camera_httpd, &save_wifi_uri);
         httpd_register_uri_handler(g_camera_httpd, &switch_mode_uri);

@@ -33,7 +33,7 @@ static void drawSensorOverlay() {
     /* Sensor telemetry overlay hook */
 }
 
-static void drawEyes(float eyeHeightFactor, int ox, int oy, uint16_t color, float vergence, float scale) {
+static void drawDualEyes(float leftHeightFactor, float rightHeightFactor, int ox, int oy, uint16_t color, float vergence, float scale) {
     (void)vergence;
     (void)scale;
     int lx = 32 + ox;
@@ -43,16 +43,59 @@ static void drawEyes(float eyeHeightFactor, int ox, int oy, uint16_t color, floa
 
     int maxEyeWidth = 28;
     int maxEyeHeight = 38;
-    int eyeHeight = (int)roundf((float)maxEyeHeight * eyeHeightFactor);
 
-    if (eyeHeight <= 3) {
+    int leftHeight = (int)roundf((float)maxEyeHeight * leftHeightFactor);
+    int rightHeight = (int)roundf((float)maxEyeHeight * rightHeightFactor);
+
+    if (leftHeight <= 3) {
         canvas.fillRoundRect(lx - maxEyeWidth / 2, ly - 1, maxEyeWidth, 3, 1, color);
+    } else {
+        int radius = (leftHeight < 24) ? leftHeight / 2 : 12;
+        canvas.fillRoundRect(lx - maxEyeWidth / 2, ly - leftHeight / 2, maxEyeWidth, leftHeight, radius, color);
+    }
+
+    if (rightHeight <= 3) {
         canvas.fillRoundRect(rx - maxEyeWidth / 2, ry - 1, maxEyeWidth, 3, 1, color);
     } else {
-        int radius = (eyeHeight < 24) ? eyeHeight / 2 : 12;
-        canvas.fillRoundRect(lx - maxEyeWidth / 2, ly - eyeHeight / 2, maxEyeWidth, eyeHeight, radius, color);
-        canvas.fillRoundRect(rx - maxEyeWidth / 2, ry - eyeHeight / 2, maxEyeWidth, eyeHeight, radius, color);
+        int radius = (rightHeight < 24) ? rightHeight / 2 : 12;
+        canvas.fillRoundRect(rx - maxEyeWidth / 2, ry - rightHeight / 2, maxEyeWidth, rightHeight, radius, color);
     }
+}
+
+static void drawEyes(float eyeHeightFactor, int ox, int oy, uint16_t color, float vergence, float scale) {
+    drawDualEyes(eyeHeightFactor, eyeHeightFactor, ox, oy, color, vergence, scale);
+}
+
+static void drawFumoEye(int cx, int cy, int w, int h, int r, uint16_t color) {
+    if (h <= 3) {
+        canvas.fillRoundRect(cx - w / 2, cy - 1, w, 3, 1, color);
+        return;
+    }
+    int topY = cy - h / 2;
+    int leftX = cx - w / 2;
+    int rad = (r > h) ? h : ((r > w / 2) ? w / 2 : r);
+    if (rad < 1) rad = 1;
+
+    if (h > rad) {
+        canvas.fillRect(leftX, topY, w, h - rad, color);
+    }
+    canvas.fillRoundRect(leftX, topY + h - rad * 2, w, rad * 2, rad, color);
+}
+
+static void drawFumoEyes(float eyeHeightFactor, int ox, int oy, uint16_t color, float vergence, float scale) {
+    (void)vergence;
+    int lx = 32 + ox;
+    int rx = 96 + ox;
+    int ly = 28 + oy;
+    int ry = 28 + oy;
+
+    int maxEyeWidth = (int)roundf(28.0f * scale);
+    int maxEyeHeight = (int)roundf(34.0f * scale);
+    int eyeHeight = (int)roundf((float)maxEyeHeight * eyeHeightFactor);
+    int topRad = (int)roundf(14.0f * scale);
+
+    drawFumoEye(lx, ly, maxEyeWidth, eyeHeight, topRad, color);
+    drawFumoEye(rx, ry, maxEyeWidth, eyeHeight, topRad, color);
 }
 
 static void drawJoyEyes(int ox, int oy, float joyScale, uint16_t color, float vergence, float scale) {
@@ -167,24 +210,41 @@ static void drawSpiralEyes(int ox, int oy, float rotAngle, uint16_t color, float
     drawSpiralEye(rx, ry, -rotAngle, color, scale);
 }
 
-static void drawSedihEyes(int ox, int oy, uint16_t color, float vergence, float scale) {
+static void drawSedihEyes(int ox, int oy, float animFrame, uint16_t color, float vergence, float scale) {
     (void)vergence;
     int lx = 32 + ox;
     int rx = 96 + ox;
-    int ly = 28 + oy;
-    int ry = 28 + oy;
+    int ly = 25 + oy;
+    int ry = 25 + oy;
 
-    float halfW = 11.0f;
-    if (scale <= 0.05f) {
-        canvas.fillRoundRect(lx - 14, ly - 1, 28, 3, 1, color);
-        canvas.fillRoundRect(rx - 14, ry - 1, 28, 3, 1, color);
-        return;
-    }
-    for (float x = -halfW; x <= halfW; x += 0.4f) {
-        float normX = x / halfW;
-        float y = (float)ly + (4.0f * scale * (1.0f - normX * normX));
-        canvas.fillCircle(lx + (int)roundf(x), (int)roundf(y), 1, color);
-        canvas.fillCircle(rx + (int)roundf(x), (int)roundf(y), 1, color);
+    int barW = (int)roundf(26.0f * scale);
+    int barH = 3;
+
+    canvas.fillRoundRect(lx - barW / 2, ly - 1, barW, barH, 1, color);
+    canvas.fillRoundRect(rx - barW / 2, ry - 1, barW, barH, 1, color);
+
+    int tearOffsets[2] = { -6, 6 };
+    int eyesX[2] = { lx, rx };
+
+    for (int e = 0; e < 2; e++) {
+        int cx = eyesX[e];
+        for (int t = 0; t < 2; t++) {
+            int tx = cx + (int)roundf((float)tearOffsets[t] * scale);
+            int startY = ly + 2;
+            int endY = 62;
+
+            for (int ty = startY; ty <= endY; ty += 2) {
+                float phase = ((float)(ty - startY) * 0.35f) - (animFrame * 3.5f);
+                float wave = sinf(phase);
+                if (wave > -0.65f) {
+                    int thickness = (wave > 0.3f) ? 1 : 0;
+                    canvas.drawFastVLine(tx, ty, 2, color);
+                    if (thickness > 0) {
+                        canvas.drawFastVLine(tx - 1, ty, 2, color);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -197,6 +257,31 @@ static void drawMouthCustom(int ox, int oy, float curve, float baseY, float widt
         float y = (float)my + (curve * normX * normX + asym * normX) * scale;
         canvas.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
     }
+}
+
+static void drawCatMouth(int ox, int oy, uint16_t color, float scale) {
+    int mx = 64 + ox;
+    int my = (int)roundf(43.5f + (float)oy);
+    float halfW = 8.5f * scale;
+    float depth = 3.0f * scale;
+
+    for (float x = -halfW; x <= halfW; x += 0.35f) {
+        float normX;
+        if (x < 0.0f) {
+            normX = (x + halfW * 0.5f) / (halfW * 0.5f);
+        } else {
+            normX = (x - halfW * 0.5f) / (halfW * 0.5f);
+        }
+        float y = (float)my + depth * (1.0f - normX * normX);
+        canvas.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
+    }
+}
+
+static void drawDeadpanMouth(int ox, int oy, uint16_t color, float scale) {
+    int mx = 64 + ox;
+    int my = (int)roundf(44.0f + (float)oy);
+    int halfW = (int)roundf(7.5f * scale);
+    canvas.fillRoundRect(mx - halfW, my - 1, halfW * 2, 3, 1, color);
 }
 
 static void drawJoyMouth(int ox, int oy, float joyScale, uint16_t color, float scale) {
@@ -230,12 +315,18 @@ static void drawOverloadMouth(int ox, int oy, uint16_t color, float scale) {
     canvas.fillEllipse(mx, my, (int)roundf(7.0f * scale), (int)roundf(5.0f * scale), color);
 }
 
-static void drawSedihMouth(int ox, int oy, float phase, uint16_t color, float scale) {
+static void drawSedihMouth(int ox, int oy, float animFrame, uint16_t color, float scale) {
     int mx = 64 + ox;
-    int baseY = (int)roundf(44.0f + (float)oy);
-    float halfW = 8.0f * scale;
-    for (float x = -halfW; x <= halfW; x += 0.4f) {
-        float y = (float)baseY + (1.2f * sinf(0.8f * (x / scale) + phase)) * scale;
+    int my = (int)roundf(45.0f + (float)oy);
+    float halfW = 9.5f * scale;
+    float waveAmp = 1.8f * scale;
+    float waveFreq = 0.75f;
+    float phase = animFrame * 4.5f;
+
+    for (float x = -halfW; x <= halfW; x += 0.35f) {
+        float norm = x / halfW;
+        float taper = 1.0f - norm * norm * norm * norm;
+        float y = (float)my + waveAmp * sinf(waveFreq * (x / scale) + phase) * taper;
         canvas.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
     }
 }
@@ -271,8 +362,8 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             break;
         case EXPR_SMIRK:
             canvas.fillScreen(TFT_BLACK);
-            drawEyes(0.35f * eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
-            drawMouthCustom(ox, oy, -0.035f, 43.0f, 9.0f, 0.14f, TFT_WHITE, scale);
+            drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
+            drawCatMouth(ox, oy, TFT_WHITE, scale);
             drawSensorOverlay();
             canvas.pushSprite(0, 0);
             break;
@@ -296,8 +387,15 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             break;
         case EXPR_SEDIH:
             canvas.fillScreen(TFT_BLACK);
-            drawSedihEyes(ox, oy, TFT_WHITE, vergence, scale);
+            drawSedihEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawSedihMouth(ox, oy, frame, TFT_WHITE, scale);
+            drawSensorOverlay();
+            canvas.pushSprite(0, 0);
+            break;
+        case EXPR_DEADPAN:
+            canvas.fillScreen(TFT_BLACK);
+            drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
+            drawDeadpanMouth(ox, oy, TFT_WHITE, scale);
             drawSensorOverlay();
             canvas.pushSprite(0, 0);
             break;
@@ -307,20 +405,22 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
 void transitionExpression(Expression fromExpr, Expression toExpr, float durationMs) {
     if (fromExpr == toExpr) return;
 
-    float startEyeH = (fromExpr == EXPR_SMIRK) ? 0.35f : 1.0f;
-    float endEyeH   = (toExpr == EXPR_SMIRK)   ? 0.35f : 1.0f;
+    float startLeftEyeH  = 1.0f;
+    float endLeftEyeH    = 1.0f;
+    float startRightEyeH = 1.0f;
+    float endRightEyeH   = 1.0f;
 
-    float startCurve = (fromExpr == EXPR_IDLE) ? -0.030f : ((fromExpr == EXPR_ANGRY) ? 0.042f : (fromExpr == EXPR_SMIRK ? -0.035f : 0.0f));
-    float endCurve   = (toExpr == EXPR_IDLE)   ? -0.030f : ((toExpr == EXPR_ANGRY)   ? 0.042f : (toExpr == EXPR_SMIRK ? -0.035f : 0.0f));
+    float startCurve = (fromExpr == EXPR_IDLE) ? -0.030f : ((fromExpr == EXPR_ANGRY) ? 0.042f : 0.0f);
+    float endCurve   = (toExpr == EXPR_IDLE)   ? -0.030f : ((toExpr == EXPR_ANGRY)   ? 0.042f : 0.0f);
 
-    float startY = (fromExpr == EXPR_IDLE) ? 44.0f : ((fromExpr == EXPR_ANGRY) ? 43.0f : (fromExpr == EXPR_SMIRK ? 43.0f : (fromExpr == EXPR_SHOCK ? 39.0f : (fromExpr == EXPR_OVERLOAD ? 45.0f : 44.0f))));
-    float endY   = (toExpr == EXPR_IDLE)   ? 44.0f : ((toExpr == EXPR_ANGRY)   ? 43.0f : (toExpr == EXPR_SMIRK ? 43.0f : (toExpr == EXPR_SHOCK ? 39.0f : (toExpr == EXPR_OVERLOAD ? 45.0f : 44.0f))));
+    float startY = (fromExpr == EXPR_IDLE) ? 44.0f : ((fromExpr == EXPR_ANGRY) ? 43.0f : ((fromExpr == EXPR_SHOCK) ? 39.0f : ((fromExpr == EXPR_OVERLOAD) ? 45.0f : 44.0f)));
+    float endY   = (toExpr == EXPR_IDLE)   ? 44.0f : ((toExpr == EXPR_ANGRY)   ? 43.0f : ((toExpr == EXPR_SHOCK)   ? 39.0f : ((toExpr == EXPR_OVERLOAD)   ? 45.0f : 44.0f)));
 
-    float startW = (fromExpr == EXPR_IDLE) ? 7.5f : ((fromExpr == EXPR_ANGRY) ? 7.0f : (fromExpr == EXPR_SMIRK ? 9.0f : 8.0f));
-    float endW   = (toExpr == EXPR_IDLE)   ? 7.5f : ((toExpr == EXPR_ANGRY)   ? 7.0f : (toExpr == EXPR_SMIRK ? 9.0f : 8.0f));
+    float startW = (fromExpr == EXPR_IDLE) ? 7.5f : ((fromExpr == EXPR_ANGRY) ? 7.0f : 8.0f);
+    float endW   = (toExpr == EXPR_IDLE)   ? 7.5f : ((toExpr == EXPR_ANGRY)   ? 7.0f : 8.0f);
 
-    float startAsym = (fromExpr == EXPR_SMIRK) ? 0.14f : 0.0f;
-    float endAsym   = (toExpr == EXPR_SMIRK)   ? 0.14f : 0.0f;
+    float startAsym = 0.0f;
+    float endAsym   = 0.0f;
 
     float startBrow = (fromExpr == EXPR_ANGRY) ? 1.0f : 0.0f;
     float endBrow   = (toExpr == EXPR_ANGRY)   ? 1.0f : 0.0f;
@@ -333,15 +433,21 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
 
         float t = (float)i / (float)steps;
 
-        float curEyeH;
+        float curLeftEyeH;
+        float curRightEyeH;
         if (t <= 0.40f) {
             float p = t / 0.40f;
-            curEyeH = startEyeH * fmaxf(0.04f, 1.0f - p * p);
+            float blinkFactor = fmaxf(0.04f, 1.0f - p * p);
+            curLeftEyeH = startLeftEyeH * blinkFactor;
+            curRightEyeH = startRightEyeH * blinkFactor;
         } else if (t <= 0.60f) {
-            curEyeH = 0.04f;
+            curLeftEyeH = 0.04f;
+            curRightEyeH = 0.04f;
         } else {
             float p = (t - 0.60f) / 0.40f;
-            curEyeH = endEyeH * fmaxf(0.04f, sinf(p * 1.5707963f));
+            float blinkFactor = fmaxf(0.04f, sinf(p * 1.5707963f));
+            curLeftEyeH = endLeftEyeH * blinkFactor;
+            curRightEyeH = endRightEyeH * blinkFactor;
         }
 
         float easedT = easeInOutCubic(t);
@@ -363,31 +469,37 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
         canvas.fillScreen(bgColor);
 
         Expression activeExpr = (t < 0.5f) ? fromExpr : toExpr;
-        if (activeExpr == EXPR_IDLE || activeExpr == EXPR_ANGRY || activeExpr == EXPR_SMIRK) {
-            drawEyes(curEyeH, ox, oy, fgColor, g_currentVergence, g_currentEyeScale);
+        if (activeExpr == EXPR_IDLE || activeExpr == EXPR_ANGRY) {
+            drawDualEyes(curLeftEyeH, curRightEyeH, ox, oy, fgColor, g_currentVergence, g_currentEyeScale);
+        } else if (activeExpr == EXPR_SMIRK || activeExpr == EXPR_DEADPAN) {
+            drawFumoEyes(curLeftEyeH, ox, oy, fgColor, g_currentVergence, g_currentEyeScale);
         } else if (activeExpr == EXPR_JOY) {
             drawJoyEyes(ox, oy, joyScale, fgColor, g_currentVergence, g_currentEyeScale);
         } else if (activeExpr == EXPR_SHOCK) {
-            drawShockEyes(ox, oy, fgColor, g_currentVergence, g_currentEyeScale * curEyeH);
+            drawShockEyes(ox, oy, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
         } else if (activeExpr == EXPR_OVERLOAD) {
-            drawSpiralEyes(ox, oy, t * 2.0f, fgColor, g_currentVergence, g_currentEyeScale * curEyeH);
+            drawSpiralEyes(ox, oy, t * 2.0f, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
         } else if (activeExpr == EXPR_SEDIH) {
-            drawSedihEyes(ox, oy, fgColor, g_currentVergence, g_currentEyeScale * curEyeH);
+            drawSedihEyes(ox, oy, t * 4.0f, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
         }
 
         if (curBrow > 0.01f) {
-            drawAngryBrows(curEyeH, ox, oy, curBrow, bgColor, g_currentVergence, g_currentEyeScale);
+            drawAngryBrows(curLeftEyeH, ox, oy, curBrow, bgColor, g_currentVergence, g_currentEyeScale);
         }
 
-        bool fromCurveMouth = (fromExpr == EXPR_IDLE || fromExpr == EXPR_ANGRY || fromExpr == EXPR_SMIRK);
-        bool toCurveMouth   = (toExpr == EXPR_IDLE || toExpr == EXPR_ANGRY || toExpr == EXPR_SMIRK);
+        bool fromCurveMouth = (fromExpr == EXPR_IDLE || fromExpr == EXPR_ANGRY);
+        bool toCurveMouth   = (toExpr == EXPR_IDLE || toExpr == EXPR_ANGRY);
 
         if (fromCurveMouth && toCurveMouth) {
             drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor, g_currentEyeScale);
         } else {
             Expression mouthExpr = (t < 0.5f) ? fromExpr : toExpr;
-            if (mouthExpr == EXPR_IDLE || mouthExpr == EXPR_ANGRY || mouthExpr == EXPR_SMIRK) {
+            if (mouthExpr == EXPR_IDLE || mouthExpr == EXPR_ANGRY) {
                 drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor, g_currentEyeScale);
+            } else if (mouthExpr == EXPR_SMIRK) {
+                drawCatMouth(ox, oy, fgColor, g_currentEyeScale);
+            } else if (mouthExpr == EXPR_DEADPAN) {
+                drawDeadpanMouth(ox, oy, fgColor, g_currentEyeScale);
             } else if (mouthExpr == EXPR_JOY) {
                 drawJoyMouth(ox, oy, joyScale, fgColor, g_currentEyeScale);
             } else if (mouthExpr == EXPR_SHOCK) {

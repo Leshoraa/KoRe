@@ -23,6 +23,10 @@ extern uint32_t g_nextBlinkTime;
 
 void updateBiologicalMoodEngine(void);
 void setNextExpression(Expression newExpr);
+void setManualExpression(int expr_code);
+int getManualExpression(void);
+bool isManualExpressionActive(void);
+const char* getExpressionName(Expression expr);
 float getEmotionValence(void);
 float getEmotionArousal(void);
 
