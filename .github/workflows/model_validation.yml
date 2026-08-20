@@ -1,0 +1,28 @@
+name: Kinematics & Kalman Model Validation Suite
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate Minimum-Jerk Kinematics NRMSE and R^2
+        run: |
+          python3 scripts/validate_kinematics.py
+
+      - name: Compile and Run C++ Unit Tests
+        run: |
+          g++ -std=c++17 -I . tests/unit/test_minimum_jerk.cpp -o test_jerk && ./test_jerk
+          g++ -std=c++17 -I . src/math/kore_kalman.cpp tests/unit/test_kalman_convergence.cpp -o test_kalman && ./test_kalman

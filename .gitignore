@@ -1,1 +1,23 @@
-/camera
+# Build Artifacts
+build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Arduino IDE / CLI cache
+.arduino15/
+*.o
+*.a
+*.d
+
+# Test Binaries
+test_jerk
+test_kalman
+
+# OS / Editor Files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~

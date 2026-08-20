@@ -1,4 +1,4 @@
-# KoRe — Kinematic Optical Recognition & Biomechanical Face Engine
+# KoRe : Kinematic Optical Recognition and Biomechanical Face Engine
 
 [![Board](https://img.shields.io/badge/Hardware-Seeed_XIAO_ESP32--S3_Sense-00979D.svg?style=for-the-badge&logo=arduino)](https://www.seeedstudio.com/XIAO-ESP32S3-Sense-p-5639.html)
 [![Core Architecture](https://img.shields.io/badge/Architecture-Dual--Core_FreeRTOS_240MHz-blue.svg?style=for-the-badge)](#system-architecture)
@@ -8,7 +8,7 @@
 
 **KoRe** (*Kinematic Optical Recognition Engine*) is a lightweight, standalone embedded computer vision and biomechanical ocular synthesis system built for the **Seeed Studio XIAO ESP32-S3 Sense** (Xtensa LX7 Dual-Core @ 240 MHz).
 
-The firmware combines a real-time differential YCbCr computer vision pipeline, 4x3 spatial sector illumination analysis, multi-object candidate tracking, a 2D discrete Kalman tracking filter with dynamic measurement noise tuning, second-order mass-spring-damper gaze kinetics ($\omega_n = 38.0\text{ rad/s}, \zeta = 1.00$), 5th-order minimum-jerk saccades, a 1-bit LGFX sprite rendering engine (1.0 MHz Fast-Mode Plus I2C), a 2D Russell Circumplex affective emotion model, and dynamic power management (DFS clock scaling + SCCB sensor standby).
+The firmware combines a real-time differential YCbCr computer vision pipeline, 4x3 spatial sector illumination analysis, multi-object candidate tracking, a 2D discrete Kalman tracking filter with dynamic measurement noise tuning, second-order mass-spring-damper gaze kinetics ($\omega_n = 38.0\text{ rad/s}, \zeta = 1.00$), 5th-order minimum-jerk saccades, a 1-bit LGFX sprite rendering engine (1.0 MHz Fast-Mode Plus I2C), a 2D Russell Circumplex affective emotion model, and dynamic power management (DFS clock scaling and SCCB sensor standby).
 
 ---
 
@@ -25,7 +25,7 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
     +---------------------------------------------------------------------------------+
     | CORE 0: cameraTask (Priority 2, Vision Pipeline & System Power Scaling)         |
     |  * Continuous Frame Acquisition (esp_camera_fb_get)                             |
-    |  * 8x Hardware Downscaling (640x480 -> 80x60 RGB565 Array)                       |
+    |  * 8x Hardware Downscaling (640x480 -> 80x60 RGB565 Array in Internal SRAM)     |
     |  * 4x3 Sector Illumination Analysis & Dynamic Local YCbCr Chrominance Scaling   |
     |  * Motion History Image (MHI) Decay & Spatial Moment Accumulation (M00..M11)    |
     |  * Multi-Object Spatial Clustering & Priority Ranking (Up to 3 Candidates)      |
@@ -35,7 +35,7 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
     |  * Double-Buffered JPEG Frame Copier (g_stream_mutex)                           |
     +---------------------------------------------------------------------------------+
                                              |
-                     [ Spinlock Critical Section (target_mutex) ]
+                     [ Spinlock Critical Section (g_target_mutex) ]
                                              |
                                              v
     +---------------------------------------------------------------------------------+
@@ -62,13 +62,69 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
 
 ---
 
+## Repository Structure
+
+```text
+KoRe/
+├── .github/
+│   └── workflows/
+│       ├── compile_check.yml       # Automated ESP32-S3 compile workflow
+│       └── model_validation.yml    # Kinematics and Kalman filter verification suite
+├── docs/
+│   ├── ARCHITECTURE.md             # Dual-core FreeRTOS dataflow and scheduling specifications
+│   ├── MATHEMATICAL_MODELS.md      # Mathematical proofs for ocular dynamics and minimum-jerk
+│   └── TELEMETRY_SPECIFICATION.md  # JSON schema for /telemetry and MJPEG stream protocol
+├── include/
+│   ├── kore_config.h               # Pin definitions, clock rates, and power profiles
+│   ├── kore_types.h                # Data structs: TrackTarget, ObjectCandidate, Expression
+│   ├── kore_kalman.h               # Discrete Kalman filter declarations
+│   ├── kore_kinematics.h           # Mass-spring-damper and minimum-jerk contracts
+│   └── kore_affective.h            # 2D Russell Circumplex Langevin state model
+├── src/
+│   ├── KoRe.ino                    # Master entry point and FreeRTOS task initializers
+│   ├── core/
+│   │   ├── camera_pipeline.h       # Camera initialization and vision pipeline header
+│   │   ├── camera_pipeline.cpp     # YCbCr downscaling, MHI decay, and spatial clustering
+│   │   ├── display_engine.h        # LovyanGFX SSD1306 display engine header
+│   │   └── display_engine.cpp      # LovyanGFX SSD1306 sprite composition and facial rig
+│   ├── math/
+│   │   ├── kore_kalman.cpp         # 2D discrete Kalman filter implementation
+│   │   ├── kore_kinematics.cpp     # Biomechanical ocular equations and minimum-jerk solver
+│   │   └── kore_affective.cpp      # Stochastic Langevin affective dynamics solver
+│   └── net/
+│       ├── http_server.h           # Asynchronous HTTP server header
+│       ├── http_server.cpp         # Async HTTP server, JSON telemetry, and MJPEG streamer
+│       ├── web_ui.h                # Calibrated dark matte Web UI HTML/CSS/JS constants
+│       ├── wifi_manager.h          # NVS Wi-Fi credentials manager header
+│       └── wifi_manager.cpp        # NVS-backed STA/AP configuration and captive portal
+├── tests/
+│   ├── unit/
+│   │   ├── test_kalman_convergence.cpp
+│   │   └── test_minimum_jerk.cpp
+│   └── fixtures/
+│       └── sample_motion_frames.h  # Synthetic downscaled frame test vectors
+├── scripts/
+│   ├── build.sh                    # Command-line compilation via Arduino CLI
+│   ├── flash.sh                    # Serial flashing and monitor tool
+│   └── validate_kinematics.py      # Numerical NRMSE and R^2 evaluation tool
+├── .clang-format                   # Strict formatting rules
+├── .gitignore                      # Git build artifact filters
+├── CMakeLists.txt                  # ESP-IDF CMake build definition
+├── CHANGELOG.md                    # Release history
+├── LICENSE                         # MIT License terms
+├── KORE_ENGINEERING_SPECIFICATION.md # Architectural and engineering standards
+└── README.md                       # Master technical project presentation
+```
+
+---
+
 ## Key Engineering Features
 
 ### 1. 2D Discrete Kalman Filter with Dynamic Noise Covariance ($R$) Tuning
 - **State Vector ($\mathbf{x} = [p, v]^T$):** Independent 1D position-velocity filters for X and Y Cartesian coordinates tracking spatial target motion in pixel space.
 - **Adaptive Process Noise ($Q$):** Automatically increases process noise variance $Q$ ($450 \rightarrow 850$) when skin pixel detection confirms human presence.
 - **Dynamic Measurement Noise ($R$):**
-  - **Stationary Target ($\text{innovation} < 6\text{ px}$):** Increases $R$ up to $1.5\times - 3.0\times$ base to eliminate pixel discretization quantization jitter when a subject is resting still.
+  - **Stationary Target ($\text{innovation} < 6\text{ px}$):** Increases $R$ up to $1.5\times - 3.0\times$ base to eliminate quantization noise when a subject is resting still.
   - **Rapid Movement ($\text{innovation} > 20\text{ px}$):** Dynamically scales $R$ down to enable zero-phase-lag tracking response during fast motion.
 - **Joseph-Stabilized Covariance Update:** Uses the Joseph algebraic update formula to guarantee positive semi-definiteness of state covariance matrix $P$.
 
@@ -109,8 +165,6 @@ $$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
 ---
 
 ## Memory Architecture
-
-To maximize computer vision execution speed on the ESP32-S3 without hitting PSRAM bus latency bottlenecks, memory allocation follows strict hardware partitioning rules:
 
 | Buffer Name | Allocation Cap | Storage Location | Size | Rationale |
 | :--- | :--- | :--- | :--- | :--- |
@@ -154,30 +208,8 @@ To maximize computer vision execution speed on the ESP32-S3 without hitting PSRA
 
 KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection, credential setup, and video streaming:
 
-- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the control panel interface rendering real-time target bounding boxes ($P_1$ Green, $P_2$ Cyan, $P_3$ Yellow), inspection badges, and telemetry overlays.
-- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics and multi-candidate arrays:
-  ```json
-  {
-    "detected": true,
-    "x": 210,
-    "y": 140,
-    "w": 180,
-    "h": 220,
-    "cx": 300,
-    "cy": 250,
-    "err_x": -6.25,
-    "err_y": 4.16,
-    "conf": 0.94,
-    "fps_ai": 31.5,
-    "fw": 640,
-    "fh": 480,
-    "num_cands": 3,
-    "insp_idx": 0,
-    "c0_cx": 300, "c0_cy": 250, "c0_p": 142.5,
-    "c1_cx": 120, "c1_cy": 180, "c1_p": 88.2,
-    "c2_cx": 480, "c2_cy": 310, "c2_p": 64.1
-  }
-  ```
+- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the control panel interface rendering real-time target bounding boxes ($P_1$ Sky Blue, $P_2$ Slate, $P_3$ Charcoal), inspection badges, and telemetry overlays.
+- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics and multi-candidate arrays.
 - **MJPEG Video Stream (`GET http://<ESP32_IP>:81/stream`):** Dedicated Port 81 asynchronous stream handler.
 - **Network Configuration (`GET /get_wifi`, `POST /save_wifi`, `POST /switch_mode`):** Manage Wi-Fi credentials stored in ESP32 NVS (`Preferences`).
 
@@ -200,4 +232,4 @@ KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspecti
 
 ## License
 
-Designed and developed under an open-source embedded software engineering paradigm.
+MIT License. Designed and developed under an open-source embedded software engineering paradigm.

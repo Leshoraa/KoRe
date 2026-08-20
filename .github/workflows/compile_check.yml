@@ -1,0 +1,34 @@
+name: Automated ESP32-S3 Compile and Lint Check
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          sudo mv bin/arduino-cli /usr/local/bin/
+
+      - name: Initialize Arduino CLI and install ESP32 core
+        run: |
+          arduino-cli config init
+          arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Install LovyanGFX library
+        run: |
+          arduino-cli lib install LovyanGFX
+
+      - name: Compile Firmware for Seeed XIAO ESP32-S3 Sense
+        run: |
+          arduino-cli compile -b esp32:esp32:XIAO_ESP32S3:PSRAM=opi KoRe.ino
