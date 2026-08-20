@@ -55,6 +55,7 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
     +---------------------------------------------------------------------------------+
     | HTTP TELEMETRY & MJPEG SERVER (Port 80 Web UI/JSON, Port 81 MJPEG Stream)       |
     |  * /telemetry : Real-time JSON tracking state, candidate priority scores & FPS  |
+    |  * /set_expression : Manual facial expression selection and Auto-Mood reset     |
     |  * /stream    : Non-blocking MJPEG live video stream                            |
     |  * /save_wifi & /switch_mode : NVS configuration management handlers            |
     +---------------------------------------------------------------------------------+
@@ -158,9 +159,10 @@ $$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
 - **Dynamic Frequency Scaling (DFS):** Scales CPU clock between 240 MHz (active CV/streaming) and 80 MHz (sleep standby, maintaining ESP32 Wi-Fi stack stability).
 - **SCCB Software Standby:** Writes directly to camera registers (OV2640 `0x09` bit 4 / OV3660 `0x3008` bit 6) to power down sensor core, compensating for the un-wired `PWDN` pin on the XIAO ESP32-S3 Sense board.
 
-### 7. Russell Circumplex 2D Emotion Engine
+### 7. Russell Circumplex 2D Emotion & Kaomoji Face Engine
 - **Valence-Arousal Model:** Tracks 2D emotional state ($V \in [-1.0, +1.0]$, $A \in [0.0, 1.0]$) using viscous homeostatic Langevin relaxation ($\tau_v = 6.0\text{s}, \tau_a = 4.5\text{s}$).
-- **Refractory Lock:** Enforces a 5-8 second biological refractory period (`g_mood_lock_until`) between emotional state changes (`EXPR_IDLE`, `EXPR_ANGRY`, `EXPR_OVERLOAD`, `EXPR_JOY`, `EXPR_SEDIH`, `EXPR_SMIRK`, `EXPR_SHOCK`).
+- **Refractory Lock:** Enforces a 5-8 second biological refractory period (`g_mood_lock_until`) between emotional state changes (`EXPR_IDLE`, `EXPR_ANGRY`, `EXPR_OVERLOAD`, `EXPR_JOY`, `EXPR_SEDIH`, `EXPR_SMIRK`, `EXPR_SHOCK`, `EXPR_DEADPAN`).
+- **Expressive Kaomoji Synthesis:** Features specialized procedural 60 FPS face rendering including solid filled flat-top fumo eyes and smiling cat mouth (`SMIRK` ᗜ⩊ᗜ), streaming tear animations and quivering wave mouth (`SEDIH` ╥﹏╥), and minimalist deadpan gaze (`DEADPAN` ᗜ _ ᗜ).
 
 ---
 
@@ -206,10 +208,11 @@ $$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
 
 ## API Endpoints & Web Telemetry HUD
 
-KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection, credential setup, and video streaming:
+KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection, credential setup, facial expression selection, and video streaming:
 
-- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the control panel interface rendering real-time target bounding boxes ($P_1$ Sky Blue, $P_2$ Slate, $P_3$ Charcoal), inspection badges, and telemetry overlays.
-- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics and multi-candidate arrays.
+- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the control panel interface rendering real-time target bounding boxes ($P_1$ Sky Blue, $P_2$ Slate, $P_3$ Charcoal), inspection badges, interactive 8-expression control buttons, and telemetry overlays.
+- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics, candidate arrays, active expression IDs, and manual override flags.
+- **Expression Override Endpoint (`POST http://<ESP32_IP>/set_expression`):** Sets manual expression override (`0..7`) or restores the automatic biological mood engine (`"auto"`).
 - **MJPEG Video Stream (`GET http://<ESP32_IP>:81/stream`):** Dedicated Port 81 asynchronous stream handler.
 - **Network Configuration (`GET /get_wifi`, `POST /save_wifi`, `POST /switch_mode`):** Manage Wi-Fi credentials stored in ESP32 NVS (`Preferences`).
 
