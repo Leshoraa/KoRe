@@ -29,7 +29,7 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
     |  * 4x3 Sector Illumination Analysis & Dynamic Local YCbCr Chrominance Scaling   |
     |  * Motion History Image (MHI) Decay & Spatial Moment Accumulation (M00..M11)    |
     |  * Multi-Object Spatial Clustering & Priority Ranking (Up to 3 Candidates)      |
-    |  * 2D Kalman Filter Prediction/Update ([x, y, vx, vy]^T with Dynamic R Tuning)   |
+    |  * 2D Kalman Filter Prediction/Update ([x, y, vx, vy]^T with Dynamic R Tuning)  |
     |  * DFS Clock Scaling (240 MHz Active <-> 80 MHz Sleep Standby)                  |
     |  * SCCB Sensor Standby Register Control (OV2640 0x09 bit 4 / OV3660 0x3008)     |
     |  * Double-Buffered JPEG Frame Copier (g_stream_mutex)                           |
@@ -46,7 +46,7 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
     |  * Ocular Kinematics (38.0 rad/s Critically Damped Spring-Damper & Minimum-Jerk)|
     |  * Fixation Micro-Kinetics (Mean-Reverting Brownian Random Walk)                |
     |  * Non-Blocking Eyelid State Machine (Idle -> Closing -> Opening & Double-Blink)|
-    |  * LovyanGFX High-Speed SSD1306 Sprite Renderer (1.0 MHz Fast-Mode+ I2C)       |
+    |  * LovyanGFX High-Speed SSD1306 Sprite Renderer (1.0 MHz Fast-Mode+ I2C)        |
     +---------------------------------------------------------------------------------+
                                              |
                      [ Concurrent Async HTTP Endpoints ]

@@ -42,7 +42,7 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
     portEXIT_CRITICAL(&g_target_mutex);
 
     snprintf(json, sizeof(json),
-        "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_p\":%.1f,\"expr\":%d,\"expr_name\":\"%s\",\"is_manual\":%s}",
+        "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_w\":%d,\"c0_h\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_w\":%d,\"c1_h\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_w\":%d,\"c2_h\":%d,\"c2_p\":%.1f,\"expr\":%d,\"expr_name\":\"%s\",\"is_manual\":%s}",
         target.detected ? "true" : "false",
         target.x, target.y, target.w, target.h,
         target.cx, target.cy,
@@ -53,9 +53,9 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
         target.vx, target.vy,
         target.proximity,
         num_cands, insp_idx,
-        cands[0].cx, cands[0].cy, cands[0].priority_score,
-        cands[1].cx, cands[1].cy, cands[1].priority_score,
-        cands[2].cx, cands[2].cy, cands[2].priority_score,
+        cands[0].cx, cands[0].cy, cands[0].w, cands[0].h, cands[0].priority_score,
+        cands[1].cx, cands[1].cy, cands[1].w, cands[1].h, cands[1].priority_score,
+        cands[2].cx, cands[2].cy, cands[2].w, cands[2].h, cands[2].priority_score,
         (int)g_currentExpr,
         getExpressionName(g_currentExpr),
         isManualExpressionActive() ? "true" : "false"
