@@ -1,14 +1,12 @@
 /**
  * @file web_ui.h
- * @brief Production Web UI dashboard and telemetry control interface.
- * @details Strictly conforms to Section 6 of KoRe Engineering Specification:
- *          - Calibrated dark matte technical surface (#0e0e10 / #18181b).
- *          - Zero neon colors, zero pastels, zero pure white canvas backgrounds.
- *          - Sharp 2px to 4px container corner radii, 1px subtle borders, zero drop shadows.
- *          - Structural skeleton loader preventing layout shifts.
- *          - Technical monospace typography (IBM Plex Mono, Roboto Mono, ui-monospace).
- *          - Mandatory on-device Privacy Policy and Terms of Service disclosures.
- *          - Zero em dashes, zero emojis.
+ * @brief Production Web UI dashboard and telemetry control interface for KoRe.
+ * @details Neumorphic (Soft UI) Design System:
+ *          - Pure solid surfaces with soft extruded and inset dual-shadows.
+ *          - Zero glassmorphism (no blur / semi-transparency).
+ *          - Zero rainbow gradients; solid cohesive tech palette (Soft Slate Base + Sky Accent).
+ *          - Fully responsive tactile cards, rounded pill buttons, and inset inputs.
+ *          - Real-time video stream viewport, HUD canvas, and telemetry indicators.
  */
 
 #ifndef WEB_UI_H
@@ -20,103 +18,220 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <html lang="id">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KoRe: Ocular Kinematics & Vision Telemetry</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>KoRe Vision & Telemetry</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg-base: #e8eef5;
+      --bg-card: #e8eef5;
+      --bg-subtle: #e2e9f2;
+      --shadow-light: #ffffff;
+      --shadow-dark: #c4d0de;
+      --shadow-dark-deep: #b2c0d2;
+      --accent-primary: #0284c7;
+      --accent-hover: #0369a1;
+      --accent-active: #075985;
+      --accent-pill: #e0f2fe;
+      --accent-pill-text: #0369a1;
+      --text-main: #1e293b;
+      --text-muted: #64748b;
+      --text-subtle: #94a3b8;
+      --status-live: #ef4444;
+      --status-warning: #d97706;
+      --border-subtle: #dbe4ef;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
     body {
-      background-color: #0e0e10;
-      color: #f4f4f5;
-      font-family: ui-monospace, "IBM Plex Mono", "Roboto Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       min-height: 100vh;
       display: flex;
       justify-content: center;
       align-items: center;
-      padding: 16px;
+      padding: 24px 16px;
       -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
+
     .card {
-      background: #18181b;
-      border: 1px solid #27272a;
-      border-radius: 4px;
+      background-color: var(--bg-card);
+      border-radius: 28px;
+      box-shadow: 18px 18px 36px var(--shadow-dark), -18px -18px 36px var(--shadow-light);
       max-width: 480px;
       width: 100%;
-      padding: 20px;
+      padding: 28px 24px;
+      border: 1px solid var(--border-subtle);
     }
-    h1 {
-      font-size: 15px;
-      font-weight: 600;
-      letter-spacing: -0.02em;
-      margin-bottom: 4px;
-      color: #f4f4f5;
-      text-transform: uppercase;
+
+    /* Header Section */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 18px;
     }
-    p.subtitle {
+
+    .avatar-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 16px;
+      background-color: var(--bg-card);
+      box-shadow: 5px 5px 10px var(--shadow-dark), -5px -5px 10px var(--shadow-light);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent-primary);
+      flex-shrink: 0;
+    }
+
+    .avatar-icon svg {
+      width: 24px;
+      height: 24px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .header-text h1 {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--text-main);
+      letter-spacing: -0.01em;
+      line-height: 1.2;
+    }
+
+    .header-text p.subtitle {
       font-size: 11px;
-      color: #a1a1aa;
-      margin-bottom: 14px;
-      line-height: 1.4;
+      color: var(--text-muted);
+      margin-top: 3px;
+      line-height: 1.35;
     }
+
+    /* Mode Badge */
     .mode-badge {
-      display: block;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
       width: 100%;
       text-align: center;
-      padding: 6px 10px;
+      padding: 10px 14px;
       font-size: 11px;
-      font-weight: 500;
-      border-radius: 2px;
-      background: #1f1f23;
-      color: #e4e4e7;
-      margin-bottom: 14px;
-      border: 1px solid #3f3f46;
-      letter-spacing: 0.02em;
+      font-weight: 700;
+      border-radius: 16px;
+      background-color: var(--bg-card);
+      color: var(--accent-primary);
+      box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
+      margin-bottom: 20px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
+
+    .mode-badge::before {
+      content: '';
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: var(--accent-primary);
+    }
+
     .mode-badge.ap {
-      background: #272015;
-      color: #fbbf24;
-      border-color: #78350f;
+      color: var(--status-warning);
     }
+
+    .mode-badge.ap::before {
+      background-color: var(--status-warning);
+    }
+
+    /* Stream Viewport Section */
+    .stream-wrapper {
+      background-color: var(--bg-card);
+      border-radius: 24px;
+      padding: 10px;
+      box-shadow: 7px 7px 14px var(--shadow-dark), -7px -7px 14px var(--shadow-light);
+      margin-bottom: 18px;
+    }
+
     .stream-container {
       position: relative;
       width: 100%;
-      background: #09090b;
-      border-radius: 2px;
+      background-color: #090d16;
+      border-radius: 16px;
       overflow: hidden;
-      margin-bottom: 14px;
-      border: 1px solid #27272a;
       min-height: 240px;
       display: flex;
       justify-content: center;
       align-items: center;
+      box-shadow: inset 2px 2px 6px #03060a;
     }
+
+    .live-badge {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 10;
+      background-color: var(--status-live);
+      color: #ffffff;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      padding: 4px 8px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      box-shadow: 0 2px 6px rgba(239, 68, 68, 0.4);
+    }
+
+    .live-badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background-color: #ffffff;
+      animation: live-pulse 1.4s infinite ease-in-out;
+    }
+
+    @keyframes live-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.8); }
+    }
+
     .skeleton-loader {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      background: linear-gradient(90deg, #18181b 25%, #27272a 50%, #18181b 75%);
-      background-size: 200% 100%;
-      animation: skeleton-pulse 1.8s infinite ease-in-out;
+      background: #0d121f;
       display: flex;
       flex-direction: column;
       justify-content: center;
       align-items: center;
-      color: #71717a;
+      color: #64748b;
       font-size: 11px;
+      font-weight: 600;
       letter-spacing: 0.05em;
-      gap: 8px;
+      gap: 10px;
     }
+
     .skeleton-loader .skeleton-grid {
-      width: 48px;
-      height: 36px;
-      border: 1px dashed #3f3f46;
-      border-radius: 2px;
+      width: 52px;
+      height: 40px;
+      border: 1.5px dashed #334155;
+      border-radius: 6px;
     }
-    @keyframes skeleton-pulse {
-      0% { background-position: 200% 0; }
-      100% { background-position: -200% 0; }
-    }
+
     .stream-container img {
       width: 100%;
       height: auto;
@@ -124,6 +239,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       object-fit: contain;
       z-index: 2;
     }
+
     #hud-canvas {
       position: absolute;
       top: 0;
@@ -133,202 +249,321 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       pointer-events: none;
       z-index: 3;
     }
+
+    /* Telemetry Metrics Grid */
     .telemetry-row {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 8px;
-      margin-bottom: 14px;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 22px;
     }
+
     .telemetry-cell {
-      background: #121214;
-      border: 1px solid #27272a;
-      border-radius: 2px;
-      padding: 6px 8px;
-      font-size: 10px;
+      background-color: var(--bg-card);
+      border-radius: 18px;
+      padding: 12px 10px;
+      text-align: center;
+      box-shadow: 5px 5px 10px var(--shadow-dark), -5px -5px 10px var(--shadow-light);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
     }
+
     .telemetry-label {
-      color: #71717a;
+      color: var(--text-muted);
       display: block;
-      font-size: 9px;
-      margin-bottom: 2px;
-      text-transform: uppercase;
-    }
-    .telemetry-val {
-      color: #e4e4e7;
-      font-weight: 600;
-    }
-    .section-title {
-      font-size: 11px;
-      font-weight: 600;
-      color: #a1a1aa;
-      margin-top: 14px;
-      margin-bottom: 10px;
-      border-bottom: 1px solid #27272a;
-      padding-bottom: 4px;
+      font-size: 9.5px;
+      font-weight: 700;
+      margin-bottom: 4px;
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
-    .form-group {
-      margin-bottom: 10px;
+
+    .telemetry-val {
+      color: var(--text-main);
+      font-size: 15px;
+      font-weight: 800;
+      font-family: ui-monospace, "IBM Plex Mono", "Roboto Mono", monospace;
     }
-    label {
-      display: block;
-      font-size: 11px;
-      font-weight: 500;
-      color: #a1a1aa;
-      margin-bottom: 4px;
-    }
-    input[type="text"], input[type="password"] {
-      width: 100%;
-      padding: 8px 10px;
+
+    /* Section Titles */
+    .section-title {
       font-size: 12px;
-      font-family: inherit;
-      border: 1px solid #27272a;
-      border-radius: 2px;
-      background: #121214;
-      color: #f4f4f5;
-      outline: none;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-top: 20px;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
-    input[type="text"]:focus, input[type="password"]:focus {
-      border-color: #52525b;
+
+    .section-title::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background-color: var(--border-subtle);
     }
-    button {
-      width: 100%;
-      padding: 9px 12px;
-      margin-top: 12px;
-      background-color: #27272a;
-      color: #f4f4f5;
-      font-family: inherit;
-      font-size: 12px;
-      font-weight: 600;
-      border: 1px solid #3f3f46;
-      border-radius: 2px;
-      cursor: pointer;
-      letter-spacing: 0.02em;
-    }
-    button:hover {
-      background-color: #3f3f46;
-      border-color: #52525b;
-    }
-    button:disabled {
-      background-color: #18181b;
-      color: #52525b;
-      border-color: #27272a;
-      cursor: not-allowed;
-    }
-    .btn-switch-mode {
-      background-color: #18181b;
-      border-color: #3f3f46;
-      color: #38bdf8;
-      margin-top: 0;
-      margin-bottom: 14px;
-    }
-    .btn-switch-mode:hover {
-      background-color: #27272a;
-    }
+
+    /* Expression Control Matrix */
     .expr-grid {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      gap: 6px;
-      margin-bottom: 8px;
+      gap: 10px;
+      margin-bottom: 12px;
     }
+
     .btn-expr {
       width: 100%;
-      padding: 7px 4px;
-      margin-top: 0;
-      font-size: 10px;
-      font-weight: 600;
-      background: #121214;
-      border: 1px solid #27272a;
-      color: #a1a1aa;
-      border-radius: 2px;
+      padding: 11px 4px;
+      font-size: 11px;
+      font-weight: 700;
+      background-color: var(--bg-card);
+      border: none;
+      color: var(--text-muted);
+      border-radius: 14px;
       cursor: pointer;
       text-transform: uppercase;
-      letter-spacing: 0.02em;
+      letter-spacing: 0.03em;
+      box-shadow: 4px 4px 8px var(--shadow-dark), -4px -4px 8px var(--shadow-light);
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
+
     .btn-expr:hover {
-      background: #27272a;
-      color: #f4f4f5;
-      border-color: #3f3f46;
+      color: var(--text-main);
     }
+
+    .btn-expr:active {
+      transform: translateY(1px);
+    }
+
     .btn-expr.active {
-      background: #1e293b;
-      border-color: #38bdf8;
-      color: #38bdf8;
+      background-color: var(--bg-subtle);
+      color: var(--accent-primary);
+      box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
     }
+
     .btn-expr-auto {
       width: 100%;
-      padding: 8px 10px;
-      margin-top: 0;
-      margin-bottom: 14px;
-      font-size: 11px;
-      font-weight: 600;
-      background: #18181b;
-      border: 1px solid #3f3f46;
-      color: #e4e4e7;
-      border-radius: 2px;
+      padding: 12px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      background-color: var(--bg-card);
+      border: none;
+      color: var(--text-main);
+      border-radius: 16px;
       cursor: pointer;
       letter-spacing: 0.02em;
+      box-shadow: 5px 5px 10px var(--shadow-dark), -5px -5px 10px var(--shadow-light);
+      margin-bottom: 18px;
+      transition: all 0.15s ease;
     }
+
     .btn-expr-auto:hover {
-      background: #27272a;
+      color: var(--accent-primary);
     }
+
     .btn-expr-auto.active {
-      border-color: #38bdf8;
-      color: #38bdf8;
-      background: #0f172a;
+      background-color: var(--bg-subtle);
+      color: var(--accent-primary);
+      box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
     }
+
+    /* Switch Mode Button */
+    .btn-switch-mode {
+      width: 100%;
+      padding: 13px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      background-color: var(--bg-card);
+      border: none;
+      color: var(--accent-primary);
+      border-radius: 16px;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      box-shadow: 5px 5px 10px var(--shadow-dark), -5px -5px 10px var(--shadow-light);
+      margin-bottom: 18px;
+      transition: all 0.15s ease;
+    }
+
+    .btn-switch-mode:hover {
+      color: var(--accent-hover);
+    }
+
+    .btn-switch-mode:active {
+      box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
+    }
+
+    /* Form & Inset Inputs */
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 12px 16px;
+      font-size: 13px;
+      font-family: inherit;
+      border: none;
+      border-radius: 14px;
+      background-color: var(--bg-card);
+      color: var(--text-main);
+      outline: none;
+      box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
+      transition: box-shadow 0.2s ease;
+    }
+
+    input[type="text"]:focus, input[type="password"]:focus {
+      box-shadow: inset 4px 4px 8px var(--shadow-dark-deep), inset -4px -4px 8px var(--shadow-light);
+    }
+
+    input::placeholder {
+      color: var(--text-subtle);
+    }
+
+    /* Save Button */
+    .btn-submit {
+      width: 100%;
+      padding: 14px 18px;
+      margin-top: 14px;
+      background-color: var(--accent-primary);
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      border: none;
+      border-radius: 16px;
+      cursor: pointer;
+      letter-spacing: 0.03em;
+      box-shadow: 6px 6px 14px var(--shadow-dark), -6px -6px 14px var(--shadow-light);
+      transition: all 0.15s ease;
+    }
+
+    .btn-submit:hover {
+      background-color: var(--accent-hover);
+    }
+
+    .btn-submit:active {
+      background-color: var(--accent-active);
+      box-shadow: inset 2px 2px 6px rgba(0, 0, 0, 0.3);
+      transform: translateY(1px);
+    }
+
+    .btn-submit:disabled, .btn-switch-mode:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* Status Box */
     #status {
       display: none;
-      margin-top: 12px;
-      padding: 8px 10px;
-      font-size: 11px;
-      border-radius: 2px;
-      border: 1px solid #3f3f46;
-      background: #121214;
-      color: #e4e4e7;
-      line-height: 1.4;
-    }
-    .legal-footer {
       margin-top: 16px;
-      padding-top: 10px;
-      border-top: 1px solid #27272a;
-      font-size: 9px;
-      color: #71717a;
+      padding: 14px 16px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 16px;
+      background-color: var(--bg-card);
+      color: var(--text-main);
       line-height: 1.5;
+      box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
     }
+
+    /* Legal Disclosures */
+    .legal-footer {
+      margin-top: 24px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border-subtle);
+      font-size: 10.5px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      text-align: center;
+    }
+
     .legal-footer a {
-      color: #a1a1aa;
-      text-decoration: underline;
+      color: var(--accent-primary);
+      text-decoration: none;
+      font-weight: 600;
       cursor: pointer;
     }
+
+    .legal-footer a:hover {
+      text-decoration: underline;
+    }
+
     .legal-modal {
       display: none;
-      margin-top: 10px;
-      padding: 10px;
-      background: #121214;
-      border: 1px solid #27272a;
-      border-radius: 2px;
-      font-size: 9px;
-      color: #a1a1aa;
-      line-height: 1.5;
+      margin-top: 12px;
+      padding: 14px;
+      background-color: var(--bg-card);
+      border-radius: 14px;
+      font-size: 10px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      text-align: left;
+      box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
+    }
+
+    @media (max-width: 420px) {
+      .card {
+        padding: 20px 16px;
+      }
+      .expr-grid {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 6px;
+      }
+      .btn-expr {
+        font-size: 9.5px;
+        padding: 10px 2px;
+      }
     }
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>KoRe Vision & Telemetry</h1>
-    <p class="subtitle">Platform: Seeed XIAO ESP32-S3 Sense | FreeRTOS Dual-Core Topology</p>
+    <div class="header">
+      <div class="avatar-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+          <circle cx="12" cy="13" r="4"></circle>
+        </svg>
+      </div>
+      <div class="header-text">
+        <h1>KoRe Vision & Telemetry</h1>
+        <p class="subtitle">Platform: Seeed XIAO ESP32-S3 Sense | FreeRTOS Dual-Core</p>
+      </div>
+    </div>
     
     <div id="mode-badge" class="mode-badge">Memuat status jaringan...</div>
 
-    <div class="stream-container">
-      <div id="stream-skeleton" class="skeleton-loader">
-        <div class="skeleton-grid"></div>
-        <span>INITIALIZING SENSOR FEED...</span>
+    <div class="stream-wrapper">
+      <div class="stream-container">
+        <div class="live-badge">
+          <div class="live-badge-dot"></div>
+          LIVE
+        </div>
+        <div id="stream-skeleton" class="skeleton-loader">
+          <div class="skeleton-grid"></div>
+          <span>INITIALIZING SENSOR FEED...</span>
+        </div>
+        <img id="stream-img" src="" alt="Camera Stream" crossorigin="anonymous">
+        <canvas id="hud-canvas"></canvas>
       </div>
-      <img id="stream-img" src="" alt="Camera Stream" crossorigin="anonymous">
-      <canvas id="hud-canvas"></canvas>
     </div>
 
     <div class="telemetry-row">
@@ -382,7 +617,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         <input type="password" id="ap_pass" name="ap_pass" placeholder="Minimal 8 karakter atau kosong">
       </div>
 
-      <button type="submit" id="btn-save">Simpan Konfigurasi & Hubungkan</button>
+      <button type="submit" id="btn-save" class="btn-submit">Simpan Konfigurasi & Hubungkan</button>
     </form>
 
     <div id="status"></div>
@@ -452,8 +687,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
           const scaleY = canvas.height / data.fh;
 
           const numCands = data.num_cands || 1;
-          /* Calibrated technical contrast palette: Primary Sky, Slate, Dark Slate */
-          const colors = ['#38bdf8', '#94a3b8', '#64748b'];
+          const colors = ['#0284c7', '#64748b', '#94a3b8'];
           const labels = ['P1 PRIMARY TRACK', 'P2 SCAN CANDIDATE', 'P3 SCAN CANDIDATE'];
 
           const cands = [
@@ -494,14 +728,14 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
             /* Bounding Box Line */
             ctx.strokeStyle = color;
-            ctx.lineWidth = isInspected ? 2.0 : 1.0;
+            ctx.lineWidth = isInspected ? 2.5 : 1.5;
             if (!isInspected) ctx.setLineDash([4, 4]); else ctx.setLineDash([]);
             ctx.strokeRect(bx, by, bWidth, bHeight);
             ctx.setLineDash([]);
 
             /* Corner Reticles */
-            const len = 10;
-            ctx.lineWidth = 2.0;
+            const len = 12;
+            ctx.lineWidth = 2.5;
             ctx.beginPath(); ctx.moveTo(bx, by + len); ctx.lineTo(bx, by); ctx.lineTo(bx + len, by); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(bx + bWidth - len, by); ctx.lineTo(bx + bWidth, by); ctx.lineTo(bx + bWidth, by + len); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(bx, by + bHeight - len); ctx.lineTo(bx, by + bHeight); ctx.lineTo(bx + len, by + bHeight); ctx.stroke();
@@ -509,15 +743,15 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
             /* Label & Metrics */
             ctx.fillStyle = color;
-            ctx.font = '10px monospace';
+            ctx.font = '700 10px monospace';
             const statusText = isInspected ? ' [SCANNING]' : '';
             const proxText = (data.prox !== undefined) ? ` Z:${(data.prox * 100).toFixed(0)}%` : '';
-            ctx.fillText(labels[i] + statusText + proxText, bx + 3, by - 5);
+            ctx.fillText(labels[i] + statusText + proxText, bx + 3, by - 6);
 
             /* Technical Crosshair */
             if (isInspected) {
-              ctx.strokeStyle = '#e2e8f0';
-              ctx.lineWidth = 1.0;
+              ctx.strokeStyle = '#ffffff';
+              ctx.lineWidth = 1.5;
               ctx.beginPath();
               ctx.moveTo(cX - 8, cY); ctx.lineTo(cX + 8, cY);
               ctx.moveTo(cX, cY - 8); ctx.lineTo(cX, cY + 8);
@@ -631,7 +865,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
       if (targetMode === 'AP') {
         btn.innerText = 'Beralih ke AP Mode...';
-        status.innerHTML = 'ESP32 sedang reboot ke AP Mode.<br>Hubungkan Wi-Fi ke <b>KoRe</b> lalu buka: <a href="' + apUrl + '" style="color:#38bdf8;text-decoration:underline;">' + apUrl + '</a><br><small>Pengalihan otomatis dalam 4 detik...</small>';
+        status.innerHTML = 'ESP32 sedang reboot ke AP Mode.<br>Hubungkan Wi-Fi ke <b>KoRe</b> lalu buka: <a href="' + apUrl + '" style="color:#0284c7;font-weight:700;">' + apUrl + '</a><br><small>Pengalihan otomatis dalam 4 detik...</small>';
 
         fetch('/switch_mode', {
           method: 'POST',
@@ -644,7 +878,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         const staSsid = document.getElementById('sta_ssid').value || 'WiFi Router';
         const staUrl = 'http://kore.local';
         btn.innerText = 'Beralih ke STA Mode...';
-        status.innerHTML = 'ESP32 sedang reboot dan menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL STA: <a href="' + staUrl + '" style="color:#38bdf8;text-decoration:underline;">' + staUrl + '</a><br><small>Pengalihan otomatis ke ' + staUrl + ' dalam 6 detik...</small>';
+        status.innerHTML = 'ESP32 sedang reboot dan menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL STA: <a href="' + staUrl + '" style="color:#0284c7;font-weight:700;">' + staUrl + '</a><br><small>Pengalihan otomatis ke ' + staUrl + ' dalam 6 detik...</small>';
 
         fetch('/switch_mode', {
           method: 'POST',
@@ -669,7 +903,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         return;
       }
 
-      status.style.color = '#e4e4e7';
+      status.style.color = 'var(--text-main)';
       btn.disabled = true;
       document.getElementById('btn-switch-mode').disabled = true;
       btn.innerText = 'Menyimpan konfigurasi...';
@@ -677,7 +911,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
       const staSsid = document.getElementById('sta_ssid').value || 'WiFi Router';
       const staUrl = 'http://kore.local';
-      status.innerHTML = 'Konfigurasi disimpan. ESP32 reboot menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL STA: <a href="' + staUrl + '" style="color:#38bdf8;text-decoration:underline;">' + staUrl + '</a><br><small>Pengalihan otomatis dalam 6 detik...</small>';
+      status.innerHTML = 'Konfigurasi disimpan. ESP32 reboot menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL STA: <a href="' + staUrl + '" style="color:#0284c7;font-weight:700;">' + staUrl + '</a><br><small>Pengalihan otomatis dalam 6 detik...</small>';
 
       const body = {
         sta_ssid: document.getElementById('sta_ssid').value,
