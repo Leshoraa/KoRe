@@ -24,8 +24,59 @@ static char s_sta_password[64] = {0};
 static char s_ap_ssid[64] = {0};
 static char s_ap_password[64] = {0};
 
+static char s_weather_city[32] = WEATHER_DEFAULT_CITY;
+static float s_weather_lat = WEATHER_DEFAULT_LAT;
+static float s_weather_lon = WEATHER_DEFAULT_LON;
+static bool s_weather_enabled = true;
+static uint8_t s_oled_brightness = OLED_DEFAULT_BRIGHTNESS;
+
 static bool s_is_ap_mode = false;
 static DNSServer s_dnsServer;
+
+uint8_t getSavedOledBrightness(void) {
+    return s_oled_brightness;
+}
+
+void saveOledBrightness(uint8_t brightness) {
+    Preferences prefs;
+    prefs.begin("kore_cfg", false);
+    prefs.putUChar("oled_bright", brightness);
+    prefs.end();
+    s_oled_brightness = brightness;
+    g_oled_brightness = brightness;
+}
+
+const char* getWeatherCity(void) {
+    return s_weather_city;
+}
+
+float getWeatherLat(void) {
+    return s_weather_lat;
+}
+
+float getWeatherLon(void) {
+    return s_weather_lon;
+}
+
+bool isWeatherEnabled(void) {
+    return s_weather_enabled;
+}
+
+void saveWeatherConfig(const char* city, float lat, float lon, bool enabled) {
+    Preferences prefs;
+    prefs.begin("kore_cfg", false);
+    if (city && strlen(city) > 0) {
+        prefs.putString("w_city", city);
+        strncpy(s_weather_city, city, sizeof(s_weather_city) - 1);
+    }
+    prefs.putFloat("w_lat", lat);
+    prefs.putFloat("w_lon", lon);
+    prefs.putBool("w_en", enabled);
+    prefs.end();
+    s_weather_lat = lat;
+    s_weather_lon = lon;
+    s_weather_enabled = enabled;
+}
 
 bool isWiFiAPMode(void) {
     return s_is_ap_mode;
@@ -120,6 +171,16 @@ bool initWiFiAndNetwork(void) {
         strncpy(s_ap_ssid, s_ap_ssid_default, sizeof(s_ap_ssid) - 1);
         strncpy(s_ap_password, s_ap_password_default, sizeof(s_ap_password) - 1);
     }
+
+    s_oled_brightness = prefs.getUChar("oled_bright", OLED_DEFAULT_BRIGHTNESS);
+    g_oled_brightness = s_oled_brightness;
+
+    String stored_w_city = prefs.getString("w_city", WEATHER_DEFAULT_CITY);
+    strncpy(s_weather_city, stored_w_city.c_str(), sizeof(s_weather_city) - 1);
+    s_weather_lat = prefs.getFloat("w_lat", WEATHER_DEFAULT_LAT);
+    s_weather_lon = prefs.getFloat("w_lon", WEATHER_DEFAULT_LON);
+    s_weather_enabled = prefs.getBool("w_en", true);
+
     prefs.end();
 
     bool force_ap = (stored_wifi_mode == "AP");

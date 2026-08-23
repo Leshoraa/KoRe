@@ -40,22 +40,34 @@ KoRe hosts a lightweight, asynchronous dual-port HTTP server on the ESP32-S3:
   "insp_idx": 0,
   "c0_cx": 300,
   "c0_cy": 250,
+  "c0_w": 120,
+  "c0_h": 140,
   "c0_p": 142.5,
   "c1_cx": 120,
   "c1_cy": 180,
+  "c1_w": 90,
+  "c1_h": 110,
   "c1_p": 88.2,
   "c2_cx": 480,
   "c2_cy": 310,
+  "c2_w": 80,
+  "c2_h": 95,
   "c2_p": 64.1,
   "expr": 3,
   "expr_name": "SMIRK",
-  "is_manual": false
+  "is_manual": false,
+  "valence": 0.35,
+  "arousal": 0.60,
+  "heap_free": 125432,
+  "psram_free": 7340032,
+  "uptime_s": 3600,
+  "cpu_mhz": 240
 }
 ```
 
 ### 2.3 Expression Control
 - **`POST /set_expression`:** Sets the manual face expression override or restores default auto mood engine.
-  - **Body:** `{"expr": 3}` (0: IDLE, 1: JOY, 2: ANGRY, 3: SMIRK, 4: SHOCK, 5: OVERLOAD, 6: SEDIH, 7: DEADPAN) or `{"expr": "auto"}` / `{"expr": -1}` to restore default.
+  - **Body:** `{"expr": 3}` (0: IDLE, 1: JOY, 2: ANGRY, 3: SMIRK, 4: SHOCK, 5: OVERLOAD, 6: SAD, 7: DEADPAN) or `{"expr": "auto"}` / `{"expr": -1}` to restore default.
   - **Response:** `{"status": "ok"}`
 
 ### 2.4 MJPEG Video Stream
@@ -123,7 +135,36 @@ KoRe hosts a lightweight, asynchronous dual-port HTTP server on the ESP32-S3:
   - **Payload:** Raw binary firmware bytes (`application/octet-stream`)
   - **Response:** `{"status": "ok", "message": "Firmware flashed! Rebooting..."}`
 
-### 2.10 Extended Telemetry Fields
+### 2.10 Display Brightness Control
+- **`POST /set_brightness`:** Adjusts OLED display brightness in real-time ($0 - 255$) with optional NVS persistence.
+  - **Body:** `{"brightness": 180, "save": true}`
+  - **Response:** `{"status": "ok"}`
+
+### 2.11 Weather Location & Configuration
+- **`POST /set_weather`:** Configures city name, geographic coordinates, and automatic standby popup flag.
+  - **Body:** `{"city": "Jakarta", "lat": -6.2088, "lon": 106.8456, "enabled": true}`
+  - **Response:** `{"status": "ok"}`
+- **`GET /weather_info`:** Retrieves latest parsed Open-Meteo observation payload.
+  - **Response:** `application/json`
+  - **Schema:**
+```json
+{
+  "city": "Jakarta",
+  "lat": -6.2088,
+  "lon": 106.8456,
+  "enabled": true,
+  "valid": true,
+  "temp": 29.5,
+  "humidity": 78,
+  "code": 3,
+  "condition": "OVERCAST",
+  "last_sync_s": 120
+}
+```
+- **`POST /trigger_weather`:** Triggers instantaneous 6-second weather screen display on the OLED panel.
+  - **Response:** `{"status": "ok"}`
+
+### 2.12 Extended Telemetry Fields
 The `/telemetry` endpoint includes dynamic system and affective metrics:
 - `valence` (float): Current emotional valence [-1.0, 1.0]
 - `arousal` (float): Current emotional arousal [0.0, 1.0]

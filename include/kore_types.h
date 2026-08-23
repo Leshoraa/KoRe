@@ -35,7 +35,7 @@ typedef enum {
     EXPR_SMIRK,
     EXPR_SHOCK,
     EXPR_OVERLOAD,
-    EXPR_SEDIH,
+    EXPR_SAD,
     EXPR_DEADPAN
 } Expression;
 
@@ -100,11 +100,26 @@ typedef struct {
     float proximity;
 } ObjectCandidate;
 
+/**
+ * @struct WeatherInfo
+ * @brief Current weather observation payload for OLED visualization and Web telemetry.
+ */
+typedef struct {
+    float temperature;
+    int humidity;
+    int weather_code;
+    char city[32];
+    char condition[24];
+    bool valid;
+    uint32_t last_sync_ms;
+} WeatherInfo;
+
 #define MAX_OBJECT_CANDIDATES 3
 
 /* Cross-Core Synchronization Handles */
 extern portMUX_TYPE g_target_mutex;
 extern portMUX_TYPE g_stream_mutex;
+extern portMUX_TYPE g_weather_mutex;
 extern SemaphoreHandle_t g_frame_sem;
 
 /* Global Cross-Core State Variables */
@@ -120,6 +135,8 @@ extern volatile uint32_t g_last_web_activity_ms;
 extern uint8_t* g_latest_jpeg_buf;
 extern size_t g_latest_jpeg_len;
 extern volatile bool g_camera_init_ok;
+extern volatile uint8_t g_oled_brightness;
+extern WeatherInfo g_weather_info;
 
 #ifdef __cplusplus
 }

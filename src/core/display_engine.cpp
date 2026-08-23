@@ -8,8 +8,6 @@
 #include "include/kore_types.h"
 #include "include/kore_kinematics.h"
 #include "include/kore_affective.h"
-#include "src/net/wifi_manager.h"
-#include <WiFi.h>
 #include <Arduino.h>
 #include <esp_random.h>
 
@@ -211,7 +209,7 @@ static void drawSpiralEyes(int ox, int oy, float rotAngle, uint16_t color, float
     drawSpiralEye(rx, ry, -rotAngle, color, scale);
 }
 
-static void drawSedihEyes(int ox, int oy, float animFrame, uint16_t color, float vergence, float scale) {
+static void drawSadEyes(int ox, int oy, float animFrame, uint16_t color, float vergence, float scale) {
     (void)vergence;
     int lx = 32 + ox;
     int rx = 96 + ox;
@@ -316,7 +314,7 @@ static void drawOverloadMouth(int ox, int oy, uint16_t color, float scale) {
     canvas.fillEllipse(mx, my, (int)roundf(7.0f * scale), (int)roundf(5.0f * scale), color);
 }
 
-static void drawSedihMouth(int ox, int oy, float animFrame, uint16_t color, float scale) {
+static void drawSadMouth(int ox, int oy, float animFrame, uint16_t color, float scale) {
     int mx = 64 + ox;
     int my = (int)roundf(45.0f + (float)oy);
     float halfW = 9.5f * scale;
@@ -332,34 +330,6 @@ static void drawSedihMouth(int ox, int oy, float animFrame, uint16_t color, floa
     }
 }
 
-static void drawWiFiStatusOverlay(uint16_t color) {
-    bool is_ap = isWiFiAPMode();
-    bool connected = (WiFi.status() == WL_CONNECTED);
-    int8_t rssi = connected ? WiFi.RSSI() : 0;
-
-    int bx = 117;
-    int by = 3;
-
-    if (is_ap) {
-        /* AP Mode indicator */
-        canvas.drawCircle(bx + 4, by + 3, 2, color);
-        canvas.drawPixel(bx + 4, by + 3, color);
-    } else if (connected) {
-        /* 3-bar signal strength indicator */
-        canvas.fillRect(bx, by + 4, 2, 2, color);
-        if (rssi > -80) {
-            canvas.fillRect(bx + 3, by + 2, 2, 4, color);
-        }
-        if (rssi > -65) {
-            canvas.fillRect(bx + 6, by, 2, 6, color);
-        }
-    } else {
-        /* Disconnected 'x' glyph */
-        canvas.drawLine(bx + 2, by + 1, bx + 6, by + 5, color);
-        canvas.drawLine(bx + 6, by + 1, bx + 2, by + 5, color);
-    }
-}
-
 static void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCurve, float mouthY, float mouthWidth, float browAlpha, bool inverted, float vergence, float scale) {
     uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
     uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
@@ -368,7 +338,6 @@ static void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCu
     drawEyes(eyeHeightFactor, ox, oy, fgColor, vergence, scale);
     drawAngryBrows(eyeHeightFactor, ox, oy, browAlpha, bgColor, vergence, scale);
     drawMouthCustom(ox, oy, mouthCurve, mouthY, mouthWidth, 0.0f, fgColor, scale);
-    drawWiFiStatusOverlay(fgColor);
     canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
 }
 
@@ -383,7 +352,6 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawJoyEyes(ox, oy, 1.0f, TFT_WHITE, vergence, scale);
             drawJoyMouth(ox, oy, 1.0f, TFT_WHITE, scale);
-            drawWiFiStatusOverlay(TFT_WHITE);
             canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
         case EXPR_ANGRY:
@@ -393,7 +361,6 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawCatMouth(ox, oy, TFT_WHITE, scale);
-            drawWiFiStatusOverlay(TFT_WHITE);
             canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
         case EXPR_SHOCK:
@@ -404,28 +371,24 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
                 drawEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             }
             drawShockMouth(ox, oy, TFT_WHITE, scale);
-            drawWiFiStatusOverlay(TFT_WHITE);
             canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
         case EXPR_OVERLOAD:
             canvas.fillScreen(TFT_BLACK);
             drawSpiralEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawOverloadMouth(ox, oy, TFT_WHITE, scale);
-            drawWiFiStatusOverlay(TFT_WHITE);
             canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
-        case EXPR_SEDIH:
+        case EXPR_SAD:
             canvas.fillScreen(TFT_BLACK);
-            drawSedihEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
-            drawSedihMouth(ox, oy, frame, TFT_WHITE, scale);
-            drawWiFiStatusOverlay(TFT_WHITE);
+            drawSadEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
+            drawSadMouth(ox, oy, frame, TFT_WHITE, scale);
             canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
         case EXPR_DEADPAN:
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawDeadpanMouth(ox, oy, TFT_WHITE, scale);
-            drawWiFiStatusOverlay(TFT_WHITE);
             canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
     }
@@ -508,8 +471,8 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
             drawShockEyes(ox, oy, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
         } else if (activeExpr == EXPR_OVERLOAD) {
             drawSpiralEyes(ox, oy, t * 2.0f, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
-        } else if (activeExpr == EXPR_SEDIH) {
-            drawSedihEyes(ox, oy, t * 4.0f, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
+        } else if (activeExpr == EXPR_SAD) {
+            drawSadEyes(ox, oy, t * 4.0f, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
         }
 
         if (curBrow > 0.01f) {
@@ -535,8 +498,8 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
                 drawShockMouth(ox, oy, fgColor, g_currentEyeScale);
             } else if (mouthExpr == EXPR_OVERLOAD) {
                 drawOverloadMouth(ox, oy, fgColor, g_currentEyeScale);
-            } else if (mouthExpr == EXPR_SEDIH) {
-                drawSedihMouth(ox, oy, t * 4.0f, fgColor, g_currentEyeScale);
+            } else if (mouthExpr == EXPR_SAD) {
+                drawSadMouth(ox, oy, t * 4.0f, fgColor, g_currentEyeScale);
             }
         }
 
@@ -546,12 +509,129 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
     g_currentExpr = toExpr;
 }
 
+void drawWeatherScreen(const WeatherInfo& weather, float animFrame) {
+    canvas.fillScreen(TFT_BLACK);
+
+    /* 1. Header: City Name centered */
+    canvas.setTextSize(1);
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    
+    char header_buf[36];
+    snprintf(header_buf, sizeof(header_buf), "%s", (weather.city[0] != '\0') ? weather.city : "WEATHER");
+    int header_w = strlen(header_buf) * 6;
+    int header_x = (OLED_PANEL_WIDTH_PX - header_w) / 2;
+    if (header_x < 4) header_x = 4;
+    canvas.setCursor(header_x, 3);
+    canvas.print(header_buf);
+
+    canvas.drawFastHLine(6, 13, 116, TFT_WHITE);
+
+    /* 2. Weather Icon on Left (Bounding box x=8..44, y=18..58) */
+    int code = weather.weather_code;
+    int icx = 26;
+    int icy = 38;
+
+    if (code == 0 || code == 1) {
+        /* Clear / Sun */
+        canvas.fillCircle(icx, icy, 7, TFT_WHITE);
+        for (int i = 0; i < 8; i++) {
+            float angle = (float)i * (2.0f * (float)M_PI / 8.0f) + animFrame * 0.2f;
+            int x1 = icx + (int)roundf(cosf(angle) * 9.0f);
+            int y1 = icy + (int)roundf(sinf(angle) * 9.0f);
+            int x2 = icx + (int)roundf(cosf(angle) * 13.0f);
+            int y2 = icy + (int)roundf(sinf(angle) * 13.0f);
+            canvas.drawLine(x1, y1, x2, y2, TFT_WHITE);
+        }
+    } else if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
+        /* Rain / Drizzle / Showers */
+        canvas.fillCircle(icx - 7, icy - 4, 5, TFT_WHITE);
+        canvas.fillCircle(icx, icy - 8, 7, TFT_WHITE);
+        canvas.fillCircle(icx + 7, icy - 4, 5, TFT_WHITE);
+        canvas.fillRect(icx - 12, icy - 4, 24, 7, TFT_WHITE);
+
+        int dropShift = ((int)(animFrame * 8.0f)) % 4;
+        for (int r = -8; r <= 8; r += 6) {
+            int rx = icx + r;
+            int ry = icy + 5 + dropShift;
+            canvas.drawLine(rx, ry, rx - 2, ry + 4, TFT_WHITE);
+        }
+    } else if (code >= 95 && code <= 99) {
+        /* Thunderstorm */
+        canvas.fillCircle(icx - 7, icy - 6, 5, TFT_WHITE);
+        canvas.fillCircle(icx, icy - 10, 7, TFT_WHITE);
+        canvas.fillCircle(icx + 7, icy - 6, 5, TFT_WHITE);
+        canvas.fillRect(icx - 12, icy - 6, 24, 7, TFT_WHITE);
+
+        canvas.drawLine(icx, icy + 2, icx - 3, icy + 9, TFT_WHITE);
+        canvas.drawLine(icx - 3, icy + 9, icx + 2, icy + 9, TFT_WHITE);
+        canvas.drawLine(icx + 2, icy + 9, icx - 2, icy + 16, TFT_WHITE);
+    } else if (code == 45 || code == 48) {
+        /* Fog */
+        canvas.drawFastHLine(icx - 14, icy - 6, 28, TFT_WHITE);
+        canvas.drawFastHLine(icx - 10, icy - 1, 20, TFT_WHITE);
+        canvas.drawFastHLine(icx - 14, icy + 4, 28, TFT_WHITE);
+        canvas.drawFastHLine(icx - 8, icy + 9, 16, TFT_WHITE);
+    } else {
+        /* Cloudy / Overcast */
+        if (code == 2) {
+            canvas.drawCircle(icx + 8, icy - 10, 4, TFT_WHITE);
+            canvas.drawLine(icx + 12, icy - 12, icx + 15, icy - 14, TFT_WHITE);
+        }
+        canvas.fillCircle(icx - 7, icy - 2, 6, TFT_WHITE);
+        canvas.fillCircle(icx, icy - 7, 8, TFT_WHITE);
+        canvas.fillCircle(icx + 8, icy - 2, 6, TFT_WHITE);
+        canvas.fillRect(icx - 12, icy - 2, 26, 8, TFT_WHITE);
+    }
+
+    /* 3. Text Details on Right (x=48..124) */
+    char temp_buf[20];
+    if (weather.valid) {
+        snprintf(temp_buf, sizeof(temp_buf), "%.1f C", weather.temperature);
+    } else {
+        snprintf(temp_buf, sizeof(temp_buf), "--.- C");
+    }
+    
+    canvas.setTextSize(2);
+    canvas.setCursor(48, 18);
+    canvas.print(temp_buf);
+    int deg_x = 48 + (strlen(temp_buf) - 2) * 12;
+    canvas.drawCircle(deg_x + 1, 20, 2, TFT_WHITE);
+
+    canvas.setTextSize(1);
+    canvas.setCursor(48, 38);
+    canvas.print(weather.condition[0] != '\0' ? weather.condition : "UPDATING...");
+
+    char hum_buf[20];
+    if (weather.valid) {
+        snprintf(hum_buf, sizeof(hum_buf), "RH: %d%%", weather.humidity);
+    } else {
+        snprintf(hum_buf, sizeof(hum_buf), "RH: --%%");
+    }
+    canvas.setCursor(48, 50);
+    canvas.print(hum_buf);
+
+    canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+}
+
+void setOledBrightnessLive(uint8_t brightness) {
+    g_oled_brightness = brightness;
+}
+
+static uint32_t s_weather_popup_until_ms = 0;
+static uint32_t s_next_random_weather_check_ms = 0;
+static uint8_t s_last_applied_brightness = 0;
+
+void triggerWeatherDisplay(uint32_t duration_ms) {
+    s_weather_popup_until_ms = millis() + duration_ms;
+}
+
 void oledTask(void *pvParameters) {
     (void)pvParameters;
 
     lcd.init();
     lcd.setRotation(2);
-    lcd.setBrightness(OLED_DEFAULT_BRIGHTNESS);
+    lcd.setBrightness(g_oled_brightness);
+    s_last_applied_brightness = g_oled_brightness;
 
     canvas.setColorDepth(1);
     canvas.createSprite(OLED_PANEL_WIDTH_PX, OLED_PANEL_HEIGHT_PX);
@@ -563,15 +643,18 @@ void oledTask(void *pvParameters) {
         uint32_t frame_start_us = micros();
         unsigned long now = millis();
 
+        /* Keep user brightness setting applied without auto-dimming */
+        if (s_last_applied_brightness != g_oled_brightness) {
+            s_last_applied_brightness = g_oled_brightness;
+            lcd.setBrightness(g_oled_brightness);
+        }
+
         Expression prevExpr = g_currentExpr;
         updateBiologicalMoodEngine();
 
         if (g_recon_state != s_prev_recon_state) {
             s_prev_recon_state = g_recon_state;
-            if (g_recon_state == STATE_SLEEP_RECON) {
-                lcd.setBrightness(OLED_SLEEP_BRIGHTNESS);
-            } else {
-                lcd.setBrightness(OLED_DEFAULT_BRIGHTNESS);
+            if (g_recon_state == STATE_ACTIVE) {
                 s_burn_shift_x = 0;
                 s_burn_shift_y = 0;
             }
@@ -583,70 +666,84 @@ void oledTask(void *pvParameters) {
             s_burn_shift_y = (int)(esp_random() % 3) - 1;
         }
 
-        if (g_currentExpr != prevExpr) {
-            frame_start_us = micros();
+        /* Periodic random weather trigger during idle standby */
+        if (g_recon_state == STATE_SLEEP_RECON && now >= s_next_random_weather_check_ms) {
+            s_next_random_weather_check_ms = now + (esp_random() % 120000) + 120000; /* Every 2-4 minutes */
+            if (g_weather_info.valid && s_weather_popup_until_ms < now) {
+                s_weather_popup_until_ms = now + WEATHER_POPUP_DURATION_MS;
+            }
+        }
+
+        /* Check if weather popup is active */
+        if (now < s_weather_popup_until_ms) {
+            g_animFrame += 0.04f;
+            drawWeatherScreen(g_weather_info, g_animFrame);
         } else {
-            updateGazeSystem();
-
-            bool canBlink = (g_currentExpr != EXPR_OVERLOAD && g_currentExpr != EXPR_SEDIH && g_currentExpr != EXPR_JOY);
-
-            if (!canBlink) {
-                g_blinkState = BLINK_IDLE_STATE;
-                g_blinkEyeHeight = 1.0f;
+            if (g_currentExpr != prevExpr) {
+                frame_start_us = micros();
             } else {
-                if (g_blinkState == BLINK_IDLE_STATE) {
-                    if (g_nextBlinkTime == 0) {
-                        uint32_t initInterval = (g_currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
-                        g_nextBlinkTime = now + initInterval;
-                    }
-                    if (now >= g_nextBlinkTime) {
-                        g_blinkState = BLINK_CLOSING_STATE;
-                        g_nextBlinkTime = now;
-                        if (s_isDoubleBlinkPending) {
-                            s_isDoubleBlinkPending = false;
-                        } else if ((esp_random() % 100) < 14) {
-                            s_isDoubleBlinkPending = true;
-                        }
-                    }
-                }
+                updateGazeSystem();
 
-                if (g_blinkState == BLINK_CLOSING_STATE) {
-                    float elapsed = (float)(now - g_nextBlinkTime);
-                    float duration = (g_currentExpr == EXPR_ANGRY) ? 35.0f : 50.0f;
-                    if (elapsed >= duration) {
-                        g_blinkEyeHeight = 0.0f;
-                        g_blinkState = BLINK_OPENING_STATE;
-                        g_nextBlinkTime = now;
-                    } else {
-                        float t = elapsed / duration;
-                        g_blinkEyeHeight = blinkCloseEase(t);
-                    }
-                } else if (g_blinkState == BLINK_OPENING_STATE) {
-                    float elapsed = (float)(now - g_nextBlinkTime);
-                    float duration = (g_currentExpr == EXPR_ANGRY) ? 80.0f : 110.0f;
-                    if (elapsed >= duration) {
-                        g_blinkEyeHeight = 1.0f;
-                        g_blinkState = BLINK_IDLE_STATE;
-                        if (s_isDoubleBlinkPending) {
-                            g_nextBlinkTime = now + 120;
-                        } else {
-                            uint32_t interval = (g_currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
-                            g_nextBlinkTime = now + interval;
-                        }
-                    } else {
-                        float t = elapsed / duration;
-                        g_blinkEyeHeight = blinkOpenEase(t);
-                    }
-                } else {
+                bool canBlink = (g_currentExpr != EXPR_OVERLOAD && g_currentExpr != EXPR_SAD && g_currentExpr != EXPR_JOY);
+
+                if (!canBlink) {
+                    g_blinkState = BLINK_IDLE_STATE;
                     g_blinkEyeHeight = 1.0f;
+                } else {
+                    if (g_blinkState == BLINK_IDLE_STATE) {
+                        if (g_nextBlinkTime == 0) {
+                            uint32_t initInterval = (g_currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
+                            g_nextBlinkTime = now + initInterval;
+                        }
+                        if (now >= g_nextBlinkTime) {
+                            g_blinkState = BLINK_CLOSING_STATE;
+                            g_nextBlinkTime = now;
+                            if (s_isDoubleBlinkPending) {
+                                s_isDoubleBlinkPending = false;
+                            } else if ((esp_random() % 100) < 14) {
+                                s_isDoubleBlinkPending = true;
+                            }
+                        }
+                    }
+
+                    if (g_blinkState == BLINK_CLOSING_STATE) {
+                        float elapsed = (float)(now - g_nextBlinkTime);
+                        float duration = (g_currentExpr == EXPR_ANGRY) ? 35.0f : 50.0f;
+                        if (elapsed >= duration) {
+                            g_blinkEyeHeight = 0.0f;
+                            g_blinkState = BLINK_OPENING_STATE;
+                            g_nextBlinkTime = now;
+                        } else {
+                            float t = elapsed / duration;
+                            g_blinkEyeHeight = blinkCloseEase(t);
+                        }
+                    } else if (g_blinkState == BLINK_OPENING_STATE) {
+                        float elapsed = (float)(now - g_nextBlinkTime);
+                        float duration = (g_currentExpr == EXPR_ANGRY) ? 80.0f : 110.0f;
+                        if (elapsed >= duration) {
+                            g_blinkEyeHeight = 1.0f;
+                            g_blinkState = BLINK_IDLE_STATE;
+                            if (s_isDoubleBlinkPending) {
+                                g_nextBlinkTime = now + 120;
+                            } else {
+                                uint32_t interval = (g_currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
+                                g_nextBlinkTime = now + interval;
+                            }
+                        } else {
+                            float t = elapsed / duration;
+                            g_blinkEyeHeight = blinkOpenEase(t);
+                        }
+                    } else {
+                        g_blinkEyeHeight = 1.0f;
+                    }
                 }
-            }
 
-            if (g_currentExpr == EXPR_OVERLOAD || g_currentExpr == EXPR_SEDIH) {
-                g_animFrame += 0.025f;
-            }
+                if (g_currentExpr == EXPR_OVERLOAD || g_currentExpr == EXPR_SAD) {
+                    g_animFrame += 0.025f;
+                }
 
-            drawFace(g_currentExpr, g_blinkEyeHeight, g_currentOffsetX, g_currentOffsetY, g_animFrame, g_currentVergence, g_currentEyeScale);
+                drawFace(g_currentExpr, g_blinkEyeHeight, g_currentOffsetX, g_currentOffsetY, g_animFrame, g_currentVergence, g_currentEyeScale);
+            }
         }
 
         uint32_t frame_budget_us = (g_recon_state == STATE_SLEEP_RECON) ? FRAME_BUDGET_SLEEP_US : FRAME_BUDGET_ACTIVE_US;

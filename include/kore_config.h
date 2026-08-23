@@ -41,7 +41,13 @@ extern "C" {
 #define OLED_PANEL_WIDTH_PX     128
 #define OLED_PANEL_HEIGHT_PX    64
 #define OLED_DEFAULT_BRIGHTNESS 128
-#define OLED_SLEEP_BRIGHTNESS   16       /* Reduced brightness in standby to prevent OLED burn-in */
+
+/* Weather Configuration & Open-Meteo Integration */
+#define WEATHER_DEFAULT_CITY        "Jakarta"
+#define WEATHER_DEFAULT_LAT         -6.2088f
+#define WEATHER_DEFAULT_LON         106.8456f
+#define WEATHER_POPUP_DURATION_MS   6000     /* 6 seconds display on OLED */
+#define WEATHER_FETCH_INTERVAL_MS   1800000  /* 30 minutes periodic sync */
 
 /* Camera Sensor DVP Pin Mapping (XIAO ESP32-S3 Sense) */
 #define CAM_PIN_PWDN            -1

@@ -5,10 +5,11 @@
 [![Vision Latency](https://img.shields.io/badge/AI_Latency-%3C_0.5_ms-brightgreen.svg?style=for-the-badge)](#performance-benchmarks)
 [![Ocular Dynamics](https://img.shields.io/badge/Physics-38.0_rad%2Fs_Mass--Spring--Damper-orange.svg?style=for-the-badge)](#key-engineering-features)
 [![Display Driver](https://img.shields.io/badge/Display-LovyanGFX_SSD1306_1.0MHz_I2C-purple.svg?style=for-the-badge)](#hardware-interfacing--pinout)
+[![Firmware Version](https://img.shields.io/badge/Firmware-v2.5.0-success.svg?style=for-the-badge)](#api-endpoints--web-telemetry-hud)
 
 **KoRe** (*Kinematic Optical Recognition Engine*) is a lightweight, standalone embedded computer vision and biomechanical ocular synthesis system built for the **Seeed Studio XIAO ESP32-S3 Sense** (Xtensa LX7 Dual-Core @ 240 MHz).
 
-The firmware combines a real-time differential YCbCr computer vision pipeline, 4x3 spatial sector illumination analysis, multi-object candidate tracking, a 2D discrete Kalman tracking filter with dynamic measurement noise tuning, second-order mass-spring-damper gaze kinetics ($\omega_n = 38.0\text{ rad/s}, \zeta = 1.00$), 5th-order minimum-jerk saccades, a 1-bit LGFX sprite rendering engine (1.0 MHz Fast-Mode Plus I2C), a 2D Russell Circumplex affective emotion model, and dynamic power management (DFS clock scaling and SCCB sensor standby).
+The firmware combines a real-time differential YCbCr computer vision pipeline, 4x3 spatial sector illumination analysis, multi-object candidate tracking, a 2D discrete Kalman tracking filter with dynamic measurement noise tuning, second-order mass-spring-damper gaze kinetics ($\omega_n = 38.0\text{ rad/s}, \zeta = 1.00$), 5th-order minimum-jerk saccades, a 1-bit LGFX sprite rendering engine (1.0 MHz Fast-Mode Plus I2C), a 2D Russell Circumplex affective emotion model, Web OTA updates, live camera sensor tuning, OLED anti-burn-in protection, and dynamic power management (DFS clock scaling, Wi-Fi modem sleep, and SCCB sensor standby).
 
 ---
 
@@ -31,6 +32,7 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
     |  * Multi-Object Spatial Clustering & Priority Ranking (Up to 3 Candidates)      |
     |  * 2D Kalman Filter Prediction/Update ([x, y, vx, vy]^T with Dynamic R Tuning)  |
     |  * DFS Clock Scaling (240 MHz Active <-> 80 MHz Sleep Standby)                  |
+    |  * Dynamic Wi-Fi Modem Power Save (WIFI_PS_MIN_MODEM during Standby)            |
     |  * SCCB Sensor Standby Register Control (OV2640 0x09 bit 4 / OV3660 0x3008)     |
     |  * Double-Buffered JPEG Frame Copier (g_stream_mutex)                           |
     +---------------------------------------------------------------------------------+
@@ -46,6 +48,7 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
     |  * Ocular Kinematics (38.0 rad/s Critically Damped Spring-Damper & Minimum-Jerk)|
     |  * Fixation Micro-Kinetics (Mean-Reverting Brownian Random Walk)                |
     |  * Non-Blocking Eyelid State Machine (Idle -> Closing -> Opening & Double-Blink)|
+    |  * OLED Anti-Burn-In Protection (+/-1 px Micro-Shift & Auto-Dimming Standby)   |
     |  * LovyanGFX High-Speed SSD1306 Sprite Renderer (1.0 MHz Fast-Mode+ I2C)        |
     +---------------------------------------------------------------------------------+
                                              |
@@ -53,10 +56,14 @@ KoRe runs on a dual-core FreeRTOS architecture, partitioning heavy image process
                                              |
                                              v
     +---------------------------------------------------------------------------------+
-    | HTTP TELEMETRY & MJPEG SERVER (Port 80 Web UI/JSON, Port 81 MJPEG Stream)       |
-    |  * /telemetry : Real-time JSON tracking state, candidate priority scores & FPS  |
-    |  * /set_expression : Manual facial expression selection and Auto-Mood reset     |
-    |  * /stream    : Non-blocking MJPEG live video stream                            |
+    | HTTP TELEMETRY, OTA & MJPEG SERVER (Port 80 Web UI/JSON, Port 81 MJPEG Stream)  |
+    |  * /telemetry       : Real-time JSON tracking state, candidate scores, FPS & V/A|
+    |  * /set_expression  : Manual facial expression selection and Auto-Mood reset    |
+    |  * /camera_control  : Live sensor tuning (brightness, contrast, saturation, flip)|
+    |  * /update          : Web Over-The-Air (OTA) binary firmware flashing endpoint  |
+    |  * /scan_wifi       : Real-time Wi-Fi network scanner with RSSI & encryption    |
+    |  * /system_info     : Hardware diagnostics, heap/PSRAM, uptime, and CPU MHz     |
+    |  * /stream          : Non-blocking MJPEG live video stream (Port 81)            |
     |  * /save_wifi & /switch_mode : NVS configuration management handlers            |
     +---------------------------------------------------------------------------------+
 ```
@@ -74,7 +81,7 @@ KoRe/
 ├── docs/
 │   ├── ARCHITECTURE.md             # Dual-core FreeRTOS dataflow and scheduling specifications
 │   ├── MATHEMATICAL_MODELS.md      # Mathematical proofs for ocular dynamics and minimum-jerk
-│   └── TELEMETRY_SPECIFICATION.md  # JSON schema for /telemetry and MJPEG stream protocol
+│   └── TELEMETRY_SPECIFICATION.md  # JSON schema for /telemetry, OTA, and MJPEG stream protocol
 ├── include/
 │   ├── kore_config.h               # Pin definitions, clock rates, and power profiles
 │   ├── kore_types.h                # Data structs: TrackTarget, ObjectCandidate, Expression
@@ -94,14 +101,16 @@ KoRe/
 │   │   └── kore_affective.cpp      # Stochastic Langevin affective dynamics solver
 │   └── net/
 │       ├── http_server.h           # Asynchronous HTTP server header
-│       ├── http_server.cpp         # Async HTTP server, JSON telemetry, and MJPEG streamer
+│       ├── http_server.cpp         # Async HTTP server, JSON telemetry, OTA, and MJPEG streamer
 │       ├── web_ui.h                # Calibrated dark matte Web UI HTML/CSS/JS constants
 │       ├── wifi_manager.h          # NVS Wi-Fi credentials manager header
 │       └── wifi_manager.cpp        # NVS-backed STA/AP configuration and captive portal
 ├── tests/
 │   ├── unit/
-│   │   ├── test_kalman_convergence.cpp
-│   │   └── test_minimum_jerk.cpp
+│   │   ├── test_affective_langevin.cpp       # Langevin stochastic diffusion convergence tests
+│   │   ├── test_kalman_convergence.cpp       # 2D Kalman state estimator convergence tests
+│   │   ├── test_kinematics_feedforward.cpp   # Feedforward gaze kinematics validation
+│   │   └── test_minimum_jerk.cpp             # 5th-order polynomial trajectory verification
 │   └── fixtures/
 │       └── sample_motion_frames.h  # Synthetic downscaled frame test vectors
 ├── scripts/
@@ -127,7 +136,7 @@ KoRe/
 - **Dynamic Measurement Noise ($R$):**
   - **Stationary Target ($\text{innovation} < 6\text{ px}$):** Increases $R$ up to $1.5\times - 3.0\times$ base to eliminate quantization noise when a subject is resting still.
   - **Rapid Movement ($\text{innovation} > 20\text{ px}$):** Dynamically scales $R$ down to enable zero-phase-lag tracking response during fast motion.
-- **Joseph-Stabilized Covariance Update:** Uses the Joseph algebraic update formula to guarantee positive semi-definiteness of state covariance matrix $P$.
+- **Joseph-Stabilized Covariance Update:** Uses the Joseph algebraic update formula $(\mathbf{I} - \mathbf{K}\mathbf{H})\mathbf{P}^-(\mathbf{I} - \mathbf{K}\mathbf{H})^T + \mathbf{K}\mathbf{R}\mathbf{K}^T$ to guarantee positive semi-definiteness of state covariance matrix $P$.
 
 ### 2. Local-Lighting Adaptive YCbCr Skin Classifier
 - **Sector Illumination Analysis:** Divides the downscaled image into 12 spatial grid sectors ($4 \times 3$), calculating mean local sector luminance.
@@ -154,15 +163,27 @@ $$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
 - **Fixation Micro-Kinetics:** Mean-reverting Brownian random walk adds micro-drift ($\approx 0.03\sqrt{\Delta t}$) during fixations, mimicking human ocular physiology.
 - **Anti-Jitter Coordinate Hysteresis (`getFilteredOx`, `getFilteredOy`):** Filters out floating point sub-pixel jitter ($< 0.55\text{ px}$) to prevent 1px display quantization flickering on monochrome OLED pixel grids.
 
-### 6. Intermittent Reconnaissance Duty Cycle FSM & SCCB Standby
+### 6. Intermittent Reconnaissance Duty Cycle FSM & Multi-Tier Power Saving
 - **State Machine (`STATE_ACTIVE` $\leftrightarrow$ `STATE_SLEEP_RECON`):** Cycles between active tracking (3-6s) and low-power reconnaissance standby (90-180s, escalating up to 8 minutes after consecutive misses).
 - **Dynamic Frequency Scaling (DFS):** Scales CPU clock between 240 MHz (active CV/streaming) and 80 MHz (sleep standby, maintaining ESP32 Wi-Fi stack stability).
+- **Wi-Fi Modem Sleep:** Engages `WIFI_PS_MIN_MODEM` during sleep reconnaissance cycles to reduce radio power consumption.
 - **SCCB Software Standby:** Writes directly to camera registers (OV2640 `0x09` bit 4 / OV3660 `0x3008` bit 6) to power down sensor core, compensating for the un-wired `PWDN` pin on the XIAO ESP32-S3 Sense board.
 
 ### 7. Russell Circumplex 2D Emotion & Kaomoji Face Engine
-- **Valence-Arousal Model:** Tracks 2D emotional state ($V \in [-1.0, +1.0]$, $A \in [0.0, 1.0]$) using viscous homeostatic Langevin relaxation ($\tau_v = 6.0\text{s}, \tau_a = 4.5\text{s}$).
-- **Refractory Lock:** Enforces a 5-8 second biological refractory period (`g_mood_lock_until`) between emotional state changes (`EXPR_IDLE`, `EXPR_ANGRY`, `EXPR_OVERLOAD`, `EXPR_JOY`, `EXPR_SEDIH`, `EXPR_SMIRK`, `EXPR_SHOCK`, `EXPR_DEADPAN`).
-- **Expressive Kaomoji Synthesis:** Features specialized procedural 60 FPS face rendering including solid filled flat-top fumo eyes and smiling cat mouth (`SMIRK` ᗜ⩊ᗜ), streaming tear animations and quivering wave mouth (`SEDIH` ╥﹏╥), and minimalist deadpan gaze (`DEADPAN` ᗜ _ ᗜ).
+- **Valence-Arousal Model:** Tracks 2D emotional state ($V \in [-1.0, +1.0]$, $A \in [0.0, 1.0]$) using viscous homeostatic Langevin relaxation ($\tau_v = 6.0\text{s}, \tau_a = 4.5\text{s}$) with stochastic Langevin noise diffusion.
+- **Refractory Lock:** Enforces a 5-8 second biological refractory period (`g_mood_lock_until`) between emotional state changes (`EXPR_IDLE`, `EXPR_ANGRY`, `EXPR_OVERLOAD`, `EXPR_JOY`, `EXPR_SAD`, `EXPR_SMIRK`, `EXPR_SHOCK`, `EXPR_DEADPAN`).
+- **Expressive Kaomoji Synthesis:** Features specialized procedural 60 FPS face rendering including solid filled flat-top fumo eyes and smiling cat mouth (`SMIRK` ᗜ⩊ᗜ), streaming tear animations and quivering wave mouth (`SAD` ╥﹏╥), and minimalist deadpan gaze (`DEADPAN` ᗜ _ ᗜ).
+
+### 8. Web Over-The-Air (OTA) Firmware Flashing Engine
+- **Direct Flash Endpoint (`POST /update`):** Receives binary firmware payloads over HTTP with non-blocking stream ingestion and automated safety reboot.
+- **Progress Tracking:** Integrated Web UI visual progress bar providing live upload feedback.
+
+### 9. Dynamic Camera Sensor Control API
+- **Live Parameter Tuning (`POST /camera_control`):** Directly controls OmniVision sensor registers on-the-fly without firmware re-compilation, supporting brightness (-2..+2), contrast (-2..+2), saturation (-2..+2), vertical flip, horizontal mirror, automatic exposure control (AEC), and automatic gain control (AGC).
+
+### 10. OLED Panel Longevity & Anti-Burn-In Protection
+- **Periodic Micro-Pixel Shifting:** Periodically shifts rendering canvas coordinates by $\pm 1\text{ px}$ in sleep standby mode to distribute phosphor wear.
+- **Standby Auto-Dimming:** Automatically reduces SSD1306 panel brightness to `OLED_SLEEP_BRIGHTNESS` (16/255) during reconnaissance standby.
 
 ---
 
@@ -185,7 +206,7 @@ $$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
 | **Camera Sensor** | OmniVision OV2640 / OV3660 | DVP Parallel Interface |
 | **Frame Resolution** | VGA ($640 \times 480$), Quality 8 JPEG | PSRAM Framebuffer |
 | **AI Subsampling Grid** | $40 \times 30$ Matrix ($1,200\text{ pixels}$) | 8x Hardware IDCT Scaling |
-| **AI Pipeline Latency** | **$< 0.5\text{ ms}$ / frame** | Executed on Core 0 (`IRAM_ATTR`) |
+| **AI Pipeline Latency** | **$< 0.5\text{ ms}$ / frame** | Executed on Core 0 |
 | **Gaze Pursuit Frequency** | **$\omega_n = 38.0\text{ rad/s}$** | Mass-Spring-Damper Model ($\zeta=1.00$) |
 | **MJPEG Streaming FPS** | **$30+\text{ FPS}$** | Port 81 Dedicated Async Handler |
 | **Display Refresh Rate** | **$60\text{ FPS}$** | LovyanGFX I2C @ 1.0 MHz |
@@ -197,26 +218,28 @@ $$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
 
 ### Pin Mapping (Seeed Studio XIAO ESP32-S3 Sense)
 
-| Peripheral Device | Signal | XIAO ESP32-S3 GPIO | Header Label |
-| :--- | :--- | :--- | :--- |
-| **OLED Display (SSD1306)** | I2C SCL | GPIO 5 | D4 |
-| **OLED Display (SSD1306)** | I2C SDA | GPIO 6 | D5 |
-| **Touch Sensor (Optional)** | Digital Input | GPIO 2 | D1 |
-| **Camera DVP Bus** | XCLK, PCLK, VSYNC, HREF, Y2-Y9 | GPIO 10, 11, 12, 13, 14, 15, 16, 17, 18, 38, 39, 40, 47, 48 | Expansion Connector |
+| Peripheral Device | Signal | XIAO ESP32-S3 GPIO | Header Label | Note |
+| :--- | :--- | :--- | :--- | :--- |
+| **OLED Display (SSD1306)** | I2C SCL | GPIO 5 | D4 | 1.0 MHz Fast-Mode Plus |
+| **OLED Display (SSD1306)** | I2C SDA | GPIO 6 | D5 | 1.0 MHz Fast-Mode Plus |
+| **Expansion Header** | GPIO Available | GPIO 2 | D1 | General purpose I/O |
+| **Camera DVP Bus** | XCLK, PCLK, VSYNC, HREF, Y2-Y9 | GPIO 10, 11, 12, 13, 14, 15, 16, 17, 18, 38, 39, 40, 47, 48 | Expansion Connector | High-speed DMA interface |
 
 ---
 
 ## API Endpoints & Web Telemetry HUD
 
-KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection, credential setup, facial expression selection, camera tuning, OTA firmware flashing, and video streaming:
+KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection, credential setup, facial expression selection, camera tuning, weather configuration, display brightness adjustment, OTA firmware flashing, and video streaming:
 
-- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the Bento grid control panel interface rendering real-time target bounding boxes, telemetry metrics, 8-expression selection, camera tuning, and OTA firmware updater.
+- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the Bento grid control panel interface rendering real-time target bounding boxes, telemetry metrics, 8-expression selection, camera tuning, weather location settings, live display brightness slider, and OTA firmware updater.
 - **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics, candidate arrays, active expression IDs, emotional valence/arousal, and memory statistics.
+- **Display Brightness (`POST http://<ESP32_IP>/set_brightness`):** Adjusts OLED panel brightness ($0 - 255$) in real-time with automatic NVS storage.
+- **Weather Configuration (`POST /set_weather`, `GET /weather_info`, `POST /trigger_weather`):** Manages Open-Meteo geolocation, queries current observation, and triggers 6-second OLED preview.
 - **Camera Tuning Endpoint (`POST http://<ESP32_IP>/camera_control`):** Dynamically adjusts brightness, contrast, saturation, flip/mirror orientation, and auto-exposure.
 - **OTA Firmware Flash (`POST http://<ESP32_IP>/update`):** Wireless firmware update endpoint receiving binary `.bin` payloads.
 - **Expression Override Endpoint (`POST http://<ESP32_IP>/set_expression`):** Sets manual expression override (`0..7`) or restores the automatic biological mood engine (`"auto"`).
 - **Wi-Fi Scanner (`GET http://<ESP32_IP>/scan_wifi`):** Scans and returns nearby Wi-Fi SSIDs, RSSI levels, and encryption modes.
-- **System Information (`GET http://<ESP32_IP>/system_info`):** Reports hardware diagnostics, chip model, heap/PSRAM memory, uptime, and CPU frequency.
+- **System Information (`GET http://<ESP32_IP>/system_info`):** Reports hardware diagnostics, chip model, heap/PSRAM memory, uptime, brightness, and CPU frequency.
 - **MJPEG Video Stream (`GET http://<ESP32_IP>:81/stream`):** Dedicated Port 81 asynchronous stream handler.
 - **Network Configuration (`GET /get_wifi`, `POST /save_wifi`, `POST /switch_mode`):** Manage Wi-Fi credentials stored in ESP32 NVS (`Preferences`).
 
@@ -227,6 +250,7 @@ KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspecti
 ### Software Requirements
 1. **Board Package:** `esp32` by Espressif Systems (v2.0.11 or later)
 2. **Library Dependency:** [LovyanGFX](https://github.com/lovyan03/LovyanGFX) (Fast graphics driver)
+3. **Build Toolchain:** `arduino-cli` (v0.35.0+) or ESP-IDF (v5.0+)
 
 ### Arduino IDE Settings
 - **Board:** `XIAO_ESP32S3`
@@ -235,8 +259,21 @@ KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspecti
 - **CPU Frequency:** `240MHz (WiFi/BT)`
 - **Partition Scheme:** `Huge APP (3MB No OTA/1MB SPIFFS)`
 
+### Command-Line Compilation & Testing
+```bash
+# Build firmware with Arduino CLI
+./scripts/build.sh
+
+# Flash firmware and launch serial monitor
+./scripts/flash.sh /dev/ttyACM0
+
+# Execute Python kinematics mathematical validation
+python3 scripts/validate_kinematics.py
+```
+
 ---
 
 ## License
 
 MIT License. Designed and developed under an open-source embedded software engineering paradigm.
+

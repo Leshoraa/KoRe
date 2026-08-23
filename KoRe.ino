@@ -16,6 +16,7 @@
 #include "src/core/display_engine.h"
 #include "src/net/wifi_manager.h"
 #include "src/net/http_server.h"
+#include "src/net/weather_client.h"
 #include <Arduino.h>
 
 void setup() {
@@ -52,6 +53,9 @@ void setup() {
 
     /* Initialize Wi-Fi subsystem and NVS configuration */
     initWiFiAndNetwork();
+
+    /* Initialize background Open-Meteo weather client */
+    initWeatherClient();
 
     /* Start HTTP web dashboard (Port 80) and MJPEG video stream (Port 81) */
     startWebServer();

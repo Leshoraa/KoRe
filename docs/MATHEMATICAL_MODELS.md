@@ -40,6 +40,14 @@ $$d\mathbf{e}_t = -\mathbf{\Gamma} (\mathbf{e}_t - \mathbf{e}_{\text{baseline}})
 - $\mathbf{\Sigma} d\mathbf{W}_t$: Microscopic stochastic Langevin drift representing spontaneous biological mood drift.
 - $\mathbf{K}_{\text{stimulus}} \mathbf{u}_t$: Transient response driven by visual tracking confidence and proximity.
 
+**Discrete Euler-Maruyama Numerical Update:**
+
+$$V_{k+1} = V_k - \frac{V_k - V_0}{\tau_v}\Delta t + \sigma_v \sqrt{\Delta t} \cdot \xi_V + K_v u_k$$
+
+$$A_{k+1} = A_k - \frac{A_k - A_0}{\tau_a}\Delta t + \sigma_a \sqrt{\Delta t} \cdot \xi_A + K_a u_k$$
+
+Where $\xi_V, \xi_A \sim \mathcal{N}(0, 1)$ are standard normal Gaussian perturbations.
+
 ---
 
 ## 4. Discrete 2D Kalman Filter with Adaptive Measurement Noise
@@ -56,3 +64,12 @@ $$R_k = R_0 \cdot \left(1.0 + \frac{\alpha}{\text{confidence}_k + \epsilon}\righ
 - **Joseph-Stabilized Covariance Update:**
 
 $$\mathbf{P}_k = (\mathbf{I} - \mathbf{K}_k\mathbf{H})\mathbf{P}_k^-(\mathbf{I} - \mathbf{K}_k\mathbf{H})^T + \mathbf{K}_k\mathbf{R}_k\mathbf{K}_k^T$$
+
+---
+
+## 5. Numerical Benchmarks and Verification Metrics
+
+- **Normalized Root Mean Square Error:** $\text{NRMSE} \le 0.05$ against empirical Flash & Hogan trajectory data.
+- **Coefficient of Determination:** $R^2 \ge 0.95$ across the normalized temporal domain $\tau \in [0, 1]$.
+- **Continuous Lyapunov Stability:** All dynamic matrix eigenvalues satisfy $\text{Re}(\lambda_i) < 0$.
+- **Automated Host Test Suite:** Validated via 4 C++ unit test modules (`test_affective_langevin`, `test_kalman_convergence`, `test_kinematics_feedforward`, `test_minimum_jerk`) and Python numerical validator `scripts/validate_kinematics.py`.

@@ -61,7 +61,7 @@ const char* getExpressionName(Expression expr) {
         case EXPR_SMIRK:    return "SMIRK";
         case EXPR_SHOCK:    return "SHOCK";
         case EXPR_OVERLOAD: return "OVERLOAD";
-        case EXPR_SEDIH:    return "SEDIH";
+        case EXPR_SAD:      return "SAD";
         case EXPR_DEADPAN:  return "DEADPAN";
         default:            return "IDLE";
     }
@@ -178,7 +178,7 @@ void updateBiologicalMoodEngine(void) {
     if (!is_detected && s_lastTargetDetectedState && s_target_presence_ema < 0.15f) {
         s_lastTargetDetectedState = false;
         uint32_t roll = esp_random() % 100;
-        Expression reactExpr = (roll < 65) ? EXPR_IDLE : ((roll < 80) ? EXPR_DEADPAN : ((roll < 90) ? EXPR_SEDIH : EXPR_ANGRY));
+        Expression reactExpr = (roll < 65) ? EXPR_IDLE : ((roll < 80) ? EXPR_DEADPAN : ((roll < 90) ? EXPR_SAD : EXPR_ANGRY));
         setNextExpression(reactExpr);
         s_mood_lock_until = now + (esp_random() % 2500 + 4500);
         s_nextMoodShiftTime = s_mood_lock_until + (esp_random() % 4000 + 4000);
@@ -200,7 +200,7 @@ void updateBiologicalMoodEngine(void) {
                 else if (roll < 82) nextMood = EXPR_SMIRK;
                 else if (roll < 90) nextMood = EXPR_DEADPAN;
                 else if (roll < 95) nextMood = EXPR_JOY;
-                else if (roll < 98) nextMood = EXPR_SEDIH;
+                else if (roll < 98) nextMood = EXPR_SAD;
                 else nextMood = EXPR_OVERLOAD;
                 break;
 
@@ -208,7 +208,7 @@ void updateBiologicalMoodEngine(void) {
                 if (roll < 65) nextMood = EXPR_IDLE;
                 else if (roll < 80) nextMood = EXPR_SMIRK;
                 else if (roll < 90) nextMood = EXPR_DEADPAN;
-                else nextMood = EXPR_SEDIH;
+                else nextMood = EXPR_SAD;
                 break;
 
             case EXPR_JOY:
@@ -234,10 +234,10 @@ void updateBiologicalMoodEngine(void) {
 
             case EXPR_OVERLOAD:
                 if (roll < 75) nextMood = EXPR_IDLE;
-                else nextMood = EXPR_SEDIH;
+                else nextMood = EXPR_SAD;
                 break;
 
-            case EXPR_SEDIH:
+            case EXPR_SAD:
                 if (roll < 65) nextMood = EXPR_IDLE;
                 else if (roll < 80) nextMood = EXPR_DEADPAN;
                 else if (roll < 92) nextMood = EXPR_SMIRK;

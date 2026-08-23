@@ -166,10 +166,13 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     }
 
     .tab-btn .tab-icon {
-      width: 15px;
-      height: 15px;
+      width: 16px;
+      height: 16px;
       stroke: currentColor;
       transition: transform 0.2s ease;
+      overflow: visible;
+      flex-shrink: 0;
+      display: inline-block;
     }
 
     .tab-btn:hover {
@@ -234,8 +237,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     .bento-col {
       display: flex;
       flex-direction: column;
-      gap: 14px;
-      justify-content: space-between;
+      gap: 12px;
+      height: 100%;
     }
 
     .bento-card {
@@ -246,6 +249,13 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       box-shadow: var(--shadow-card);
       display: flex;
       flex-direction: column;
+    }
+
+    .bento-col > .bento-card:last-child {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
     }
 
     .bento-card-header {
@@ -447,7 +457,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     .btn-expr[data-expr="3"]:hover, .btn-expr[data-expr="3"].active { border-radius: 16px 8px 16px 14px; } /* SMIRK: Asymmetric Wink */
     .btn-expr[data-expr="4"]:hover, .btn-expr[data-expr="4"].active { border-radius: 18px; } /* SHOCK: Bloom / Oval */
     .btn-expr[data-expr="5"]:hover, .btn-expr[data-expr="5"].active { border-radius: 8px 16px 8px 16px; } /* OVERLOAD: Gem / Diamond */
-    .btn-expr[data-expr="6"]:hover, .btn-expr[data-expr="6"].active { border-radius: 16px 16px 8px 8px; } /* SEDIH: Arch / Droplet */
+    .btn-expr[data-expr="6"]:hover, .btn-expr[data-expr="6"].active { border-radius: 16px 16px 8px 8px; } /* SAD: Arch / Droplet */
     .btn-expr[data-expr="7"]:hover, .btn-expr[data-expr="7"].active { border-radius: 8px; } /* DEADPAN: Flat Squircle */
 
     .btn-expr-auto {
@@ -541,22 +551,23 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       letter-spacing: 0.02em;
     }
 
-    input[type="text"], input[type="password"] {
+    input[type="text"], input[type="password"], input[type="number"] {
       width: 100%;
       padding: 10px 14px;
       font-family: inherit;
       font-size: 13px;
-      border: none; /* Strokeless */
+      border: 1px solid var(--border-card);
       border-radius: var(--radius-control);
       background-color: var(--bg-card);
       color: var(--text-main);
       outline: none;
-      transition: box-shadow 0.2s ease, background-color 0.2s ease;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
       box-shadow: none;
     }
 
-    input[type="text"]:focus, input[type="password"]:focus {
-      box-shadow: 0 0 0 2px var(--accent-dark);
+    input[type="text"]:focus, input[type="password"]:focus, input[type="number"]:focus {
+      border-color: var(--accent-dark);
+      box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.15);
     }
 
     input::placeholder {
@@ -731,15 +742,57 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     /* Responsive Breakpoints */
     @media (max-width: 768px) {
       body {
-        padding: 14px 10px;
+        padding: 10px 8px;
       }
       .app-wrapper {
-        gap: 12px;
+        gap: 10px;
+      }
+      .top-controls {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+      }
+      .tab-segmented-control {
+        width: 100%;
+        display: flex;
+        justify-content: space-between;
+        padding: 3px;
+        gap: 2px;
+      }
+      .tab-btn {
+        flex: 1;
+        min-width: 0;
+        padding: 7px 6px 9px;
+        font-size: 11.5px;
+        gap: 5px;
+        justify-content: center;
+      }
+      .tab-btn span {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .mode-pill {
+        width: 100%;
+        text-align: center;
+        padding: 5px 10px;
+        font-size: 11px;
       }
       .bento-grid {
-        grid-template-columns: 1fr;
+        display: flex;
+        flex-direction: column;
         gap: 12px;
       }
+      .bento-col {
+        display: contents;
+      }
+      #card-camera { order: 1; }
+      #card-brightness { order: 2; }
+      #card-expression { order: 3; }
+      #card-telemetry { order: 4; }
+      #card-imagetuning { order: 5; }
+      #card-orientation { order: 6; }
+
       .form-grid {
         grid-template-columns: 1fr;
         gap: 10px;
@@ -761,8 +814,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       <div class="tab-segmented-control">
         <button type="button" class="tab-btn active" data-target="tab-vision">
           <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-            <circle cx="12" cy="13" r="4"></circle>
+            <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"></path>
+            <circle cx="12" cy="13" r="3"></circle>
           </svg>
           <span>Vision & Rig</span>
         </button>
@@ -777,10 +830,9 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         </button>
         <button type="button" class="tab-btn" data-target="tab-device">
           <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path>
           </svg>
-          <span>Device & OTA</span>
+          <span>Weather & Location</span>
         </button>
       </div>
       <div id="mode-badge" class="mode-pill">STA Online</div>
@@ -790,29 +842,70 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div id="tab-vision" class="tab-pane active">
       <div class="bento-grid">
         
-        <!-- Left Bento Card: Camera Viewport -->
-        <section class="bento-card">
-          <div class="bento-card-header">
-            <h2 class="card-title">Camera Feed</h2>
-          </div>
-          <div class="stream-viewport">
-            <div id="stream-skeleton" class="skeleton-loader">
-              <div class="skeleton-grid"></div>
-              <span>CONNECTING SENSOR FEED...</span>
+        <!-- Left Bento Column: Camera Feed & Image Tuning -->
+        <div class="bento-col">
+          
+          <!-- Bento Card 1: Camera Viewport & Capture -->
+          <section class="bento-card" id="card-camera">
+            <div class="bento-card-header">
+              <h2 class="card-title">Camera</h2>
             </div>
-            <img id="stream-img" src="" alt="KoRe Camera Feed" crossorigin="anonymous">
-            <canvas id="hud-canvas"></canvas>
-          </div>
-        </section>
+            <div class="stream-viewport">
+              <div id="stream-skeleton" class="skeleton-loader">
+                <div class="skeleton-grid"></div>
+                <span>CONNECTING SENSOR FEED...</span>
+              </div>
+              <img id="stream-img" src="" alt="KoRe Camera Feed" crossorigin="anonymous">
+              <canvas id="hud-canvas"></canvas>
+            </div>
 
-        <!-- Right Bento Column: AI Metrics & Expression Rig -->
+            <!-- Capture Button (Below Camera Viewport) -->
+            <div style="margin-top:10px;">
+              <button type="button" id="btn-capture-frame" class="btn-cam-param" style="width:100%;padding:8px 12px;font-size:12px;font-weight:600;border-radius:var(--radius-control);display:flex;align-items:center;justify-content:center;gap:6px;" title="Capture Raw Frame">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"></path><circle cx="12" cy="13" r="3"></circle></svg>
+                <span id="btn-capture-text">Capture Photo</span>
+              </button>
+            </div>
+          </section>
+
+          <!-- Bento Card 2: Image Tuning -->
+          <section class="bento-card" id="card-imagetuning">
+            <div class="bento-card-header">
+              <h2 class="card-title">Image Tuning</h2>
+            </div>
+            <div class="form-section" style="padding:10px 12px;margin-bottom:0;">
+              <div class="form-group" style="margin-bottom:8px;">
+                <label>Brightness</label>
+                <div style="display:flex;gap:4px;">
+                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="-2">-2</button>
+                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="-1">-1</button>
+                  <button type="button" class="btn-cam-param active" data-param="brightness" data-val="0">0</button>
+                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="1">+1</button>
+                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="2">+2</button>
+                </div>
+              </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label>Contrast</label>
+                <div style="display:flex;gap:4px;">
+                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="-2">-2</button>
+                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="-1">-1</button>
+                  <button type="button" class="btn-cam-param active" data-param="contrast" data-val="0">0</button>
+                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="1">+1</button>
+                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="2">+2</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+
+        <!-- Right Bento Column: AI Metrics, Expression Rig, OLED Brightness, Orientation & Exposure -->
         <div class="bento-col">
           
           <!-- Bento Card 1: AI Telemetry -->
-          <section class="bento-card">
+          <section class="bento-card" id="card-telemetry">
             <div class="bento-card-header">
-              <h2 class="card-title">AI Telemetry</h2>
-              <span class="card-badge">Dual-Core RTOS</span>
+              <h2 class="card-title">Telemetry</h2>
             </div>
             
             <div class="metrics-grid">
@@ -841,9 +934,9 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
           </section>
 
           <!-- Bento Card 2: Facial Expression Rig -->
-          <section class="bento-card">
+          <section class="bento-card" id="card-expression">
             <div class="bento-card-header">
-              <h2 class="card-title">Facial Expression Rig</h2>
+              <h2 class="card-title">Expression</h2>
             </div>
 
             <div class="expr-grid">
@@ -853,11 +946,55 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
               <button type="button" class="btn-expr" data-expr="3">SMIRK</button>
               <button type="button" class="btn-expr" data-expr="4">SHOCK</button>
               <button type="button" class="btn-expr" data-expr="5">OVERLOAD</button>
-              <button type="button" class="btn-expr" data-expr="6">SEDIH</button>
+              <button type="button" class="btn-expr" data-expr="6">SAD</button>
               <button type="button" class="btn-expr" data-expr="7">DEADPAN</button>
             </div>
 
             <button type="button" id="btn-expr-auto" class="btn-expr-auto active">Default (Auto Mood)</button>
+          </section>
+
+          <!-- Bento Card 3: OLED Display & Live Brightness Rig -->
+          <section class="bento-card" id="card-brightness">
+            <div class="bento-card-header">
+              <h2 class="card-title">OLED Brightness</h2>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <span class="card-badge" id="bright-badge">128 (50%)</span>
+                <button type="button" id="btn-reset-brightness" class="btn-cam-param" style="padding:2px 8px;font-size:10px;border-radius:10px;height:22px;line-height:1;" title="Reset to Default (50%)">↺ Reset</button>
+              </div>
+            </div>
+            <div class="form-section" style="padding:10px 12px;">
+              <div class="form-group" style="margin-bottom:6px;">
+                <input type="range" id="oled-brightness-slider" min="0" max="255" value="128" style="width:100%;cursor:pointer;accent-color:var(--accent-dark);">
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">
+                <span>0% (Off)</span>
+                <span>50% (Default)</span>
+                <span>100% (Max)</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- Bento Card 4: Orientation & Exposure Rig -->
+          <section class="bento-card" id="card-orientation">
+            <div class="bento-card-header">
+              <h2 class="card-title">Orientation & Exposure</h2>
+            </div>
+            <div class="form-section" style="padding:10px 12px;">
+              <div class="form-group" style="margin-bottom:8px;">
+                <label>Hardware Flip</label>
+                <div style="display:flex;gap:6px;">
+                  <button type="button" id="btn-vflip" class="btn-cam-toggle active" data-param="vflip" data-state="1">V-Flip</button>
+                  <button type="button" id="btn-hmirror" class="btn-cam-toggle active" data-param="hmirror" data-state="1">H-Mirror</button>
+                </div>
+              </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label>Auto Exposure (AEC)</label>
+                <div style="display:flex;gap:6px;">
+                  <button type="button" id="btn-aec" class="btn-cam-toggle active" data-param="aec" data-state="1">AEC Auto</button>
+                  <button type="button" id="btn-agc" class="btn-cam-toggle active" data-param="agc" data-state="1">AGC Gain</button>
+                </div>
+              </div>
+            </div>
           </section>
 
         </div>
@@ -871,7 +1008,6 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         <section class="bento-card">
           <div class="bento-card-header">
             <h2 class="card-title">Network Configuration</h2>
-            <span class="card-badge" id="net-badge-info">Local NVS</span>
           </div>
 
           <form id="wifi-form">
@@ -882,11 +1018,11 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                 <div class="form-section-title">Wi-Fi Client (STA Mode)</div>
                 <div class="form-group">
                   <label for="sta_ssid">SSID</label>
-                  <input type="text" id="sta_ssid" name="sta_ssid" placeholder="Nama WiFi Router" required>
+                  <input type="text" id="sta_ssid" name="sta_ssid" placeholder="Wi-Fi Router SSID" required>
                 </div>
                 <div class="form-group">
                   <label for="sta_pass">Password</label>
-                  <input type="password" id="sta_pass" name="sta_pass" placeholder="Password WiFi">
+                  <input type="password" id="sta_pass" name="sta_pass" placeholder="Wi-Fi Password">
                 </div>
               </div>
 
@@ -895,11 +1031,11 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                 <div class="form-section-title">Access Point (AP Mode)</div>
                 <div class="form-group">
                   <label for="ap_ssid">SSID</label>
-                  <input type="text" id="ap_ssid" name="ap_ssid" placeholder="SSID KoRe AP" required>
+                  <input type="text" id="ap_ssid" name="ap_ssid" placeholder="KoRe AP SSID" required>
                 </div>
                 <div class="form-group">
                   <label for="ap_pass">Password</label>
-                  <input type="password" id="ap_pass" name="ap_pass" placeholder="Minimal 8 karakter atau kosong">
+                  <input type="password" id="ap_pass" name="ap_pass" placeholder="Min. 8 characters or empty">
                 </div>
               </div>
 
@@ -907,7 +1043,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
             <div class="form-actions-row">
               <button type="button" id="btn-switch-mode" class="btn-switch-mode" style="display:none;"></button>
-              <button type="submit" id="btn-save" class="btn-submit-main">Simpan & Sambungkan →</button>
+              <button type="submit" id="btn-save" class="btn-submit-main">Save & Connect →</button>
             </div>
           </form>
 
@@ -920,75 +1056,123 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <div id="tab-device" class="tab-pane">
       <div class="network-container">
         
-        <!-- Live Camera Controls Card -->
+        <!-- Weather Configuration Card (Open-Meteo) -->
         <section class="bento-card" style="margin-bottom:14px;">
           <div class="bento-card-header">
-            <h2 class="card-title">Camera Sensor Settings</h2>
-            <span class="card-badge">Live DVP Tuning</span>
+            <h2 class="card-title">Weather & Location</h2>
           </div>
+
+          <!-- Live City Search Section (Full Width & Outlined) -->
+          <div style="margin-bottom:14px;">
+            <div class="form-group" style="position:relative;margin-bottom:0;">
+              <label for="weather-search-input" style="font-size:11px;font-weight:700;color:var(--text-main);margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <span>Search City</span>
+              </label>
+              <div style="position:relative;">
+                <input type="text" id="weather-search-input" placeholder="Type city or location name... (e.g. London, Tokyo, New York, Paris, Jakarta)" style="width:100%;padding:12px 14px 12px 38px;font-size:13px;border:1.5px solid var(--border-card);border-radius:var(--radius-control);background:var(--bg-card);color:var(--text-main);" autocomplete="off">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--text-muted);pointer-events:none;"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+              </div>
+              <div id="weather-search-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--bg-card);border:1px solid var(--border-card);border-radius:var(--radius-control);z-index:99;max-height:200px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,0.18);margin-top:4px;"></div>
+            </div>
+          </div>
+
           <div class="form-grid">
             <div class="form-section">
-              <div class="form-section-title">Image Tuning</div>
+              <div class="form-section-title">Preset / Manual Selection</div>
               <div class="form-group">
-                <label>Brightness</label>
-                <div style="display:flex;gap:6px;">
-                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="-2">-2</button>
-                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="-1">-1</button>
-                  <button type="button" class="btn-cam-param active" data-param="brightness" data-val="0">0</button>
-                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="1">+1</button>
-                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="2">+2</button>
-                </div>
+                <label for="weather-preset-select">City Preset List</label>
+                <select id="weather-preset-select" style="width:100%;padding:10px 12px;font-family:inherit;font-size:12px;border:1px solid var(--border-card);border-radius:var(--radius-control);background:var(--bg-card);color:var(--text-main);">
+                  <option value="custom">-- Select From Preset / Search Result --</option>
+                  <optgroup label="Indonesia - Java">
+                    <option value="jakarta" selected>Jakarta (-6.2088, 106.8456)</option>
+                    <option value="bandung">Bandung (-6.9175, 107.6191)</option>
+                    <option value="surabaya">Surabaya (-7.2575, 112.7521)</option>
+                    <option value="semarang">Semarang (-6.9667, 110.4167)</option>
+                    <option value="yogyakarta">Yogyakarta (-7.7956, 110.3695)</option>
+                    <option value="solo">Surakarta / Solo (-7.5666, 110.8167)</option>
+                    <option value="malang">Malang (-7.9797, 112.6304)</option>
+                    <option value="bogor">Bogor (-6.5950, 106.8166)</option>
+                    <option value="depok">Depok (-6.4025, 106.7942)</option>
+                    <option value="tangerang">Tangerang (-6.1783, 106.6319)</option>
+                    <option value="bekasi">Bekasi (-6.2383, 106.9756)</option>
+                  </optgroup>
+                  <optgroup label="Indonesia - Sumatra">
+                    <option value="medan">Medan (3.5952, 98.6722)</option>
+                    <option value="palembang">Palembang (-2.9761, 104.7754)</option>
+                    <option value="padang">Padang (-0.9471, 100.4172)</option>
+                    <option value="pekanbaru">Pekanbaru (0.5071, 101.4478)</option>
+                    <option value="lampung">Bandar Lampung (-5.4500, 105.2667)</option>
+                    <option value="batam">Batam (1.1301, 104.0529)</option>
+                    <option value="aceh">Banda Aceh (5.5483, 95.3238)</option>
+                  </optgroup>
+                  <optgroup label="Indonesia - Bali & Nusa Tenggara">
+                    <option value="bali">Denpasar / Bali (-8.6705, 115.2126)</option>
+                    <option value="mataram">Mataram / Lombok (-8.5833, 116.1167)</option>
+                    <option value="kupang">Kupang (-10.1772, 123.6070)</option>
+                  </optgroup>
+                  <optgroup label="Indonesia - Kalimantan & IKN">
+                    <option value="ikn">IKN Nusantara (-0.9744, 116.7027)</option>
+                    <option value="balikpapan">Balikpapan (-1.2379, 116.8289)</option>
+                    <option value="samarinda">Samarinda (-0.5022, 117.1536)</option>
+                    <option value="banjarmasin">Banjarmasin (-3.3194, 114.5908)</option>
+                    <option value="pontianak">Pontianak (-0.0263, 109.3425)</option>
+                  </optgroup>
+                  <optgroup label="Indonesia - Sulawesi & East">
+                    <option value="makassar">Makassar (-5.1477, 119.4327)</option>
+                    <option value="manado">Manado (1.4748, 124.8428)</option>
+                    <option value="jayapura">Jayapura (-2.5337, 140.7181)</option>
+                    <option value="ambon">Ambon (-3.6954, 128.1814)</option>
+                  </optgroup>
+                  <optgroup label="International">
+                    <option value="singapore">Singapore (1.3521, 103.8198)</option>
+                    <option value="kualalumpur">Kuala Lumpur (3.1390, 101.6869)</option>
+                    <option value="tokyo">Tokyo (35.6762, 139.6503)</option>
+                    <option value="seoul">Seoul (37.5665, 126.9780)</option>
+                    <option value="london">London (51.5074, -0.1278)</option>
+                    <option value="newyork">New York (40.7128, -74.0060)</option>
+                    <option value="paris">Paris (48.8566, 2.3522)</option>
+                    <option value="dubai">Dubai (25.2048, 55.2708)</option>
+                    <option value="sydney">Sydney (-33.8688, 151.2093)</option>
+                  </optgroup>
+                </select>
               </div>
               <div class="form-group">
-                <label>Contrast</label>
-                <div style="display:flex;gap:6px;">
-                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="-2">-2</button>
-                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="-1">-1</button>
-                  <button type="button" class="btn-cam-param active" data-param="contrast" data-val="0">0</button>
-                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="1">+1</button>
-                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="2">+2</button>
-                </div>
+                <label for="weather-city-input">OLED Display Label</label>
+                <input type="text" id="weather-city-input" placeholder="e.g. Jakarta" value="Jakarta" required maxlength="20">
               </div>
             </div>
 
             <div class="form-section">
-              <div class="form-section-title">Orientation & Exposure</div>
-              <div class="form-group">
-                <label>Hardware Flip</label>
-                <div style="display:flex;gap:6px;">
-                  <button type="button" id="btn-vflip" class="btn-cam-toggle active" data-param="vflip" data-state="1">V-Flip</button>
-                  <button type="button" id="btn-hmirror" class="btn-cam-toggle active" data-param="hmirror" data-state="1">H-Mirror</button>
-                </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <div class="form-section-title" style="margin-bottom:0;">Geographical Coordinates</div>
+                <button type="button" id="btn-gps-location" class="btn-cam-param" style="flex:none;width:auto;padding:4px 10px;font-size:11px;border-radius:12px;height:26px;display:flex;align-items:center;gap:5px;" title="Detect GPS Coordinates">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+                  <span>My GPS</span>
+                </button>
               </div>
               <div class="form-group">
-                <label>Auto Exposure (AEC)</label>
-                <div style="display:flex;gap:6px;">
-                  <button type="button" id="btn-aec" class="btn-cam-toggle active" data-param="aec" data-state="1">AEC Auto</button>
-                  <button type="button" id="btn-agc" class="btn-cam-toggle active" data-param="agc" data-state="1">AGC Gain</button>
-                </div>
+                <label for="weather-lat-input">Latitude</label>
+                <input type="number" step="0.0001" id="weather-lat-input" placeholder="-6.2088" value="-6.2088" required>
+              </div>
+              <div class="form-group">
+                <label for="weather-lon-input">Longitude</label>
+                <input type="number" step="0.0001" id="weather-lon-input" placeholder="106.8456" value="106.8456" required>
               </div>
             </div>
           </div>
-        </section>
 
-        <!-- Web OTA Firmware Update Card -->
-        <section class="bento-card">
-          <div class="bento-card-header">
-            <h2 class="card-title">OTA Firmware Flash</h2>
-            <span class="card-badge">ESP32-S3 Flash</span>
+          <div style="margin-top:12px;display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="weather-enable-check" checked style="accent-color:var(--accent-dark);width:16px;height:16px;cursor:pointer;">
+            <label for="weather-enable-check" style="font-size:12px;font-weight:600;cursor:pointer;margin:0;">Show Random Weather Popup (6s) during Idle Standby</label>
           </div>
-          <div class="form-section" style="margin-bottom:12px;">
-            <p style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px;">Pilih file binary firmware (<code>KoRe.ino.bin</code>) untuk memperbarui firmware perangkat langsung melalui Web UI.</p>
-            <input type="file" id="ota-file" accept=".bin" style="width:100%;padding:8px 0;font-size:12px;">
-            <div id="ota-progress-box" style="display:none;margin-top:10px;">
-              <div style="width:100%;height:8px;background:var(--bg-card);border-radius:4px;overflow:hidden;">
-                <div id="ota-progress-bar" style="width:0%;height:100%;background:var(--accent-dark);transition:width 0.2s;"></div>
-              </div>
-              <span id="ota-progress-text" style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px;">0%</span>
-            </div>
+
+          <div class="form-actions-row" style="margin-top:14px;display:flex;gap:8px;">
+            <button type="button" id="btn-preview-weather" class="btn-switch-mode" style="flex:1;">Preview OLED (6s)</button>
+            <button type="button" id="btn-save-weather" class="btn-submit-main" style="flex:1.4;">Save & Fetch Weather →</button>
           </div>
-          <button type="button" id="btn-ota-flash" class="btn-submit-main" style="width:100%;">Mulai Flash Firmware OTA →</button>
-          <div id="ota-status" style="display:none;margin-top:10px;padding:10px;font-size:12px;border-radius:var(--radius-control);background:var(--bg-surface);"></div>
+
+          <div id="weather-live-info" style="margin-top:10px;padding:10px 12px;font-size:11.5px;background:var(--bg-surface);border-radius:var(--radius-control);color:var(--text-muted);display:none;"></div>
         </section>
 
       </div>
@@ -997,12 +1181,12 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     <!-- Footer Disclosures -->
     <footer class="app-footer">
       <p>KoRe Biomechanical Engine &bull; On-Device Local Processing</p>
-      <p style="margin-top:4px;"><a id="toggle-privacy">Kebijakan Privasi</a> &bull; <a id="toggle-terms">Ketentuan Layanan</a></p>
+      <p style="margin-top:4px;"><a id="toggle-privacy">Privacy Policy</a> &bull; <a id="toggle-terms">Terms of Service</a></p>
       <div id="legal-content" class="legal-modal">
-        <strong>Ketentuan Layanan & Kebijakan Privasi:</strong><br>
-        1. Pemrosesan Data: Seluruh inferensi visi komputer, klasifikasi YCbCr, dan dinamika okulomotor dieksekusi secara lokal pada memori internal ESP32-S3 (SRAM).<br>
-        2. Privasi: Tidak ada data gambar, video feed, atau kredensial Wi-Fi yang dikirim ke server pihak ketiga atau cloud eksternal.<br>
-        3. Kredensial: Kredensial Access Point dan STA disimpan secara lokal di NVS Flash perangkat.
+        <strong>Terms of Service & Privacy Policy:</strong><br>
+        1. Data Processing: All computer vision inference, YCbCr classification, and oculomotor dynamics are executed locally in ESP32-S3 internal SRAM.<br>
+        2. Privacy: No camera image data, video stream frames, or Wi-Fi credentials are sent to external third-party cloud servers.<br>
+        3. Credentials: Access Point and STA credentials are stored securely in local device NVS Flash.
       </div>
     </footer>
 
@@ -1464,8 +1648,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       .then(data => {
         if (data.sta_ssid) document.getElementById('sta_ssid').value = data.sta_ssid;
         if (data.ap_ssid) document.getElementById('ap_ssid').value = data.ap_ssid;
-        document.getElementById('sta_pass').placeholder = 'Tersimpan (kosongkan jika tidak diubah)';
-        document.getElementById('ap_pass').placeholder = 'Tersimpan (kosongkan jika tidak diubah)';
+        document.getElementById('sta_pass').placeholder = 'Saved (leave blank to keep unchanged)';
+        document.getElementById('ap_pass').placeholder = 'Saved (leave blank to keep unchanged)';
 
         const modeBadge = document.getElementById('mode-badge');
         const netBadgeInfo = document.getElementById('net-badge-info');
@@ -1473,13 +1657,13 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         
         if (data.is_ap) {
           modeBadge.innerText = 'AP Mode';
-          netBadgeInfo.innerText = 'Access Point Active';
-          btnSwitch.innerText = 'Beralih ke STA Mode';
+          if (netBadgeInfo) netBadgeInfo.innerText = 'Access Point Active';
+          btnSwitch.innerText = 'Switch to STA Mode';
           btnSwitch.dataset.targetMode = 'STA';
         } else {
           modeBadge.innerText = 'STA Online';
-          netBadgeInfo.innerText = (data.sta_ssid || 'Local Wi-Fi');
-          btnSwitch.innerText = 'Beralih ke AP Mode';
+          if (netBadgeInfo) netBadgeInfo.innerText = (data.sta_ssid || 'Local Wi-Fi');
+          btnSwitch.innerText = 'Switch to AP Mode';
           btnSwitch.dataset.targetMode = 'AP';
         }
         btnSwitch.style.display = 'block';
@@ -1498,8 +1682,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       const unifiedUrl = 'http://192.168.18.16';
 
       if (targetMode === 'AP') {
-        btn.innerText = 'Beralih ke AP Mode...';
-        status.innerHTML = 'ESP32 sedang reboot ke AP Mode.<br>Hubungkan Wi-Fi ke <b>KoRe</b> lalu buka: <a href="' + unifiedUrl + '" style="color:#111827;font-weight:700;">' + unifiedUrl + '</a><br><small>Pengalihan otomatis dalam 4 detik...</small>';
+        btn.innerText = 'Switching to AP Mode...';
+        status.innerHTML = 'ESP32 is rebooting into AP Mode.<br>Connect Wi-Fi to <b>KoRe</b> then visit: <a href="' + unifiedUrl + '" style="color:#111827;font-weight:700;">' + unifiedUrl + '</a><br><small>Redirecting in 4 seconds...</small>';
 
         fetch('/switch_mode', {
           method: 'POST',
@@ -1510,8 +1694,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         });
       } else {
         const staSsid = document.getElementById('sta_ssid').value || 'WiFi Router';
-        btn.innerText = 'Beralih ke STA Mode...';
-        status.innerHTML = 'ESP32 sedang reboot dan menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL: <a href="' + unifiedUrl + '" style="color:#111827;font-weight:700;">' + unifiedUrl + '</a><br><small>Pengalihan otomatis dalam 6 detik...</small>';
+        btn.innerText = 'Switching to STA Mode...';
+        status.innerHTML = 'ESP32 is rebooting and connecting to <b>' + staSsid + '</b>.<br>Visit URL: <a href="' + unifiedUrl + '" style="color:#111827;font-weight:700;">' + unifiedUrl + '</a><br><small>Redirecting in 6 seconds...</small>';
 
         fetch('/switch_mode', {
           method: 'POST',
@@ -1532,19 +1716,19 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       if (apPass.length > 0 && apPass.length < 8) {
         status.style.display = 'block';
         status.style.color = '#ef4444';
-        status.innerText = 'Error: Password AP harus dikosongkan (Open AP) atau minimal 8 karakter.';
+        status.innerText = 'Error: AP password must be empty (Open AP) or at least 8 characters.';
         return;
       }
 
       status.style.color = 'var(--text-main)';
       btn.disabled = true;
       document.getElementById('btn-switch-mode').disabled = true;
-      btn.innerHTML = '<span>Menyimpan...</span>';
+      btn.innerHTML = '<span>Saving...</span>';
       status.style.display = 'block';
 
       const staSsid = document.getElementById('sta_ssid').value || 'WiFi Router';
       const unifiedUrl = 'http://192.168.18.16';
-      status.innerHTML = 'Konfigurasi disimpan. ESP32 reboot menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL: <a href="' + unifiedUrl + '" style="color:#111827;font-weight:700;">' + unifiedUrl + '</a><br><small>Pengalihan otomatis dalam 6 detik...</small>';
+      status.innerHTML = 'Configuration saved. ESP32 is rebooting and connecting to <b>' + staSsid + '</b>.<br>Visit URL: <a href="' + unifiedUrl + '" style="color:#111827;font-weight:700;">' + unifiedUrl + '</a><br><small>Redirecting in 6 seconds...</small>';
 
       const body = {
         sta_ssid: document.getElementById('sta_ssid').value,
@@ -1604,61 +1788,344 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       });
     });
 
-    /* Web OTA Firmware Upload */
-    document.getElementById('btn-ota-flash').addEventListener('click', function() {
-      const fileInput = document.getElementById('ota-file');
-      const status = document.getElementById('ota-status');
-      const progressBox = document.getElementById('ota-progress-box');
-      const progressBar = document.getElementById('ota-progress-bar');
-      const progressText = document.getElementById('ota-progress-text');
-      const btn = this;
+    /* Capture Clean Camera Frame (No Tracker HUD) */
+    const btnCapture = document.getElementById('btn-capture-frame');
+    const btnCaptureText = document.getElementById('btn-capture-text');
+    if (btnCapture) {
+      btnCapture.addEventListener('click', function() {
+        const streamImg = document.getElementById('stream-img');
+        if (!streamImg || !streamImg.complete || streamImg.naturalWidth === 0) {
+          alert('Camera is not active or frame is not ready yet.');
+          return;
+        }
 
-      if (!fileInput.files || fileInput.files.length === 0) {
-        status.style.display = 'block';
-        status.style.color = '#ef4444';
-        status.innerText = 'Pilih file firmware .bin terlebih dahulu.';
-        return;
+        try {
+          const offCanvas = document.createElement('canvas');
+          const w = streamImg.naturalWidth || 640;
+          const h = streamImg.naturalHeight || 480;
+          offCanvas.width = w;
+          offCanvas.height = h;
+
+          const ctx = offCanvas.getContext('2d');
+          // Draw ONLY the raw camera image (no tracker HUD overlay)
+          ctx.drawImage(streamImg, 0, 0, w, h);
+
+          const now = new Date();
+          const pad = n => String(n).padStart(2, '0');
+          const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+          const filename = `KoRe_${timestamp}.jpg`;
+
+          offCanvas.toBlob(blob => {
+            if (!blob) {
+              const dataUrl = offCanvas.toDataURL('image/jpeg', 0.95);
+              const a = document.createElement('a');
+              a.href = dataUrl;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            } else {
+              const blobUrl = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = blobUrl;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+            }
+
+            if (btnCaptureText) {
+              const orig = btnCaptureText.innerText;
+              btnCaptureText.innerText = 'Photo Saved!';
+              setTimeout(() => { btnCaptureText.innerText = orig; }, 1500);
+            }
+          }, 'image/jpeg', 0.95);
+        } catch (err) {
+          alert('Failed to capture photo: ' + err.message);
+        }
+      });
+    }
+
+    /* Live OLED Brightness Slider (Throttled, Queued & Non-Blocking) */
+    const brightSlider = document.getElementById('oled-brightness-slider');
+    const brightBadge = document.getElementById('bright-badge');
+    let isBrightUpdating = false;
+    let queuedBrightness = null;
+    let lastBrightSendMs = 0;
+
+    function sendBrightnessRequest(val, save) {
+      const now = Date.now();
+      if (!save) {
+        if (isBrightUpdating || (now - lastBrightSendMs < 80)) {
+          queuedBrightness = val;
+          return;
+        }
       }
+      isBrightUpdating = true;
+      lastBrightSendMs = now;
+      queuedBrightness = null;
 
-      const file = fileInput.files[0];
-      btn.disabled = true;
-      status.style.display = 'block';
-      status.style.color = 'var(--text-main)';
-      status.innerText = 'Mengunggah firmware... Jangan matikan daya perangkat.';
-      progressBox.style.display = 'block';
-
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/update', true);
-
-      xhr.upload.onprogress = function(e) {
-        if (e.lengthComputable) {
-          const percent = Math.round((e.loaded / e.total) * 100);
-          progressBar.style.width = percent + '%';
-          progressText.innerText = percent + '% (' + Math.round(e.loaded / 1024) + ' KB / ' + Math.round(e.total / 1024) + ' KB)';
+      fetch('/set_brightness', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brightness: val, save: !!save })
+      }).catch(() => {}).finally(() => {
+        isBrightUpdating = false;
+        if (queuedBrightness !== null) {
+          const nextVal = queuedBrightness;
+          queuedBrightness = null;
+          sendBrightnessRequest(nextVal, false);
         }
-      };
+      });
+    }
 
-      xhr.onload = function() {
-        if (xhr.status === 200) {
-          progressBar.style.width = '100%';
-          progressText.innerText = '100% Selesai!';
-          status.innerHTML = '<b>Flash berhasil!</b> ESP32-S3 sedang restart...<br><small>Halaman akan dimuat ulang dalam 6 detik.</small>';
-          setTimeout(() => { window.location.reload(); }, 6000);
-        } else {
-          btn.disabled = false;
-          status.style.color = '#ef4444';
-          status.innerText = 'Gagal melakukan flash OTA (HTTP ' + xhr.status + '): ' + xhr.responseText;
+    if (brightSlider) {
+      brightSlider.addEventListener('input', function() {
+        const val = parseInt(this.value, 10);
+        const pct = Math.round((val / 255) * 100);
+        if (brightBadge) brightBadge.innerText = `${val} (${pct}%)`;
+        sendBrightnessRequest(val, false);
+      });
+      brightSlider.addEventListener('change', function() {
+        const val = parseInt(this.value, 10);
+        const pct = Math.round((val / 255) * 100);
+        if (brightBadge) brightBadge.innerText = `${val} (${pct}%)`;
+        sendBrightnessRequest(val, true);
+      });
+    }
+
+    const btnResetBright = document.getElementById('btn-reset-brightness');
+    if (btnResetBright) {
+      btnResetBright.addEventListener('click', function() {
+        if (brightSlider) brightSlider.value = 128;
+        if (brightBadge) brightBadge.innerText = '128 (50%)';
+        sendBrightnessRequest(128, true);
+      });
+    }
+
+    /* Weather Presets Map */
+    const weatherPresets = {
+      jakarta: { city: 'Jakarta', lat: -6.2088, lon: 106.8456 },
+      bandung: { city: 'Bandung', lat: -6.9175, lon: 107.6191 },
+      surabaya: { city: 'Surabaya', lat: -7.2575, lon: 112.7521 },
+      semarang: { city: 'Semarang', lat: -6.9667, lon: 110.4167 },
+      yogyakarta: { city: 'Yogyakarta', lat: -7.7956, lon: 110.3695 },
+      solo: { city: 'Surakarta', lat: -7.5666, lon: 110.8167 },
+      malang: { city: 'Malang', lat: -7.9797, lon: 112.6304 },
+      bogor: { city: 'Bogor', lat: -6.5950, lon: 106.8166 },
+      depok: { city: 'Depok', lat: -6.4025, lon: 106.7942 },
+      tangerang: { city: 'Tangerang', lat: -6.1783, lon: 106.6319 },
+      bekasi: { city: 'Bekasi', lat: -6.2383, lon: 106.9756 },
+      medan: { city: 'Medan', lat: 3.5952, lon: 98.6722 },
+      palembang: { city: 'Palembang', lat: -2.9761, lon: 104.7754 },
+      padang: { city: 'Padang', lat: -0.9471, lon: 100.4172 },
+      pekanbaru: { city: 'Pekanbaru', lat: 0.5071, lon: 101.4478 },
+      lampung: { city: 'B. Lampung', lat: -5.4500, lon: 105.2667 },
+      batam: { city: 'Batam', lat: 1.1301, lon: 104.0529 },
+      aceh: { city: 'Banda Aceh', lat: 5.5483, lon: 95.3238 },
+      bali: { city: 'Denpasar', lat: -8.6705, lon: 115.2126 },
+      mataram: { city: 'Mataram', lat: -8.5833, lon: 116.1167 },
+      kupang: { city: 'Kupang', lat: -10.1772, lon: 123.6070 },
+      ikn: { city: 'IKN Nusantara', lat: -0.9744, lon: 116.7027 },
+      balikpapan: { city: 'Balikpapan', lat: -1.2379, lon: 116.8289 },
+      samarinda: { city: 'Samarinda', lat: -0.5022, lon: 117.1536 },
+      banjarmasin: { city: 'Banjarmasin', lat: -3.3194, lon: 114.5908 },
+      pontianak: { city: 'Pontianak', lat: -0.0263, lon: 109.3425 },
+      makassar: { city: 'Makassar', lat: -5.1477, lon: 119.4327 },
+      manado: { city: 'Manado', lat: 1.4748, lon: 124.8428 },
+      jayapura: { city: 'Jayapura', lat: -2.5337, lon: 140.7181 },
+      ambon: { city: 'Ambon', lat: -3.6954, lon: 128.1814 },
+      singapore: { city: 'Singapore', lat: 1.3521, lon: 103.8198 },
+      kualalumpur: { city: 'Kuala Lumpur', lat: 3.1390, lon: 101.6869 },
+      tokyo: { city: 'Tokyo', lat: 35.6762, lon: 139.6503 },
+      seoul: { city: 'Seoul', lat: 37.5665, lon: 126.9780 },
+      london: { city: 'London', lat: 51.5074, lon: -0.1278 },
+      newyork: { city: 'New York', lat: 40.7128, lon: -74.0060 },
+      paris: { city: 'Paris', lat: 48.8566, lon: 2.3522 },
+      dubai: { city: 'Dubai', lat: 25.2048, lon: 55.2708 },
+      sydney: { city: 'Sydney', lat: -33.8688, lon: 151.2093 }
+    };
+
+    const presetSel = document.getElementById('weather-preset-select');
+    if (presetSel) {
+      presetSel.addEventListener('change', function() {
+        const key = this.value;
+        if (weatherPresets[key]) {
+          document.getElementById('weather-city-input').value = weatherPresets[key].city;
+          document.getElementById('weather-lat-input').value = weatherPresets[key].lat;
+          document.getElementById('weather-lon-input').value = weatherPresets[key].lon;
         }
-      };
+      });
+    }
 
-      xhr.onerror = function() {
-        btn.disabled = false;
-        status.style.color = '#ef4444';
-        status.innerText = 'Koneksi terputus saat proses flash OTA.';
-      };
+    /* Live Open-Meteo Geocoding Autocomplete Search */
+    const searchInput = document.getElementById('weather-search-input');
+    const searchResults = document.getElementById('weather-search-results');
+    let searchDebounceTimer = null;
 
-      xhr.send(file);
-    });
+    if (searchInput && searchResults) {
+      searchInput.addEventListener('input', function() {
+        const q = this.value.trim();
+        clearTimeout(searchDebounceTimer);
+        if (q.length < 2) {
+          searchResults.style.display = 'none';
+          searchResults.innerHTML = '';
+          return;
+        }
+        searchDebounceTimer = setTimeout(() => {
+          fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=8&language=en&format=json`)
+            .then(res => res.json())
+            .then(data => {
+              if (data && data.results && data.results.length > 0) {
+                searchResults.innerHTML = '';
+                data.results.forEach(item => {
+                  const div = document.createElement('div');
+                  div.style.padding = '8px 12px';
+                  div.style.cursor = 'pointer';
+                  div.style.borderBottom = '1px solid var(--border-card)';
+                  div.style.fontSize = '12px';
+                  div.style.transition = 'background 0.15s';
+                  div.innerHTML = `<b>${item.name}</b> <span style="color:var(--text-muted);">(${[item.admin1, item.country].filter(Boolean).join(', ')})</span><br><small style="color:var(--text-muted);font-size:10.5px;">Lat: ${item.latitude.toFixed(4)}, Lon: ${item.longitude.toFixed(4)}</small>`;
+                  div.addEventListener('mouseenter', () => { div.style.background = 'var(--bg-surface)'; });
+                  div.addEventListener('mouseleave', () => { div.style.background = 'transparent'; });
+                  div.addEventListener('click', () => {
+                    document.getElementById('weather-city-input').value = item.name.substring(0, 16);
+                    document.getElementById('weather-lat-input').value = item.latitude.toFixed(4);
+                    document.getElementById('weather-lon-input').value = item.longitude.toFixed(4);
+                    searchResults.style.display = 'none';
+                    searchInput.value = `${item.name}, ${item.country || ''}`;
+                    if (presetSel) presetSel.value = 'custom';
+                  });
+                  searchResults.appendChild(div);
+                });
+                searchResults.style.display = 'block';
+              } else {
+                searchResults.innerHTML = '<div style="padding:8px 12px;font-size:11.5px;color:var(--text-muted);">City not found</div>';
+                searchResults.style.display = 'block';
+              }
+            }).catch(() => {
+              searchResults.style.display = 'none';
+            });
+        }, 300);
+      });
+
+      document.addEventListener('click', function(e) {
+        if (!searchInput.contains(e.target) && !searchResults.contains(e.target)) {
+          searchResults.style.display = 'none';
+        }
+      });
+    }
+
+    /* GPS One-Click Location Finder */
+    const btnGps = document.getElementById('btn-gps-location');
+    const gpsPinSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>';
+
+    if (btnGps) {
+      btnGps.addEventListener('click', function() {
+        if (!navigator.geolocation) {
+          alert('Geolocation is not supported by your browser.');
+          return;
+        }
+        btnGps.disabled = true;
+        btnGps.innerHTML = gpsPinSvg + ' <span>Locating...</span>';
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            btnGps.disabled = false;
+            btnGps.innerHTML = gpsPinSvg + ' <span>My GPS</span>';
+            const lat = pos.coords.latitude.toFixed(4);
+            const lon = pos.coords.longitude.toFixed(4);
+            document.getElementById('weather-lat-input').value = lat;
+            document.getElementById('weather-lon-input').value = lon;
+            document.getElementById('weather-city-input').value = 'GPS Location';
+            if (presetSel) presetSel.value = 'custom';
+            fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`)
+              .then(r => r.json())
+              .then(geo => {
+                if (geo.city || geo.locality) {
+                  const cName = (geo.city || geo.locality || 'GPS Location').substring(0, 16);
+                  document.getElementById('weather-city-input').value = cName;
+                  if (searchInput) searchInput.value = `${cName}, ${geo.countryName || ''}`;
+                }
+              }).catch(() => {});
+          },
+          err => {
+            btnGps.disabled = false;
+            btnGps.innerHTML = gpsPinSvg + ' <span>My GPS</span>';
+            alert('Failed to retrieve GPS: ' + err.message);
+          },
+          { timeout: 8000, enableHighAccuracy: true }
+        );
+      });
+    }
+
+    function loadWeatherAndSystemSettings() {
+      fetch('/weather_info')
+        .then(res => res.json())
+        .then(data => {
+          if (data.city) document.getElementById('weather-city-input').value = data.city;
+          if (data.lat !== undefined) document.getElementById('weather-lat-input').value = data.lat;
+          if (data.lon !== undefined) document.getElementById('weather-lon-input').value = data.lon;
+          if (data.enabled !== undefined) document.getElementById('weather-enable-check').checked = data.enabled;
+
+          const infoBox = document.getElementById('weather-live-info');
+          const badge = document.getElementById('weather-badge-status');
+          if (data.valid) {
+            if (badge) badge.innerText = `${data.temp}°C, ${data.condition}`;
+            if (infoBox) {
+              infoBox.style.display = 'block';
+              infoBox.innerHTML = `<b>${data.city}:</b> ${data.temp}°C, ${data.condition} &bull; Humidity: ${data.humidity}% (Synced: ${data.last_sync_s}s ago)`;
+            }
+          }
+        }).catch(() => {});
+
+      fetch('/system_info')
+        .then(res => res.json())
+        .then(data => {
+          if (data.brightness !== undefined && brightSlider) {
+            brightSlider.value = data.brightness;
+            const pct = Math.round((data.brightness / 255) * 100);
+            if (brightBadge) brightBadge.innerText = `${data.brightness} (${pct}%)`;
+          }
+        }).catch(() => {});
+    }
+
+    loadWeatherAndSystemSettings();
+
+    const btnSaveWeather = document.getElementById('btn-save-weather');
+    if (btnSaveWeather) {
+      btnSaveWeather.addEventListener('click', function() {
+        const btn = this;
+        btn.disabled = true;
+        btn.innerText = 'Saving...';
+
+        const body = {
+          city: document.getElementById('weather-city-input').value,
+          lat: parseFloat(document.getElementById('weather-lat-input').value),
+          lon: parseFloat(document.getElementById('weather-lon-input').value),
+          enabled: document.getElementById('weather-enable-check').checked
+        };
+
+        fetch('/set_weather', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        }).finally(() => {
+          setTimeout(() => {
+            btn.disabled = false;
+            btn.innerText = 'Save & Fetch Weather →';
+            loadWeatherAndSystemSettings();
+          }, 2500);
+        });
+      });
+    }
+
+    const btnPreviewWeather = document.getElementById('btn-preview-weather');
+    if (btnPreviewWeather) {
+      btnPreviewWeather.addEventListener('click', function() {
+        fetch('/trigger_weather', { method: 'POST' }).catch(() => {});
+      });
+    }
   </script>
 </body>
 </html>

@@ -17,6 +17,7 @@
 /* Global Synchronization State */
 portMUX_TYPE g_target_mutex = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_stream_mutex = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE g_weather_mutex = portMUX_INITIALIZER_UNLOCKED;
 SemaphoreHandle_t g_frame_sem = NULL;
 
 TrackTarget g_current_target = {false, 0, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0};
@@ -31,6 +32,8 @@ volatile uint32_t g_last_web_activity_ms = 0;
 uint8_t* g_latest_jpeg_buf = NULL;
 size_t g_latest_jpeg_len = 0;
 volatile bool g_camera_init_ok = false;
+volatile uint8_t g_oled_brightness = OLED_DEFAULT_BRIGHTNESS;
+WeatherInfo g_weather_info = {0.0f, 0, 0, "", "", false, 0};
 
 /* Internal Vision Frame Buffers in SRAM */
 static uint8_t* small_rgb_buf = NULL;

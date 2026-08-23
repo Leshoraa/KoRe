@@ -6,6 +6,8 @@
 #include "src/net/http_server.h"
 #include "src/net/web_ui.h"
 #include "src/net/wifi_manager.h"
+#include "src/net/weather_client.h"
+#include "src/core/display_engine.h"
 #include "include/kore_config.h"
 #include "include/kore_types.h"
 #include "include/kore_affective.h"
@@ -244,7 +246,7 @@ static esp_err_t save_wifi_handler(httpd_req_t *req) {
     extract_json_value(buf, "ap_ssid", new_ap_ssid, sizeof(new_ap_ssid));
     extract_json_value(buf, "ap_pass", new_ap_pass, sizeof(new_ap_pass));
 
-    const char* resp = "{\"status\":\"ok\",\"message\":\"Pengaturan disimpan. ESP reboot...\"}";
+    const char* resp = "{\"status\":\"ok\",\"message\":\"Settings saved. ESP rebooting...\"}";
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_send(req, resp, strlen(resp));
@@ -420,6 +422,109 @@ static esp_err_t update_post_handler(httpd_req_t *req) {
     }
 }
 
+static esp_err_t set_brightness_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char buf[128];
+    int remaining = req->content_len;
+    if (remaining >= (int)sizeof(buf)) remaining = sizeof(buf) - 1;
+
+    int ret = httpd_req_recv(req, buf, remaining);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    char val_str[32] = {0};
+    char save_str[32] = {0};
+    extract_json_value(buf, "brightness", val_str, sizeof(val_str));
+    extract_json_value(buf, "save", save_str, sizeof(save_str));
+
+    int b = atoi(val_str);
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
+
+    setOledBrightnessLive((uint8_t)b);
+    if (strcmp(save_str, "true") == 0 || strcmp(save_str, "1") == 0) {
+        saveOledBrightness((uint8_t)b);
+    }
+
+    const char* resp = "{\"status\":\"ok\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t set_weather_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char buf[256];
+    int remaining = req->content_len;
+    if (remaining >= (int)sizeof(buf)) remaining = sizeof(buf) - 1;
+
+    int ret = httpd_req_recv(req, buf, remaining);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    char city[32] = {0};
+    char lat_str[32] = {0};
+    char lon_str[32] = {0};
+    char en_str[32] = {0};
+
+    extract_json_value(buf, "city", city, sizeof(city));
+    extract_json_value(buf, "lat", lat_str, sizeof(lat_str));
+    extract_json_value(buf, "lon", lon_str, sizeof(lon_str));
+    extract_json_value(buf, "enabled", en_str, sizeof(en_str));
+
+    float lat = (lat_str[0] != '\0') ? (float)atof(lat_str) : getWeatherLat();
+    float lon = (lon_str[0] != '\0') ? (float)atof(lon_str) : getWeatherLon();
+    bool enabled = (en_str[0] == '\0' || strcmp(en_str, "true") == 0 || strcmp(en_str, "1") == 0);
+
+    saveWeatherConfig(city, lat, lon, enabled);
+    triggerWeatherFetch();
+
+    const char* resp = "{\"status\":\"ok\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t weather_info_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char json[384];
+
+    portENTER_CRITICAL(&g_weather_mutex);
+    snprintf(json, sizeof(json),
+        "{\"city\":\"%s\",\"lat\":%.4f,\"lon\":%.4f,\"enabled\":%s,\"valid\":%s,"
+        "\"temp\":%.1f,\"humidity\":%d,\"code\":%d,\"condition\":\"%s\",\"last_sync_s\":%lu}",
+        getWeatherCity(), getWeatherLat(), getWeatherLon(),
+        isWeatherEnabled() ? "true" : "false",
+        g_weather_info.valid ? "true" : "false",
+        g_weather_info.temperature,
+        g_weather_info.humidity,
+        g_weather_info.weather_code,
+        g_weather_info.condition,
+        (unsigned long)((millis() - g_weather_info.last_sync_ms) / 1000)
+    );
+    portEXIT_CRITICAL(&g_weather_mutex);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json, strlen(json));
+}
+
+static esp_err_t trigger_weather_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    triggerWeatherDisplay(WEATHER_POPUP_DURATION_MS);
+
+    const char* resp = "{\"status\":\"ok\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
 static esp_err_t system_info_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
     char json[512];
@@ -431,7 +536,7 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
         "{\"firmware\":\"2.5.0\",\"compiled\":\"%s %s\",\"chip\":\"%s\",\"cores\":%d,\"cpu_mhz\":%d,"
         "\"heap_free\":%u,\"heap_min\":%u,\"psram_free\":%u,\"psram_total\":%u,"
         "\"uptime_s\":%lu,\"wifi_rssi\":%d,\"wifi_mode\":\"%s\",\"ip\":\"%s\","
-        "\"camera_ok\":%s,\"stream_clients\":%d}",
+        "\"camera_ok\":%s,\"stream_clients\":%d,\"brightness\":%u}",
         __DATE__, __TIME__,
         ESP.getChipModel(), ESP.getChipCores(), ESP.getCpuFreqMHz(),
         (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size(),
@@ -440,7 +545,8 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
         isWiFiAPMode() ? "AP" : "STA",
         isWiFiAPMode() ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
         g_camera_init_ok ? "true" : "false",
-        g_stream_clients
+        g_stream_clients,
+        (unsigned)g_oled_brightness
     );
     
     httpd_resp_set_type(req, "application/json");
@@ -450,26 +556,30 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
 
 void startWebServer(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 24;
+    config.max_uri_handlers = 32;
     config.server_port = HTTP_PORT_WEB_CONTROL;
 
-    httpd_uri_t index_uri          = { .uri = "/",                   .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
-    httpd_uri_t telemetry_uri      = { .uri = "/telemetry",           .method = HTTP_GET,  .handler = telemetry_handler,      .user_ctx = NULL };
-    httpd_uri_t set_expression_uri = { .uri = "/set_expression",      .method = HTTP_POST, .handler = set_expression_handler, .user_ctx = NULL };
-    httpd_uri_t get_wifi_uri       = { .uri = "/get_wifi",            .method = HTTP_GET,  .handler = get_wifi_handler,       .user_ctx = NULL };
-    httpd_uri_t save_wifi_uri      = { .uri = "/save_wifi",           .method = HTTP_POST, .handler = save_wifi_handler,      .user_ctx = NULL };
-    httpd_uri_t switch_mode_uri    = { .uri = "/switch_mode",         .method = HTTP_POST, .handler = switch_mode_handler,    .user_ctx = NULL };
-    httpd_uri_t captive_1          = { .uri = "/generate_204",        .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
-    httpd_uri_t captive_2          = { .uri = "/gen_204",             .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
-    httpd_uri_t captive_3          = { .uri = "/hotspot-detect.html", .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
-    httpd_uri_t captive_4          = { .uri = "/connecttest.txt",     .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
-    httpd_uri_t captive_5          = { .uri = "/ncsi.txt",            .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
-    httpd_uri_t captive_6          = { .uri = "/canonical.html",      .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
-    httpd_uri_t captive_7          = { .uri = "/success.txt",         .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
-    httpd_uri_t scan_wifi_uri      = { .uri = "/scan_wifi",           .method = HTTP_GET,  .handler = scan_wifi_handler,      .user_ctx = NULL };
-    httpd_uri_t system_info_uri    = { .uri = "/system_info",         .method = HTTP_GET,  .handler = system_info_handler,    .user_ctx = NULL };
-    httpd_uri_t camera_ctrl_uri    = { .uri = "/camera_control",      .method = HTTP_POST, .handler = camera_control_handler, .user_ctx = NULL };
-    httpd_uri_t update_uri         = { .uri = "/update",              .method = HTTP_POST, .handler = update_post_handler,    .user_ctx = NULL };
+    httpd_uri_t index_uri             = { .uri = "/",                   .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
+    httpd_uri_t telemetry_uri         = { .uri = "/telemetry",           .method = HTTP_GET,  .handler = telemetry_handler,         .user_ctx = NULL };
+    httpd_uri_t set_expression_uri    = { .uri = "/set_expression",      .method = HTTP_POST, .handler = set_expression_handler,    .user_ctx = NULL };
+    httpd_uri_t get_wifi_uri          = { .uri = "/get_wifi",            .method = HTTP_GET,  .handler = get_wifi_handler,          .user_ctx = NULL };
+    httpd_uri_t save_wifi_uri         = { .uri = "/save_wifi",           .method = HTTP_POST, .handler = save_wifi_handler,         .user_ctx = NULL };
+    httpd_uri_t switch_mode_uri       = { .uri = "/switch_mode",         .method = HTTP_POST, .handler = switch_mode_handler,       .user_ctx = NULL };
+    httpd_uri_t captive_1             = { .uri = "/generate_204",        .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
+    httpd_uri_t captive_2             = { .uri = "/gen_204",             .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
+    httpd_uri_t captive_3             = { .uri = "/hotspot-detect.html", .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
+    httpd_uri_t captive_4             = { .uri = "/connecttest.txt",     .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
+    httpd_uri_t captive_5             = { .uri = "/ncsi.txt",            .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
+    httpd_uri_t captive_6             = { .uri = "/canonical.html",      .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
+    httpd_uri_t captive_7             = { .uri = "/success.txt",         .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
+    httpd_uri_t scan_wifi_uri         = { .uri = "/scan_wifi",           .method = HTTP_GET,  .handler = scan_wifi_handler,         .user_ctx = NULL };
+    httpd_uri_t system_info_uri       = { .uri = "/system_info",         .method = HTTP_GET,  .handler = system_info_handler,       .user_ctx = NULL };
+    httpd_uri_t camera_ctrl_uri       = { .uri = "/camera_control",      .method = HTTP_POST, .handler = camera_control_handler,    .user_ctx = NULL };
+    httpd_uri_t update_uri            = { .uri = "/update",              .method = HTTP_POST, .handler = update_post_handler,       .user_ctx = NULL };
+    httpd_uri_t set_brightness_uri    = { .uri = "/set_brightness",      .method = HTTP_POST, .handler = set_brightness_handler,   .user_ctx = NULL };
+    httpd_uri_t set_weather_uri       = { .uri = "/set_weather",         .method = HTTP_POST, .handler = set_weather_handler,      .user_ctx = NULL };
+    httpd_uri_t weather_info_uri      = { .uri = "/weather_info",        .method = HTTP_GET,  .handler = weather_info_handler,     .user_ctx = NULL };
+    httpd_uri_t trigger_weather_uri   = { .uri = "/trigger_weather",     .method = HTTP_POST, .handler = trigger_weather_handler,  .user_ctx = NULL };
 
     if (httpd_start(&g_camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(g_camera_httpd, &index_uri);
@@ -489,6 +599,10 @@ void startWebServer(void) {
         httpd_register_uri_handler(g_camera_httpd, &system_info_uri);
         httpd_register_uri_handler(g_camera_httpd, &camera_ctrl_uri);
         httpd_register_uri_handler(g_camera_httpd, &update_uri);
+        httpd_register_uri_handler(g_camera_httpd, &set_brightness_uri);
+        httpd_register_uri_handler(g_camera_httpd, &set_weather_uri);
+        httpd_register_uri_handler(g_camera_httpd, &weather_info_uri);
+        httpd_register_uri_handler(g_camera_httpd, &trigger_weather_uri);
     }
 
     config.server_port = HTTP_PORT_STREAM;

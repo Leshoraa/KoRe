@@ -47,6 +47,9 @@ extern LGFX_Sprite canvas;
 
 void showBootStatus(const char* line1, const char* line2 = nullptr);
 void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offsetY, float frame = 0.0f, float vergence = 0.0f, float scale = 1.0f);
+void drawWeatherScreen(const WeatherInfo& weather, float animFrame);
+void triggerWeatherDisplay(uint32_t duration_ms = WEATHER_POPUP_DURATION_MS);
+void setOledBrightnessLive(uint8_t brightness);
 void transitionExpression(Expression fromExpr, Expression toExpr, float durationMs = 170.0f);
 void oledTask(void *pvParameters);
 

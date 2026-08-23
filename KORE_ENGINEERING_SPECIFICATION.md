@@ -39,6 +39,7 @@ KoRe runs on an asynchronous dual-core FreeRTOS topology, isolating image acquis
 | - Spatial Multi-Candidate Clustering & Priority Ranking (Max 3 Targets)         |
 | - 2D Discrete Kalman Filter ([x, y, vx, vy]^T with Adaptive Measurement Noise)  |
 | - Dynamic Frequency Scaling (DFS: 240 MHz Active <-> 80 MHz Sleep Standby)      |
+| - Dynamic Wi-Fi Modem Power Save (WIFI_PS_MIN_MODEM during Standby)            |
 | - SCCB Register Standby Control (OV2640 0x09 bit 4 / OV3660 0x3008)             |
 | - PSRAM Double-Buffered JPEG Frame Replication (g_stream_mutex)                 |
 +---------------------------------------------------------------------------------+
@@ -55,15 +56,20 @@ KoRe runs on an asynchronous dual-core FreeRTOS topology, isolating image acquis
 | - 5th-Order Minimum-Jerk Saccades (Flash & Hogan Formulation)                   |
 | - Fixation Micro-Kinetics (Mean-Reverting Brownian Random Walk)                 |
 | - Non-Blocking Eyelid State Machine (Idle -> Closing -> Opening -> Blink-Chain) |
+| - OLED Anti-Burn-In Protection (+/-1 px Micro-Shift during Standby)             |
+| - Graphical 1-Bit Weather Screen Rendering (Open-Meteo Periodic Popups)         |
 | - LovyanGFX 1-Bit Sprite Renderer (1.0 MHz Fast-Mode Plus I2C Bus)              |
 +---------------------------------------------------------------------------------+
                                          |
                                          v
 +---------------------------------------------------------------------------------+
-| CONCURRENT HTTP TELEMETRY & MJPEG STREAMER                                      |
-| - Port 80: Async JSON Telemetry Endpoint (/telemetry) & Configuration Web UI    |
+| CONCURRENT HTTP TELEMETRY, OTA & MJPEG SERVER                                   |
+| - Port 80: Async JSON Telemetry (/telemetry) & Configuration Web UI (/)         |
+| - Port 80: Camera Tuning (/camera_control), Web OTA Flash Updater (/update)     |
+| - Port 80: Display Brightness (/set_brightness) & Weather Sync (/set_weather)   |
+| - Port 80: Wi-Fi Scanner (/scan_wifi) & Diagnostics (/system_info)             |
+| - Port 80: NVS Flash Persistence (/save_wifi, /switch_mode, /set_expression)    |
 | - Port 81: Non-Blocking MJPEG Video Stream (/stream)                            |
-| - NVS Flash Persistence (/save_wifi, /switch_mode)                              |
 +---------------------------------------------------------------------------------+
 ```
 
@@ -323,6 +329,24 @@ To preserve battery runtime on portable 3.7V LiPo configurations:
   - Camera sensor placed into hardware standby via SCCB register command (`0x09` bit 4 on OV2640, `0x3008` on OV3660).
   - Display rendering period increased to $33.33 \text{ ms}$ ($30 \text{ FPS}$), reducing I2C bus traffic by $50\%$.
 
+### 9.3 OLED Panel Longevity, Anti-Burn-In, and Live Brightness Control
+To mitigate pixel degradation on monochrome OLED matrices:
+- **Periodic Micro-Pixel Shifting:** In standby reconnaissance mode, origin rendering offsets are dynamically jittered by $\pm 1\text{ px}$ every 60 seconds.
+- **Persistent User Brightness Control:** Panel brightness is configured via `POST /set_brightness` ($0 - 255$) and persisted to NVS without forced auto-dimming.
+
+### 9.4 Wi-Fi Modem Sleep & Power Save Management
+- Dynamic modem power saving is engaged (`WIFI_PS_MIN_MODEM`) when the system enters reconnaissance standby, reducing radio current draw during prolonged background monitoring.
+
+### 9.5 Web Over-The-Air (OTA) Streaming Engine and Flash Partitioning
+- **Chunked Binary Ingestion:** Receives firmware bytes via `POST /update` using Arduino `Update` library with `U_FLASH` target.
+- **Flash Protection:** Validates stream boundary and triggers non-blocking timer before executing `ESP.restart()`.
+- **Partition Requirement:** Configured under `Huge APP (3MB No OTA/1MB SPIFFS)` or dual OTA scheme.
+
+### 9.6 Open-Meteo Weather Synchronization Engine
+- **Non-Blocking Background Fetch:** Background FreeRTOS task on Core 0 queries current meteorological observations from Open-Meteo every 30 minutes without stalling camera or display rendering.
+- **1-Bit Vector Icon Synthesis:** 128x64 OLED layout with dynamic Sun, Cloud, Rain, Lightning, and Fog glyphs.
+- **Configurable Periodic Popup:** Displays 6-second weather overview during idle standby or via Web Dashboard trigger.
+
 ---
 
 ## 10. REPOSITORY FILE HIERARCHY AND COMPONENT MODULARIZATION
@@ -331,34 +355,43 @@ To preserve battery runtime on portable 3.7V LiPo configurations:
 KoRe/
 ├── .github/
 │   └── workflows/
-│       ├── compile_check.yml       # Automated ESP32-S3 compile and linting workflow
+│       ├── compile_check.yml       # Automated ESP32-S3 compile workflow
 │       └── model_validation.yml    # Kinematics and Kalman filter verification suite
 ├── docs/
 │   ├── ARCHITECTURE.md             # Dual-core FreeRTOS dataflow and scheduling specifications
 │   ├── MATHEMATICAL_MODELS.md      # Mathematical proofs for ocular dynamics and minimum-jerk
-│   └── TELEMETRY_SPECIFICATION.md  # JSON schema for /telemetry and MJPEG stream protocol
+│   └── TELEMETRY_SPECIFICATION.md  # JSON schema for /telemetry, OTA, and MJPEG stream protocol
 ├── include/
 │   ├── kore_config.h               # Pin definitions, clock rates, and power profiles
-│   ├── kore_types.h                # Data structs: TrackTarget, ObjectCandidate, Expression
+│   ├── kore_types.h                # Data structs: TrackTarget, ObjectCandidate, Expression, WeatherInfo
 │   ├── kore_kalman.h               # Discrete Kalman filter declarations
 │   ├── kore_kinematics.h           # Mass-spring-damper and minimum-jerk contracts
 │   └── kore_affective.h            # 2D Russell Circumplex Langevin state model
 ├── src/
 │   ├── KoRe.ino                    # Master entry point and FreeRTOS task initializers
 │   ├── core/
+│   │   ├── camera_pipeline.h       # Camera initialization and vision pipeline header
 │   │   ├── camera_pipeline.cpp     # YCbCr downscaling, MHI decay, and spatial clustering
-│   │   └── display_engine.cpp      # LovyanGFX SSD1306 sprite composition and facial rig
+│   │   ├── display_engine.h        # LovyanGFX SSD1306 display engine header
+│   │   └── display_engine.cpp      # LovyanGFX SSD1306 sprite composition, facial rig, and weather renderer
 │   ├── math/
 │   │   ├── kore_kalman.cpp         # 2D discrete Kalman filter implementation
-│   │   ├── kore_kinematics.cpp     # Biomechanical ocular equations and minimum-jerk solver
-│   │   └── kore_affective.cpp      # Stochastic Langevin affective dynamics solver
+│   │   ├── kore_kinematics.cpp     # Mass-spring-damper integration & minimum-jerk polynomial
+│   │   └── kore_affective.cpp      # 2D Russell Circumplex Langevin affective model
 │   └── net/
-│       ├── http_server.cpp         # Async HTTP server, JSON telemetry, and MJPEG streamer
-│       └── wifi_manager.cpp        # NVS-backed STA/AP configuration and captive portal
+│       ├── http_server.h           # Async HTTP REST API and MJPEG server header
+│       ├── http_server.cpp         # Telemetry, expression, camera control, and OTA endpoints
+│       ├── weather_client.h        # Open-Meteo background weather client header
+│       ├── weather_client.cpp      # Open-Meteo HTTP JSON fetcher and WMO code mapper
+│       ├── wifi_manager.h          # NVS Preferences and Wi-Fi manager header
+│       ├── wifi_manager.cpp        # NVS Preferences Wi-Fi configuration and captive portal
+│       └── web_ui.h                # Web control panel HTML/CSS/JS (embedded PROGMEM string)
 ├── tests/
 │   ├── unit/
-│   │   ├── test_kalman_convergence.cpp
-│   │   └── test_minimum_jerk.cpp
+│   │   ├── test_affective_langevin.cpp       # Langevin stochastic diffusion convergence tests
+│   │   ├── test_kalman_convergence.cpp       # 2D Kalman state estimator convergence tests
+│   │   ├── test_kinematics_feedforward.cpp   # Feedforward gaze kinematics validation
+│   │   └── test_minimum_jerk.cpp             # 5th-order polynomial trajectory verification
 │   └── fixtures/
 │       └── sample_motion_frames.h  # Synthetic downscaled frame test vectors
 ├── scripts/
@@ -370,6 +403,7 @@ KoRe/
 ├── CMakeLists.txt                  # ESP-IDF CMake build definition
 ├── CHANGELOG.md                    # Release history
 ├── LICENSE                         # MIT License terms
+├── KORE_ENGINEERING_SPECIFICATION.md # Architectural and engineering standards
 └── README.md                       # Master technical project presentation
 ```
 
@@ -386,6 +420,7 @@ Prior to merging changes or tagging firmware releases, the following verificatio
 - [ ] **Design Rules Compliance:** Zero em dashes, zero emojis, zero banned color schemes (rainbow, neon, pastel, purple and black), zero glassmorphism, zero drop shadows, and full skeleton loader compliance.
 - [ ] **Dual-Core Memory Isolation:** Verification that all image arrays (`small_rgb_buf`, `prev_lum_buf`, `mhi_buf`) reside in internal SRAM (`MALLOC_CAP_INTERNAL`), with external PSRAM limited strictly to streaming buffers (`g_latest_jpeg_buf`).
 - [ ] **Deterministic Framerate:** Core 1 display cycle measures $16.66 \pm 0.2 \text{ ms}$ ($60 \text{ FPS}$) without screen tearing on the $1.0 \text{ MHz}$ I2C bus.
-- [ ] **Mathematical Model Convergence:** Kinematics and Kalman filter routines verified free of $NaN$ and infinite outputs under all input vectors.
-- [ ] **DFS Power State Verification:** Current consumption drops measurably when transitioning from $240 \text{ MHz}$ active mode to $80 \text{ MHz}$ standby mode with camera sensor sleep active.
+- [ ] **Mathematical Model Convergence:** Kinematics and Kalman filter routines verified free of $NaN$ and infinite outputs under all input vectors across all 4 unit test suites.
+- [ ] **OTA & Live Control Reliability:** Web OTA update (`POST /update`) and dynamic camera register tuning (`POST /camera_control`) operate without freezing FreeRTOS task schedules.
+- [ ] **DFS Power State Verification:** Current consumption drops measurably when transitioning from $240 \text{ MHz}$ active mode to $80 \text{ MHz}$ standby mode with camera sensor sleep and modem power save active.
 - [ ] **Compiler Cleanliness:** Firmware compiles with zero warnings under standard ESP32-S3 compiler profiles.

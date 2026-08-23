@@ -5,12 +5,17 @@ All notable changes to the KoRe project are documented in this file.
 ## [2.5.0] - 2026-08-23
 
 ### Added
+- Open-Meteo weather integration with 1-bit graphical weather screen on OLED (random 6-second popups during idle standby and manual dashboard trigger).
+- Real-time and persistent OLED brightness slider in Web Dashboard (`POST /set_brightness`) with NVS storage.
+- Weather location configuration endpoints (`POST /set_weather`, `GET /weather_info`, `POST /trigger_weather`).
 - Web Over-The-Air (OTA) firmware update endpoint (`POST /update`) and Web UI upload progress bar.
 - Live camera sensor tuning endpoint (`POST /camera_control`) for brightness, contrast, saturation, flip, and AEC/AGC gain.
-- Active OLED Wi-Fi status indicator overlay in top-right corner (RSSI bars in STA mode, AP dot in AP mode).
-- OLED anti-burn-in protection featuring periodic micro-pixel shifting ($\pm 1\text{ px}$) and standby auto-dimming (`OLED_SLEEP_BRIGHTNESS`).
+- OLED anti-burn-in protection featuring periodic micro-pixel shifting ($\pm 1\text{ px}$) during standby reconnaissance.
 - Dynamic Wi-Fi modem sleep (`WIFI_PS_MIN_MODEM`) during reconnaissance standby to extend portable battery runtime.
 - New "Device & OTA" control tab on the Bento grid Web Dashboard.
+
+### Changed
+- Removed automatic brightness reduction (*auto-dimming*) during sleep reconnaissance to keep OLED panel brightness strictly consistent with user preference.
 
 ### Fixed
 - **CRITICAL**: Fixed CI / host unit test suite compilation on Linux by isolating ESP32-IDF/FreeRTOS headers in `kore_types.h` and `kore_config.h`.
@@ -23,7 +28,6 @@ All notable changes to the KoRe project are documented in this file.
 - WiFi network scanner endpoint (`GET /scan_wifi`) with SSID, RSSI, and encryption info.
 - System diagnostics endpoint (`GET /system_info`) reporting heap, PSRAM, uptime, and chip info.
 - Extended telemetry with emotional valence/arousal, heap metrics, and CPU frequency.
-- WiFi status indicator overlay on OLED display (top-right corner).
 - Stochastic Langevin noise diffusion term in affective mood engine (synced with documentation).
 - Full CI test coverage: all 4 unit test suites now compiled and executed.
 - Realistic synthetic test frame fixtures for 4 scenarios (rest, skin, dark, bright).

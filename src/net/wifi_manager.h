@@ -23,6 +23,14 @@ void saveWiFiCredentials(const char* sta_s, const char* sta_p, const char* ap_s,
 void switchWiFiMode(const char* target_mode);
 void scheduleSystemRestart(uint32_t delay_ms);
 
+uint8_t getSavedOledBrightness(void);
+void saveOledBrightness(uint8_t brightness);
+const char* getWeatherCity(void);
+float getWeatherLat(void);
+float getWeatherLon(void);
+bool isWeatherEnabled(void);
+void saveWeatherConfig(const char* city, float lat, float lon, bool enabled);
+
 #ifdef __cplusplus
 }
 #endif
