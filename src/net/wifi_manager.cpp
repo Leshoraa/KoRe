@@ -8,6 +8,7 @@
 #include "src/core/display_engine.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <NetBIOS.h>
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <Arduino.h>
@@ -66,7 +67,7 @@ void saveWiFiCredentials(const char* sta_s, const char* sta_p, const char* ap_s,
         prefs.putString("wifi_mode", "STA");
         strncpy(s_sta_ssid, sta_s, sizeof(s_sta_ssid) - 1);
     }
-    if (sta_p) {
+    if (sta_p && strlen(sta_p) > 0 && strcmp(sta_p, "********") != 0) {
         prefs.putString("sta_pass", sta_p);
         prefs.putString("pass", sta_p);
         strncpy(s_sta_password, sta_p, sizeof(s_sta_password) - 1);
@@ -75,7 +76,7 @@ void saveWiFiCredentials(const char* sta_s, const char* sta_p, const char* ap_s,
         prefs.putString("ap_ssid", ap_s);
         strncpy(s_ap_ssid, ap_s, sizeof(s_ap_ssid) - 1);
     }
-    if (ap_p) {
+    if (ap_p && strlen(ap_p) > 0 && strcmp(ap_p, "********") != 0) {
         prefs.putString("ap_pass", ap_p);
         strncpy(s_ap_password, ap_p, sizeof(s_ap_password) - 1);
     }
@@ -144,7 +145,7 @@ bool initWiFiAndNetwork(void) {
         }
 
         int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 50) {
+        while (WiFi.status() != WL_CONNECTED && attempts < 25) {
             delay(300);
             if (attempts % 4 == 0) {
                 char dots[16] = "Connecting";
@@ -162,9 +163,17 @@ bool initWiFiAndNetwork(void) {
 
     if (connected) {
         s_is_ap_mode = false;
+
+        // 1. Multicast DNS (mDNS for Apple iOS/macOS, modern Linux, Android 12+)
         if (MDNS.begin("kore")) {
-            MDNS.addService("http", "tcp", 80);
+            MDNS.setInstanceName("KoRe Robot");
+            MDNS.addService("http", "tcp", HTTP_PORT_WEB_CONTROL);
+            MDNS.addService("stream", "tcp", HTTP_PORT_STREAM);
         }
+
+        // 2. NetBIOS Name Service (Allows http://kore/ directly on Windows & Linux)
+        NBNS.begin("kore");
+
         char sta_ip_buf[40];
         snprintf(sta_ip_buf, sizeof(sta_ip_buf), "IP: %s", WiFi.localIP().toString().c_str());
         showBootStatus("WiFi Connected!", sta_ip_buf);
@@ -177,6 +186,12 @@ bool initWiFiAndNetwork(void) {
         WiFi.setSleep(WIFI_PS_NONE);
         WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
+        // Set AP IP to 192.168.18.16 so that AP and STA share the EXACT SAME IP URL
+        IPAddress apIP(192, 168, 18, 16);
+        IPAddress apGateway(192, 168, 18, 16);
+        IPAddress apSubnet(255, 255, 255, 0);
+        WiFi.softAPConfig(apIP, apGateway, apSubnet);
+
         if (strlen(s_ap_password) > 0 && strlen(s_ap_password) < 8) {
             WiFi.softAP(s_ap_ssid, NULL);
         } else if (strlen(s_ap_password) == 0) {
@@ -185,6 +200,18 @@ bool initWiFiAndNetwork(void) {
             WiFi.softAP(s_ap_ssid, s_ap_password);
         }
 
+        // 1. mDNS in AP Mode
+        if (MDNS.begin("kore")) {
+            MDNS.setInstanceName("KoRe Robot AP");
+            MDNS.addService("http", "tcp", HTTP_PORT_WEB_CONTROL);
+            MDNS.addService("stream", "tcp", HTTP_PORT_STREAM);
+        }
+
+        // 2. NetBIOS in AP Mode
+        NBNS.begin("kore");
+
+        // 3. DNS Captive Portal Server (Port 53 Catch-All for any domain -> AP IP)
+        s_dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
         s_dnsServer.start(53, "*", WiFi.softAPIP());
         s_is_ap_mode = true;
 
@@ -194,9 +221,9 @@ bool initWiFiAndNetwork(void) {
                 if (s_is_ap_mode) {
                     s_dnsServer.processNextRequest();
                 }
-                vTaskDelay(pdMS_TO_TICKS(10));
+                vTaskDelay(pdMS_TO_TICKS(5));
             }
-        }, "AP_DNS_Task", 2048, NULL, 1, NULL);
+        }, "AP_DNS_Task", 3072, NULL, 1, NULL);
 
         char ap_ip_buf[40];
         if (!force_ap && strlen(s_sta_ssid) > 0) {

@@ -29,10 +29,6 @@ void showBootStatus(const char* line1, const char* line2) {
     }
 }
 
-static void drawSensorOverlay() {
-    /* Sensor telemetry overlay hook */
-}
-
 static void drawDualEyes(float leftHeightFactor, float rightHeightFactor, int ox, int oy, uint16_t color, float vergence, float scale) {
     (void)vergence;
     (void)scale;
@@ -339,7 +335,6 @@ static void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCu
     drawEyes(eyeHeightFactor, ox, oy, fgColor, vergence, scale);
     drawAngryBrows(eyeHeightFactor, ox, oy, browAlpha, bgColor, vergence, scale);
     drawMouthCustom(ox, oy, mouthCurve, mouthY, mouthWidth, 0.0f, fgColor, scale);
-    drawSensorOverlay();
     canvas.pushSprite(0, 0);
 }
 
@@ -354,7 +349,6 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawJoyEyes(ox, oy, 1.0f, TFT_WHITE, vergence, scale);
             drawJoyMouth(ox, oy, 1.0f, TFT_WHITE, scale);
-            drawSensorOverlay();
             canvas.pushSprite(0, 0);
             break;
         case EXPR_ANGRY:
@@ -364,7 +358,6 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawCatMouth(ox, oy, TFT_WHITE, scale);
-            drawSensorOverlay();
             canvas.pushSprite(0, 0);
             break;
         case EXPR_SHOCK:
@@ -375,28 +368,24 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
                 drawEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             }
             drawShockMouth(ox, oy, TFT_WHITE, scale);
-            drawSensorOverlay();
             canvas.pushSprite(0, 0);
             break;
         case EXPR_OVERLOAD:
             canvas.fillScreen(TFT_BLACK);
             drawSpiralEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawOverloadMouth(ox, oy, TFT_WHITE, scale);
-            drawSensorOverlay();
             canvas.pushSprite(0, 0);
             break;
         case EXPR_SEDIH:
             canvas.fillScreen(TFT_BLACK);
             drawSedihEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawSedihMouth(ox, oy, frame, TFT_WHITE, scale);
-            drawSensorOverlay();
             canvas.pushSprite(0, 0);
             break;
         case EXPR_DEADPAN:
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawDeadpanMouth(ox, oy, TFT_WHITE, scale);
-            drawSensorOverlay();
             canvas.pushSprite(0, 0);
             break;
     }
@@ -511,7 +500,6 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
             }
         }
 
-        drawSensorOverlay();
         canvas.pushSprite(0, 0);
         vTaskDelay(pdMS_TO_TICKS((int)stepDelay));
     }
@@ -520,7 +508,6 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
 
 void oledTask(void *pvParameters) {
     (void)pvParameters;
-    pinMode(PIN_TOUCH_INPUT, INPUT_PULLDOWN);
 
     lcd.init();
     lcd.setRotation(2);
@@ -613,11 +600,13 @@ void oledTask(void *pvParameters) {
         uint32_t frame_elapsed_us = micros() - frame_start_us;
         if (frame_elapsed_us < frame_budget_us) {
             uint32_t wait_us = frame_budget_us - frame_elapsed_us;
-            if (wait_us > 3000) {
-                vTaskDelay(pdMS_TO_TICKS(wait_us / 1000 - 1));
+            if (wait_us > 2000) {
+                vTaskDelay(pdMS_TO_TICKS((wait_us - 500) / 1000));
             }
-            while ((micros() - frame_start_us) < frame_budget_us) {
-                taskYIELD();
+            /* Fine-grained sub-ms timing: yield once then accept frame */
+            uint32_t remaining_us = frame_budget_us - (micros() - frame_start_us);
+            if (remaining_us > 0 && remaining_us < 2000) {
+                delayMicroseconds(remaining_us);
             }
         }
     }

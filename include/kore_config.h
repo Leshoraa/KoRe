@@ -31,8 +31,7 @@ extern "C" {
 #define KORE_LOG_ERR(tag, fmt, ...)     fprintf(stderr, "[%s][ERR] %s:%d: " fmt "\n", tag, __func__, __LINE__, ##__VA_ARGS__)
 
 /* --- Hardware Pin Configuration --- */
-#define PIN_TOUCH_INPUT         2
-#define ENABLE_TOUCH_SENSOR     false
+/* Note: Touch sensor support removed in v2.4.0 (was unused) */
 
 /* OLED Display (SSD1306) Hardware I2C Pins */
 #define PIN_OLED_SCL            5
@@ -94,6 +93,12 @@ extern "C" {
 #define STREAM_BUFFER_SIZE_BYTES      (64 * 1024)
 #define HTTP_PORT_WEB_CONTROL         80
 #define HTTP_PORT_STREAM              81
+
+/* --- Stream Client Limits --- */
+#define MAX_STREAM_CLIENTS        2        /* Maximum concurrent MJPEG stream clients */
+
+/* --- Firmware Version --- */
+#define KORE_FIRMWARE_VERSION     "2.4.0"
 
 #ifdef __cplusplus
 }

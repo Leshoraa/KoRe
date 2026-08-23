@@ -11,6 +11,8 @@
 #include "include/kore_affective.h"
 #include "esp_camera.h"
 #include <Arduino.h>
+#include "esp_heap_caps.h"
+#include <WiFi.h>
 
 httpd_handle_t g_stream_httpd = NULL;
 httpd_handle_t g_camera_httpd = NULL;
@@ -28,7 +30,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
 
 static esp_err_t telemetry_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
-    char json[640];
+    char json[1024];
     TrackTarget target;
     int num_cands = 0;
     int insp_idx = 0;
@@ -42,7 +44,7 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
     portEXIT_CRITICAL(&g_target_mutex);
 
     snprintf(json, sizeof(json),
-        "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_w\":%d,\"c0_h\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_w\":%d,\"c1_h\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_w\":%d,\"c2_h\":%d,\"c2_p\":%.1f,\"expr\":%d,\"expr_name\":\"%s\",\"is_manual\":%s}",
+        "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_w\":%d,\"c0_h\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_w\":%d,\"c1_h\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_w\":%d,\"c2_h\":%d,\"c2_p\":%.1f,\"expr\":%d,\"expr_name\":\"%s\",\"is_manual\":%s,\"valence\":%.2f,\"arousal\":%.2f,\"heap_free\":%u,\"psram_free\":%u,\"uptime_s\":%lu,\"cpu_mhz\":%d}",
         target.detected ? "true" : "false",
         target.x, target.y, target.w, target.h,
         target.cx, target.cy,
@@ -58,7 +60,12 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
         cands[2].cx, cands[2].cy, cands[2].w, cands[2].h, cands[2].priority_score,
         (int)g_currentExpr,
         getExpressionName(g_currentExpr),
-        isManualExpressionActive() ? "true" : "false"
+        isManualExpressionActive() ? "true" : "false",
+        getEmotionValence(), getEmotionArousal(),
+        (unsigned)esp_get_free_heap_size(),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned long)(millis() / 1000),
+        ESP.getCpuFreqMHz()
     );
 
     httpd_resp_set_type(req, "application/json");
@@ -184,8 +191,8 @@ static esp_err_t get_wifi_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
     char json[320];
     snprintf(json, sizeof(json),
-        "{\"sta_ssid\":\"%s\",\"sta_pass\":\"%s\",\"ap_ssid\":\"%s\",\"ap_pass\":\"%s\",\"is_ap\":%s}",
-        getWiFiStaSSID(), getWiFiStaPass(), getWiFiApSSID(), getWiFiApPass(), isWiFiAPMode() ? "true" : "false"
+        "{\"sta_ssid\":\"%s\",\"sta_pass\":\"********\",\"ap_ssid\":\"%s\",\"ap_pass\":\"********\",\"is_ap\":%s}",
+        getWiFiStaSSID(), getWiFiApSSID(), isWiFiAPMode() ? "true" : "false"
     );
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -278,8 +285,69 @@ static esp_err_t set_expression_handler(httpd_req_t *req) {
     return httpd_resp_send(req, resp, strlen(resp));
 }
 
+static esp_err_t scan_wifi_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    WiFi.scanDelete();
+    int n = WiFi.scanNetworks(false, false, false, 300);
+    
+    char json[1024];
+    int pos = 0;
+    pos += snprintf(json + pos, sizeof(json) - pos, "{\"networks\":[");
+    
+    for (int i = 0; i < n && i < 15 && pos < (int)sizeof(json) - 80; i++) {
+        if (i > 0) pos += snprintf(json + pos, sizeof(json) - pos, ",");
+        const char* enc = "OPEN";
+        switch (WiFi.encryptionType(i)) {
+            case WIFI_AUTH_WPA_PSK:       enc = "WPA"; break;
+            case WIFI_AUTH_WPA2_PSK:      enc = "WPA2"; break;
+            case WIFI_AUTH_WPA_WPA2_PSK:  enc = "WPA/WPA2"; break;
+            case WIFI_AUTH_WPA3_PSK:      enc = "WPA3"; break;
+            case WIFI_AUTH_WEP:           enc = "WEP"; break;
+            default:                       enc = "OTHER"; break;
+        }
+        pos += snprintf(json + pos, sizeof(json) - pos,
+            "{\"ssid\":\"%s\",\"rssi\":%d,\"enc\":\"%s\"}",
+            WiFi.SSID(i).c_str(), WiFi.RSSI(i), enc);
+    }
+    pos += snprintf(json + pos, sizeof(json) - pos, "],\"count\":%d}", n);
+    
+    WiFi.scanDelete();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json, strlen(json));
+}
+
+static esp_err_t system_info_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char json[512];
+    
+    uint32_t uptime_s = millis() / 1000;
+    int32_t rssi = (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+    
+    snprintf(json, sizeof(json),
+        "{\"firmware\":\"2.4.0\",\"compiled\":\"%s %s\",\"chip\":\"%s\",\"cores\":%d,\"cpu_mhz\":%d,"
+        "\"heap_free\":%u,\"heap_min\":%u,\"psram_free\":%u,\"psram_total\":%u,"
+        "\"uptime_s\":%lu,\"wifi_rssi\":%d,\"wifi_mode\":\"%s\",\"ip\":\"%s\","
+        "\"camera_ok\":%s,\"stream_clients\":%d}",
+        __DATE__, __TIME__,
+        ESP.getChipModel(), ESP.getChipCores(), ESP.getCpuFreqMHz(),
+        (unsigned)esp_get_free_heap_size(), (unsigned)esp_get_minimum_free_heap_size(),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
+        (unsigned long)uptime_s, (int)rssi,
+        isWiFiAPMode() ? "AP" : "STA",
+        isWiFiAPMode() ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
+        g_camera_init_ok ? "true" : "false",
+        g_stream_clients
+    );
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json, strlen(json));
+}
+
 void startWebServer(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.max_uri_handlers = 24;
     config.server_port = HTTP_PORT_WEB_CONTROL;
 
     httpd_uri_t index_uri          = { .uri = "/",                   .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
@@ -292,6 +360,11 @@ void startWebServer(void) {
     httpd_uri_t captive_2          = { .uri = "/gen_204",             .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
     httpd_uri_t captive_3          = { .uri = "/hotspot-detect.html", .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
     httpd_uri_t captive_4          = { .uri = "/connecttest.txt",     .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
+    httpd_uri_t captive_5          = { .uri = "/ncsi.txt",            .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
+    httpd_uri_t captive_6          = { .uri = "/canonical.html",      .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
+    httpd_uri_t captive_7          = { .uri = "/success.txt",         .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
+    httpd_uri_t scan_wifi_uri      = { .uri = "/scan_wifi",           .method = HTTP_GET,  .handler = scan_wifi_handler,      .user_ctx = NULL };
+    httpd_uri_t system_info_uri    = { .uri = "/system_info",         .method = HTTP_GET,  .handler = system_info_handler,    .user_ctx = NULL };
 
     if (httpd_start(&g_camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(g_camera_httpd, &index_uri);
@@ -304,6 +377,11 @@ void startWebServer(void) {
         httpd_register_uri_handler(g_camera_httpd, &captive_2);
         httpd_register_uri_handler(g_camera_httpd, &captive_3);
         httpd_register_uri_handler(g_camera_httpd, &captive_4);
+        httpd_register_uri_handler(g_camera_httpd, &captive_5);
+        httpd_register_uri_handler(g_camera_httpd, &captive_6);
+        httpd_register_uri_handler(g_camera_httpd, &captive_7);
+        httpd_register_uri_handler(g_camera_httpd, &scan_wifi_uri);
+        httpd_register_uri_handler(g_camera_httpd, &system_info_uri);
     }
 
     config.server_port = HTTP_PORT_STREAM;

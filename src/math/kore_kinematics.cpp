@@ -187,7 +187,7 @@ void updateGazeSystem(void) {
                 s_trackSaccadeStartY = g_currentOffsetY;
                 s_trackSaccadeTargetX = effectiveTargetX;
                 s_trackSaccadeTargetY = effectiveTargetY;
-                s_trackSaccadeDuration = (uint32_t)constrain(120.0f + dist_init * 3.5f, 130.0f, 260.0f);
+                s_trackSaccadeDuration = compute_saccade_duration_ms(dist_init);
             } else {
                 s_trackInSaccade = false;
             }
@@ -212,7 +212,7 @@ void updateGazeSystem(void) {
         if (dist_eye > 15.0f && !s_trackInSaccade) {
             s_trackInSaccade = true;
             s_trackSaccadeStart = now;
-            s_trackSaccadeDuration = (uint32_t)constrain(100.0f + dist_eye * 3.0f, 120.0f, 220.0f);
+            s_trackSaccadeDuration = compute_saccade_duration_ms(dist_eye);
             s_trackSaccadeStartX = g_currentOffsetX;
             s_trackSaccadeStartY = g_currentOffsetY;
             s_trackSaccadeTargetX = effectiveTargetX;
@@ -304,7 +304,7 @@ void updateGazeSystem(void) {
 
             float ds = sqrtf((s_targetOffsetX - s_startOffsetX) * (s_targetOffsetX - s_startOffsetX) +
                              (s_targetOffsetY - s_startOffsetY) * (s_targetOffsetY - s_startOffsetY));
-            s_gazeDuration = (uint32_t)constrain(140.0f + ds * 4.0f, 150.0f, 280.0f);
+            s_gazeDuration = compute_saccade_duration_ms(ds);
             s_nextGazeTime = now + s_gazeDuration + (esp_random() % 2000 + 3000);
             s_gazeStartTime = now;
             s_inSaccade = true;
@@ -326,7 +326,7 @@ void updateGazeSystem(void) {
 
             float ds = sqrtf((s_targetOffsetX - s_startOffsetX) * (s_targetOffsetX - s_startOffsetX) +
                              (s_targetOffsetY - s_startOffsetY) * (s_targetOffsetY - s_startOffsetY));
-            s_gazeDuration = (uint32_t)constrain(120.0f + ds * 3.5f, 130.0f, 240.0f);
+            s_gazeDuration = compute_saccade_duration_ms(ds);
             s_nextGazeTime = now + s_gazeDuration + (esp_random() % 1800 + 2200);
             s_gazeStartTime = now;
             s_inSaccade = true;

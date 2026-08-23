@@ -55,9 +55,19 @@ void kf1d_update(KalmanFilter1D *kf, float z, float R) {
     kf->v = kf->v + K1 * y;
 
     /* Joseph-stabilized covariance update formulation */
-    float P00_temp = (1.0f - K0) * kf->P00;
-    float P01_temp = (1.0f - K0) * kf->P01;
-    float P11_temp = kf->P11 - K1 * kf->P01;
+    float IKH00 = 1.0f - K0;
+    float IKH01 = 0.0f;
+    float IKH10 = -K1;
+    float IKH11 = 1.0f;
+    
+    float IKH_P00 = IKH00 * kf->P00 + IKH01 * kf->P01;
+    float IKH_P01 = IKH00 * kf->P01 + IKH01 * kf->P11;
+    float IKH_P10 = IKH10 * kf->P00 + IKH11 * kf->P01;
+    float IKH_P11 = IKH10 * kf->P01 + IKH11 * kf->P11;
+
+    float P00_temp = IKH_P00 * IKH00 + IKH_P01 * IKH01 + K0 * R * K0;
+    float P01_temp = IKH_P00 * IKH10 + IKH_P01 * IKH11 + K0 * R * K1;
+    float P11_temp = IKH_P10 * IKH10 + IKH_P11 * IKH11 + K1 * R * K1;
 
     /* Enforce positive semi-definiteness */
     kf->P00 = fmaxf(1e-3f, P00_temp);

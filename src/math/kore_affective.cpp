@@ -131,6 +131,19 @@ void updateBiologicalMoodEngine(void) {
     s_emotion_valence += ((target_v - s_emotion_valence) / tau_v) * dt;
     s_emotion_arousal += ((target_a - s_emotion_arousal) / tau_a) * dt;
 
+    /* Stochastic Langevin diffusion term: +Sigma * dW_t */
+    float sigma_v = 0.02f;  /* Valence diffusion coefficient */
+    float sigma_a = 0.015f; /* Arousal diffusion coefficient */
+    float sqrt_dt = sqrtf(dt);
+    float noise_v = ((float)(esp_random() % 2000) - 1000.0f) * 0.001f;
+    float noise_a = ((float)(esp_random() % 2000) - 1000.0f) * 0.001f;
+    s_emotion_valence += sigma_v * sqrt_dt * noise_v;
+    s_emotion_arousal += sigma_a * sqrt_dt * noise_a;
+
+    /* Clamp emotional state to valid ranges */
+    s_emotion_valence = constrain(s_emotion_valence, -1.0f, 1.0f);
+    s_emotion_arousal = constrain(s_emotion_arousal, 0.0f, 1.0f);
+
     if (is_detected && !s_lastTargetDetectedState) {
         s_lastTargetDetectedState = true;
         uint32_t roll = esp_random() % 100;

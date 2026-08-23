@@ -30,7 +30,7 @@ volatile int g_stream_clients = 0;
 volatile uint32_t g_last_web_activity_ms = 0;
 uint8_t* g_latest_jpeg_buf = NULL;
 size_t g_latest_jpeg_len = 0;
-bool g_camera_init_ok = false;
+volatile bool g_camera_init_ok = false;
 
 /* Internal Vision Frame Buffers in SRAM */
 static uint8_t* small_rgb_buf = NULL;
@@ -92,7 +92,7 @@ bool allocateVisionBuffers(void) {
     return (small_rgb_buf && prev_lum_buf && mhi_buf && g_latest_jpeg_buf);
 }
 
-void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
+void processFrameAI(camera_fb_t *fb) {
     if (!fb || !fb->buf || fb->len < 1024 || !small_rgb_buf || !prev_lum_buf || !mhi_buf || fb->format != PIXFORMAT_JPEG) return;
 
     bool ok = jpg2rgb565(fb->buf, fb->len, small_rgb_buf, JPG_SCALE_8X);
@@ -140,13 +140,35 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
         }
     }
 
+    /* Pre-compute integer-scaled sector boundaries to eliminate per-pixel float-to-int casts */
+    int sec_min_cb[3][4], sec_max_cb[3][4], sec_min_cr[3][4], sec_max_cr[3][4];
+    int sec_shadow_margin[3][4], sec_min_r_thresh[3][4], sec_min_cr_cb_diff[3][4];
+    for (int sy = 0; sy < 3; sy++) {
+        for (int sx = 0; sx < 4; sx++) {
+            float local_lum = sec_mean_lum[sy][sx];
+            float delta_local = fmaxf(0.0f, fminf(16.0f, (95.0f - local_lum) * 0.45f));
+            sec_min_cb[sy][sx] = (int)(75.0f - delta_local);
+            sec_max_cb[sy][sx] = (int)(129.0f + delta_local);
+            sec_min_cr[sy][sx] = (int)(127.0f - delta_local);
+            sec_max_cr[sy][sx] = (int)(180.0f + delta_local);
+            sec_shadow_margin[sy][sx]   = (local_lum < 65.0f) ? 4 : 0;
+            sec_min_r_thresh[sy][sx]    = (local_lum < 65.0f) ? 8 : 10;
+            sec_min_cr_cb_diff[sy][sx]  = (local_lum < 65.0f) ? 4 : 6;
+            if (local_lum > 185.0f) {
+                sec_min_cb[sy][sx] += 3;
+                sec_max_cb[sy][sx] -= 3;
+                sec_min_cr[sy][sx] += 3;
+                sec_max_cr[sy][sx] -= 3;
+            }
+        }
+    }
+
     bool* p_skin = skin_mask_40x30;
     for (int y = 0; y < 30; y++) {
         int src_row_off = (y * 2) * 80;
         int sec_y = y / 10;
         for (int x = 0; x < 40; x++) {
             int sec_x = x / 10;
-            float local_lum = sec_mean_lum[sec_y][sec_x];
 
             uint16_t p = pixels[src_row_off + (x * 2)];
             int r = ((p >> 11) & 0x1F) << 3;
@@ -156,22 +178,13 @@ void IRAM_ATTR processFrameAI(camera_fb_t *fb) {
             int cb = 128 + (((-43 * r - 85 * g + 128 * b)) >> 8);
             int cr = 128 + (((128 * r - 107 * g - 21 * b)) >> 8);
 
-            float delta_local = fmaxf(0.0f, fminf(16.0f, (95.0f - local_lum) * 0.45f));
-            int min_cb = (int)(75.0f - delta_local);
-            int max_cb = (int)(129.0f + delta_local);
-            int min_cr = (int)(127.0f - delta_local);
-            int max_cr = (int)(180.0f + delta_local);
-
-            int shadow_margin = (local_lum < 65.0f) ? 4 : 0;
-            int min_r_thresh   = (local_lum < 65.0f) ? 8 : 10;
-            int min_cr_cb_diff = (local_lum < 65.0f) ? 4 : 6;
-
-            if (local_lum > 185.0f) {
-                min_cb += 3;
-                max_cb -= 3;
-                min_cr += 3;
-                max_cr -= 3;
-            }
+            int min_cb = sec_min_cb[sec_y][sec_x];
+            int max_cb = sec_max_cb[sec_y][sec_x];
+            int min_cr = sec_min_cr[sec_y][sec_x];
+            int max_cr = sec_max_cr[sec_y][sec_x];
+            int shadow_margin = sec_shadow_margin[sec_y][sec_x];
+            int min_r_thresh = sec_min_r_thresh[sec_y][sec_x];
+            int min_cr_cb_diff = sec_min_cr_cb_diff[sec_y][sec_x];
 
             bool is_skin = (r + shadow_margin >= b) && 
                            ((cr - cb) >= min_cr_cb_diff) && 
@@ -634,21 +647,13 @@ void cameraTask(void *pvParameters) {
     uint32_t last_frame_time = millis();
     uint32_t state_timer = millis();
 
-    uint32_t active_duration_ms = (esp_random() % 3000) + 3000;
+    uint32_t active_duration_ms = ACTIVE_STATE_TIMEOUT_MS;
     uint32_t sleep_duration_ms  = (esp_random() % 90000) + 90000;
-    bool last_wifi_ps_sleep = false;
     uint32_t last_camera_retry_ms = 0;
 
     while (true) {
         uint32_t now = millis();
         bool web_active = isWebOrStreamActive(now);
-
-        if (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) {
-            if (last_wifi_ps_sleep) {
-                WiFi.setSleep(WIFI_PS_NONE);
-                last_wifi_ps_sleep = false;
-            }
-        }
 
         if (!g_camera_init_ok) {
             if (now - last_camera_retry_ms > 5000) {
@@ -733,7 +738,7 @@ void cameraTask(void *pvParameters) {
 
                 g_recon_state = STATE_ACTIVE;
                 state_timer = now;
-                active_duration_ms = (esp_random() % 3000) + 3000;
+                active_duration_ms = ACTIVE_STATE_TIMEOUT_MS;
             } else {
                 vTaskDelay(pdMS_TO_TICKS(50));
             }

@@ -66,3 +66,51 @@ KoRe hosts a lightweight, asynchronous dual-port HTTP server on the ESP32-S3:
 - **`GET /get_wifi`:** Returns current saved credentials and mode flag.
 - **`POST /save_wifi`:** Updates SSID and password in NVS and reboots device.
 - **`POST /switch_mode`:** Toggles between AP and STA mode in NVS and reboots device.
+
+### 2.6 WiFi Network Scanner
+- **URL:** `GET http://<ESP32_IP>/scan_wifi`
+- **Response:** `application/json`
+- **Schema:**
+```json
+{
+  "networks": [
+    {"ssid": "MyNetwork", "rssi": -45, "enc": "WPA2"},
+    {"ssid": "OpenNet", "rssi": -72, "enc": "OPEN"}
+  ],
+  "count": 2
+}
+```
+
+### 2.7 System Information
+- **URL:** `GET http://<ESP32_IP>/system_info`
+- **Response:** `application/json`
+- **Schema:**
+```json
+{
+  "firmware": "2.4.0",
+  "compiled": "Aug 23 2026 11:00:00",
+  "chip": "ESP32-S3",
+  "cores": 2,
+  "cpu_mhz": 240,
+  "heap_free": 125432,
+  "heap_min": 98000,
+  "psram_free": 7340032,
+  "psram_total": 8388608,
+  "uptime_s": 3600,
+  "wifi_rssi": -52,
+  "wifi_mode": "STA",
+  "ip": "192.168.1.100",
+  "camera_ok": true,
+  "stream_clients": 1
+}
+```
+
+### 2.8 Extended Telemetry Fields
+The `/telemetry` endpoint now includes additional system metrics:
+- `valence` (float): Current emotional valence [-1.0, 1.0]
+- `arousal` (float): Current emotional arousal [0.0, 1.0]
+- `heap_free` (uint): Free internal heap in bytes
+- `psram_free` (uint): Free PSRAM in bytes
+- `uptime_s` (uint): System uptime in seconds
+- `cpu_mhz` (int): Current CPU frequency in MHz
+```

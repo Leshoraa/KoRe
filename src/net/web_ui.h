@@ -1353,9 +1353,9 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       .then(res => res.json())
       .then(data => {
         if (data.sta_ssid) document.getElementById('sta_ssid').value = data.sta_ssid;
-        if (data.sta_pass) document.getElementById('sta_pass').value = data.sta_pass;
         if (data.ap_ssid) document.getElementById('ap_ssid').value = data.ap_ssid;
-        if (data.ap_pass) document.getElementById('ap_pass').value = data.ap_pass;
+        document.getElementById('sta_pass').placeholder = 'Tersimpan (kosongkan jika tidak diubah)';
+        document.getElementById('ap_pass').placeholder = 'Tersimpan (kosongkan jika tidak diubah)';
 
         const modeBadge = document.getElementById('mode-badge');
         const netBadgeInfo = document.getElementById('net-badge-info');
@@ -1385,31 +1385,30 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       document.getElementById('btn-save').disabled = true;
       status.style.display = 'block';
 
-      const apUrl = 'http://192.168.4.1';
+      const unifiedUrl = 'http://192.168.18.16';
 
       if (targetMode === 'AP') {
         btn.innerText = 'Beralih ke AP Mode...';
-        status.innerHTML = 'ESP32 sedang reboot ke AP Mode.<br>Hubungkan Wi-Fi ke <b>KoRe</b> lalu buka: <a href="' + apUrl + '" style="color:#111827;font-weight:700;">' + apUrl + '</a><br><small>Pengalihan otomatis dalam 4 detik...</small>';
+        status.innerHTML = 'ESP32 sedang reboot ke AP Mode.<br>Hubungkan Wi-Fi ke <b>KoRe</b> lalu buka: <a href="' + unifiedUrl + '" style="color:#111827;font-weight:700;">' + unifiedUrl + '</a><br><small>Pengalihan otomatis dalam 4 detik...</small>';
 
         fetch('/switch_mode', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ mode: targetMode })
         }).finally(() => {
-          setTimeout(() => { window.location.href = apUrl; }, 4000);
+          setTimeout(() => { window.location.href = unifiedUrl; }, 4000);
         });
       } else {
         const staSsid = document.getElementById('sta_ssid').value || 'WiFi Router';
-        const staUrl = 'http://kore.local';
         btn.innerText = 'Beralih ke STA Mode...';
-        status.innerHTML = 'ESP32 sedang reboot dan menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL STA: <a href="' + staUrl + '" style="color:#111827;font-weight:700;">' + staUrl + '</a><br><small>Pengalihan otomatis ke ' + staUrl + ' dalam 6 detik...</small>';
+        status.innerHTML = 'ESP32 sedang reboot dan menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL: <a href="' + unifiedUrl + '" style="color:#111827;font-weight:700;">' + unifiedUrl + '</a><br><small>Pengalihan otomatis dalam 6 detik...</small>';
 
         fetch('/switch_mode', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ mode: targetMode })
         }).finally(() => {
-          setTimeout(() => { window.location.href = staUrl; }, 6000);
+          setTimeout(() => { window.location.href = unifiedUrl; }, 6000);
         });
       }
     });
@@ -1434,8 +1433,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       status.style.display = 'block';
 
       const staSsid = document.getElementById('sta_ssid').value || 'WiFi Router';
-      const staUrl = 'http://kore.local';
-      status.innerHTML = 'Konfigurasi disimpan. ESP32 reboot menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL STA: <a href="' + staUrl + '" style="color:#111827;font-weight:700;">' + staUrl + '</a><br><small>Pengalihan otomatis dalam 6 detik...</small>';
+      const unifiedUrl = 'http://192.168.18.16';
+      status.innerHTML = 'Konfigurasi disimpan. ESP32 reboot menghubungkan ke <b>' + staSsid + '</b>.<br>Buka URL: <a href="' + unifiedUrl + '" style="color:#111827;font-weight:700;">' + unifiedUrl + '</a><br><small>Pengalihan otomatis dalam 6 detik...</small>';
 
       const body = {
         sta_ssid: document.getElementById('sta_ssid').value,
@@ -1449,7 +1448,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       }).finally(() => {
-        setTimeout(() => { window.location.href = staUrl; }, 6000);
+        setTimeout(() => { window.location.href = unifiedUrl; }, 6000);
       });
     });
 

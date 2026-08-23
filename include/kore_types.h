@@ -110,7 +110,7 @@ extern volatile int g_stream_clients;
 extern volatile uint32_t g_last_web_activity_ms;
 extern uint8_t* g_latest_jpeg_buf;
 extern size_t g_latest_jpeg_len;
-extern bool g_camera_init_ok;
+extern volatile bool g_camera_init_ok;
 
 #ifdef __cplusplus
 }
