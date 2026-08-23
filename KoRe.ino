@@ -66,7 +66,7 @@ void setup() {
         xTaskCreatePinnedToCore(
             cameraTask,
             "Camera_AI_Task",
-            8192,
+            10240,
             NULL,
             2,
             NULL,
@@ -80,7 +80,7 @@ void setup() {
     xTaskCreatePinnedToCore(
         oledTask,
         "OLED_Task",
-        8192,
+        10240,
         NULL,
         1,
         NULL,

@@ -1141,6 +1141,34 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                 <label for="weather-city-input">OLED Display Label</label>
                 <input type="text" id="weather-city-input" placeholder="e.g. Jakarta" value="Jakarta" required maxlength="20">
               </div>
+              <div class="form-group">
+                <label for="weather-tz-select">Timezone (UTC Offset)</label>
+                <select id="weather-tz-select" style="width:100%;padding:10px 12px;font-family:inherit;font-size:12px;border:1px solid var(--border-card);border-radius:var(--radius-control);background:var(--bg-card);color:var(--text-main);">
+                  <option value="25200" selected>UTC+07:00 (WIB - Jakarta, Bangkok, Hanoi)</option>
+                  <option value="28800">UTC+08:00 (WITA - Bali, Singapore, Taipei, Perth)</option>
+                  <option value="32400">UTC+09:00 (WIT - Tokyo, Seoul, Jayapura)</option>
+                  <option value="0">UTC+00:00 (GMT/UTC - London, Dublin, Lisbon)</option>
+                  <option value="3600">UTC+01:00 (CET - Paris, Berlin, Rome, Madrid)</option>
+                  <option value="7200">UTC+02:00 (EET - Athens, Cairo, Helsinki, Kyiv)</option>
+                  <option value="10800">UTC+03:00 (MSK/AST - Moscow, Riyadh, Istanbul)</option>
+                  <option value="14400">UTC+04:00 (GST - Dubai, Abu Dhabi, Baku)</option>
+                  <option value="19800">UTC+05:30 (IST - New Delhi, Mumbai, Colombo)</option>
+                  <option value="20700">UTC+05:45 (NPT - Kathmandu)</option>
+                  <option value="21600">UTC+06:00 (BST - Dhaka, Almaty)</option>
+                  <option value="36000">UTC+10:00 (AEST - Sydney, Melbourne, Brisbane)</option>
+                  <option value="39600">UTC+11:00 (SBT - Noumea, Solomon Is.)</option>
+                  <option value="43200">UTC+12:00 (NZST - Auckland, Suva)</option>
+                  <option value="-36000">UTC-10:00 (HST - Honolulu, Hawaii)</option>
+                  <option value="-32400">UTC-09:00 (AKST - Anchorage, Alaska)</option>
+                  <option value="-28800">UTC-08:00 (PST - Los Angeles, San Francisco, Vancouver)</option>
+                  <option value="-25200">UTC-07:00 (MST - Denver, Phoenix, Calgary)</option>
+                  <option value="-21600">UTC-06:00 (CST - Chicago, Dallas, Mexico City)</option>
+                  <option value="-18000">UTC-05:00 (EST - New York, Washington, Toronto, Miami)</option>
+                  <option value="-14400">UTC-04:00 (AST - Santiago, Halifax, Manaus)</option>
+                  <option value="-10800">UTC-03:00 (BRT/ART - São Paulo, Buenos Aires)</option>
+                  <option value="-3600">UTC-01:00 (CVT - Cape Verde, Azores)</option>
+                </select>
+              </div>
             </div>
 
             <div class="form-section">
@@ -1164,12 +1192,13 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
           <div style="margin-top:12px;display:flex;align-items:center;gap:8px;">
             <input type="checkbox" id="weather-enable-check" checked style="accent-color:var(--accent-dark);width:16px;height:16px;cursor:pointer;">
-            <label for="weather-enable-check" style="font-size:12px;font-weight:600;cursor:pointer;margin:0;">Show Random Weather Popup (6s) during Idle Standby</label>
+            <label for="weather-enable-check" style="font-size:12px;font-weight:600;cursor:pointer;margin:0;">Show Random Weather & Clock Popup (6s) during Idle Standby</label>
           </div>
 
-          <div class="form-actions-row" style="margin-top:14px;display:flex;gap:8px;">
-            <button type="button" id="btn-preview-weather" class="btn-switch-mode" style="flex:1;">Preview OLED (6s)</button>
-            <button type="button" id="btn-save-weather" class="btn-submit-main" style="flex:1.4;">Save & Fetch Weather →</button>
+          <div class="form-actions-row" style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" id="btn-preview-clock" class="btn-switch-mode" style="flex:1;min-width:110px;">Preview Clock</button>
+            <button type="button" id="btn-preview-weather" class="btn-switch-mode" style="flex:1;min-width:110px;">Preview Weather</button>
+            <button type="button" id="btn-save-weather" class="btn-submit-main" style="flex:1.4;min-width:130px;">Save & Fetch →</button>
           </div>
 
           <div id="weather-live-info" style="margin-top:10px;padding:10px 12px;font-size:11.5px;background:var(--bg-surface);border-radius:var(--radius-control);color:var(--text-muted);display:none;"></div>
@@ -1906,48 +1935,50 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
     /* Weather Presets Map */
     const weatherPresets = {
-      jakarta: { city: 'Jakarta', lat: -6.2088, lon: 106.8456 },
-      bandung: { city: 'Bandung', lat: -6.9175, lon: 107.6191 },
-      surabaya: { city: 'Surabaya', lat: -7.2575, lon: 112.7521 },
-      semarang: { city: 'Semarang', lat: -6.9667, lon: 110.4167 },
-      yogyakarta: { city: 'Yogyakarta', lat: -7.7956, lon: 110.3695 },
-      solo: { city: 'Surakarta', lat: -7.5666, lon: 110.8167 },
-      malang: { city: 'Malang', lat: -7.9797, lon: 112.6304 },
-      bogor: { city: 'Bogor', lat: -6.5950, lon: 106.8166 },
-      depok: { city: 'Depok', lat: -6.4025, lon: 106.7942 },
-      tangerang: { city: 'Tangerang', lat: -6.1783, lon: 106.6319 },
-      bekasi: { city: 'Bekasi', lat: -6.2383, lon: 106.9756 },
-      medan: { city: 'Medan', lat: 3.5952, lon: 98.6722 },
-      palembang: { city: 'Palembang', lat: -2.9761, lon: 104.7754 },
-      padang: { city: 'Padang', lat: -0.9471, lon: 100.4172 },
-      pekanbaru: { city: 'Pekanbaru', lat: 0.5071, lon: 101.4478 },
-      lampung: { city: 'B. Lampung', lat: -5.4500, lon: 105.2667 },
-      batam: { city: 'Batam', lat: 1.1301, lon: 104.0529 },
-      aceh: { city: 'Banda Aceh', lat: 5.5483, lon: 95.3238 },
-      bali: { city: 'Denpasar', lat: -8.6705, lon: 115.2126 },
-      mataram: { city: 'Mataram', lat: -8.5833, lon: 116.1167 },
-      kupang: { city: 'Kupang', lat: -10.1772, lon: 123.6070 },
-      ikn: { city: 'IKN Nusantara', lat: -0.9744, lon: 116.7027 },
-      balikpapan: { city: 'Balikpapan', lat: -1.2379, lon: 116.8289 },
-      samarinda: { city: 'Samarinda', lat: -0.5022, lon: 117.1536 },
-      banjarmasin: { city: 'Banjarmasin', lat: -3.3194, lon: 114.5908 },
-      pontianak: { city: 'Pontianak', lat: -0.0263, lon: 109.3425 },
-      makassar: { city: 'Makassar', lat: -5.1477, lon: 119.4327 },
-      manado: { city: 'Manado', lat: 1.4748, lon: 124.8428 },
-      jayapura: { city: 'Jayapura', lat: -2.5337, lon: 140.7181 },
-      ambon: { city: 'Ambon', lat: -3.6954, lon: 128.1814 },
-      singapore: { city: 'Singapore', lat: 1.3521, lon: 103.8198 },
-      kualalumpur: { city: 'Kuala Lumpur', lat: 3.1390, lon: 101.6869 },
-      tokyo: { city: 'Tokyo', lat: 35.6762, lon: 139.6503 },
-      seoul: { city: 'Seoul', lat: 37.5665, lon: 126.9780 },
-      london: { city: 'London', lat: 51.5074, lon: -0.1278 },
-      newyork: { city: 'New York', lat: 40.7128, lon: -74.0060 },
-      paris: { city: 'Paris', lat: 48.8566, lon: 2.3522 },
-      dubai: { city: 'Dubai', lat: 25.2048, lon: 55.2708 },
-      sydney: { city: 'Sydney', lat: -33.8688, lon: 151.2093 }
+      jakarta: { city: 'Jakarta', lat: -6.2088, lon: 106.8456, tz: 25200 },
+      bandung: { city: 'Bandung', lat: -6.9175, lon: 107.6191, tz: 25200 },
+      surabaya: { city: 'Surabaya', lat: -7.2575, lon: 112.7521, tz: 25200 },
+      semarang: { city: 'Semarang', lat: -6.9667, lon: 110.4167, tz: 25200 },
+      yogyakarta: { city: 'Yogyakarta', lat: -7.7956, lon: 110.3695, tz: 25200 },
+      solo: { city: 'Surakarta', lat: -7.5666, lon: 110.8167, tz: 25200 },
+      malang: { city: 'Malang', lat: -7.9797, lon: 112.6304, tz: 25200 },
+      bogor: { city: 'Bogor', lat: -6.5950, lon: 106.8166, tz: 25200 },
+      depok: { city: 'Depok', lat: -6.4025, lon: 106.7942, tz: 25200 },
+      tangerang: { city: 'Tangerang', lat: -6.1783, lon: 106.6319, tz: 25200 },
+      bekasi: { city: 'Bekasi', lat: -6.2383, lon: 106.9756, tz: 25200 },
+      medan: { city: 'Medan', lat: 3.5952, lon: 98.6722, tz: 25200 },
+      palembang: { city: 'Palembang', lat: -2.9761, lon: 104.7754, tz: 25200 },
+      padang: { city: 'Padang', lat: -0.9471, lon: 100.4172, tz: 25200 },
+      pekanbaru: { city: 'Pekanbaru', lat: 0.5071, lon: 101.4478, tz: 25200 },
+      lampung: { city: 'B. Lampung', lat: -5.4500, lon: 105.2667, tz: 25200 },
+      batam: { city: 'Batam', lat: 1.1301, lon: 104.0529, tz: 25200 },
+      aceh: { city: 'Banda Aceh', lat: 5.5483, lon: 95.3238, tz: 25200 },
+      bali: { city: 'Denpasar', lat: -8.6705, lon: 115.2126, tz: 28800 },
+      mataram: { city: 'Mataram', lat: -8.5833, lon: 116.1167, tz: 28800 },
+      kupang: { city: 'Kupang', lat: -10.1772, lon: 123.6070, tz: 28800 },
+      ikn: { city: 'IKN Nusantara', lat: -0.9744, lon: 116.7027, tz: 28800 },
+      balikpapan: { city: 'Balikpapan', lat: -1.2379, lon: 116.8289, tz: 28800 },
+      samarinda: { city: 'Samarinda', lat: -0.5022, lon: 117.1536, tz: 28800 },
+      banjarmasin: { city: 'Banjarmasin', lat: -3.3194, lon: 114.5908, tz: 28800 },
+      pontianak: { city: 'Pontianak', lat: -0.0263, lon: 109.3425, tz: 25200 },
+      makassar: { city: 'Makassar', lat: -5.1477, lon: 119.4327, tz: 28800 },
+      manado: { city: 'Manado', lat: 1.4748, lon: 124.8428, tz: 28800 },
+      jayapura: { city: 'Jayapura', lat: -2.5337, lon: 140.7181, tz: 32400 },
+      ambon: { city: 'Ambon', lat: -3.6954, lon: 128.1814, tz: 32400 },
+      singapore: { city: 'Singapore', lat: 1.3521, lon: 103.8198, tz: 28800 },
+      kualalumpur: { city: 'Kuala Lumpur', lat: 3.1390, lon: 101.6869, tz: 28800 },
+      tokyo: { city: 'Tokyo', lat: 35.6762, lon: 139.6503, tz: 32400 },
+      seoul: { city: 'Seoul', lat: 37.5665, lon: 126.9780, tz: 32400 },
+      london: { city: 'London', lat: 51.5074, lon: -0.1278, tz: 0 },
+      newyork: { city: 'New York', lat: 40.7128, lon: -74.0060, tz: -18000 },
+      paris: { city: 'Paris', lat: 48.8566, lon: 2.3522, tz: 3600 },
+      dubai: { city: 'Dubai', lat: 25.2048, lon: 55.2708, tz: 14400 },
+      sydney: { city: 'Sydney', lat: -33.8688, lon: 151.2093, tz: 36000 }
     };
 
     const presetSel = document.getElementById('weather-preset-select');
+    const tzSel = document.getElementById('weather-tz-select');
+
     if (presetSel) {
       presetSel.addEventListener('change', function() {
         const key = this.value;
@@ -1955,6 +1986,9 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
           document.getElementById('weather-city-input').value = weatherPresets[key].city;
           document.getElementById('weather-lat-input').value = weatherPresets[key].lat;
           document.getElementById('weather-lon-input').value = weatherPresets[key].lon;
+          if (tzSel && weatherPresets[key].tz !== undefined) {
+            tzSel.value = weatherPresets[key].tz;
+          }
         }
       });
     }
@@ -2067,6 +2101,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
           if (data.lat !== undefined) document.getElementById('weather-lat-input').value = data.lat;
           if (data.lon !== undefined) document.getElementById('weather-lon-input').value = data.lon;
           if (data.enabled !== undefined) document.getElementById('weather-enable-check').checked = data.enabled;
+          if (data.tz_offset_sec !== undefined && tzSel) tzSel.value = data.tz_offset_sec;
 
           const infoBox = document.getElementById('weather-live-info');
           const badge = document.getElementById('weather-badge-status');
@@ -2103,7 +2138,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
           city: document.getElementById('weather-city-input').value,
           lat: parseFloat(document.getElementById('weather-lat-input').value),
           lon: parseFloat(document.getElementById('weather-lon-input').value),
-          enabled: document.getElementById('weather-enable-check').checked
+          enabled: document.getElementById('weather-enable-check').checked,
+          tz_offset_sec: parseInt(document.getElementById('weather-tz-select').value, 10)
         };
 
         fetch('/set_weather', {
@@ -2117,6 +2153,13 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
             loadWeatherAndSystemSettings();
           }, 2500);
         });
+      });
+    }
+
+    const btnPreviewClock = document.getElementById('btn-preview-clock');
+    if (btnPreviewClock) {
+      btnPreviewClock.addEventListener('click', function() {
+        fetch('/trigger_clock', { method: 'POST' }).catch(() => {});
       });
     }
 

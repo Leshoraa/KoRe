@@ -30,6 +30,9 @@ float getWeatherLat(void);
 float getWeatherLon(void);
 bool isWeatherEnabled(void);
 void saveWeatherConfig(const char* city, float lat, float lon, bool enabled);
+int32_t getTimezoneOffsetSec(void);
+void saveTimezoneOffsetSec(int32_t offset_sec);
+void applyTimezoneConfig(void);
 
 #ifdef __cplusplus
 }

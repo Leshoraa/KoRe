@@ -28,10 +28,28 @@ static char s_weather_city[32] = WEATHER_DEFAULT_CITY;
 static float s_weather_lat = WEATHER_DEFAULT_LAT;
 static float s_weather_lon = WEATHER_DEFAULT_LON;
 static bool s_weather_enabled = true;
+static int32_t s_timezone_offset_sec = 7 * 3600; /* Default UTC+7 (Jakarta / WIB) */
 static uint8_t s_oled_brightness = OLED_DEFAULT_BRIGHTNESS;
 
 static bool s_is_ap_mode = false;
 static DNSServer s_dnsServer;
+
+int32_t getTimezoneOffsetSec(void) {
+    return s_timezone_offset_sec;
+}
+
+void applyTimezoneConfig(void) {
+    configTime(s_timezone_offset_sec, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+}
+
+void saveTimezoneOffsetSec(int32_t offset_sec) {
+    Preferences prefs;
+    prefs.begin("kore_cfg", false);
+    prefs.putLong("tz_offset", (long)offset_sec);
+    prefs.end();
+    s_timezone_offset_sec = offset_sec;
+    applyTimezoneConfig();
+}
 
 uint8_t getSavedOledBrightness(void) {
     return s_oled_brightness;
@@ -180,6 +198,7 @@ bool initWiFiAndNetwork(void) {
     s_weather_lat = prefs.getFloat("w_lat", WEATHER_DEFAULT_LAT);
     s_weather_lon = prefs.getFloat("w_lon", WEATHER_DEFAULT_LON);
     s_weather_enabled = prefs.getBool("w_en", true);
+    s_timezone_offset_sec = prefs.getLong("tz_offset", 7 * 3600);
 
     prefs.end();
 
@@ -224,6 +243,9 @@ bool initWiFiAndNetwork(void) {
 
     if (connected) {
         s_is_ap_mode = false;
+
+        // Synchronize NTP Real-Time Clock with configured Timezone
+        applyTimezoneConfig();
 
         // 1. Multicast DNS (mDNS for Apple iOS/macOS, modern Linux, Android 12+)
         if (MDNS.begin("kore")) {
@@ -284,7 +306,7 @@ bool initWiFiAndNetwork(void) {
                 }
                 vTaskDelay(pdMS_TO_TICKS(5));
             }
-        }, "AP_DNS_Task", 3072, NULL, 1, NULL);
+        }, "AP_DNS_Task", 4096, NULL, 1, NULL);
 
         char ap_ip_buf[40];
         if (!force_ap && strlen(s_sta_ssid) > 0) {

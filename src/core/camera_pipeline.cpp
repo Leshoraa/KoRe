@@ -708,11 +708,6 @@ void cameraTask(void *pvParameters) {
                     s_sleep_miss_count = 0;
                 }
             } else if (now - state_timer > active_duration_ms) {
-                setCameraSleep(true);
-                setCpuFrequencyMhz(CPU_FREQ_SLEEP_MHZ);
-                if (!web_active) {
-                    WiFi.setSleep(WIFI_PS_MIN_MODEM);
-                }
                 g_recon_state = STATE_SLEEP_RECON;
                 state_timer = now;
 
@@ -727,11 +722,6 @@ void cameraTask(void *pvParameters) {
             }
         } else if (g_recon_state == STATE_SLEEP_RECON) {
             if (web_active || (now - state_timer > sleep_duration_ms)) {
-                WiFi.setSleep(WIFI_PS_NONE);
-                setCpuFrequencyMhz(CPU_FREQ_ACTIVE_MHZ);
-                setCameraSleep(false);
-                vTaskDelay(pdMS_TO_TICKS(30));
-
                 kf2d_tracker_init(&s_k_tracker);
                 portENTER_CRITICAL(&g_target_mutex);
                 g_current_target.detected = false;

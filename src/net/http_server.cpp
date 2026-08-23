@@ -472,17 +472,25 @@ static esp_err_t set_weather_handler(httpd_req_t *req) {
     char lat_str[32] = {0};
     char lon_str[32] = {0};
     char en_str[32] = {0};
+    char tz_str[32] = {0};
 
     extract_json_value(buf, "city", city, sizeof(city));
     extract_json_value(buf, "lat", lat_str, sizeof(lat_str));
     extract_json_value(buf, "lon", lon_str, sizeof(lon_str));
     extract_json_value(buf, "enabled", en_str, sizeof(en_str));
+    extract_json_value(buf, "tz_offset_sec", tz_str, sizeof(tz_str));
+    if (tz_str[0] == '\0') {
+        extract_json_value(buf, "tz", tz_str, sizeof(tz_str));
+    }
 
     float lat = (lat_str[0] != '\0') ? (float)atof(lat_str) : getWeatherLat();
     float lon = (lon_str[0] != '\0') ? (float)atof(lon_str) : getWeatherLon();
     bool enabled = (en_str[0] == '\0' || strcmp(en_str, "true") == 0 || strcmp(en_str, "1") == 0);
 
     saveWeatherConfig(city, lat, lon, enabled);
+    if (tz_str[0] != '\0') {
+        saveTimezoneOffsetSec((int32_t)atol(tz_str));
+    }
     triggerWeatherFetch();
 
     const char* resp = "{\"status\":\"ok\"}";
@@ -493,15 +501,17 @@ static esp_err_t set_weather_handler(httpd_req_t *req) {
 
 static esp_err_t weather_info_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
-    char json[384];
+    char json[448];
 
     portENTER_CRITICAL(&g_weather_mutex);
     snprintf(json, sizeof(json),
         "{\"city\":\"%s\",\"lat\":%.4f,\"lon\":%.4f,\"enabled\":%s,\"valid\":%s,"
+        "\"tz_offset_sec\":%ld,"
         "\"temp\":%.1f,\"humidity\":%d,\"code\":%d,\"condition\":\"%s\",\"last_sync_s\":%lu}",
         getWeatherCity(), getWeatherLat(), getWeatherLon(),
         isWeatherEnabled() ? "true" : "false",
         g_weather_info.valid ? "true" : "false",
+        (long)getTimezoneOffsetSec(),
         g_weather_info.temperature,
         g_weather_info.humidity,
         g_weather_info.weather_code,
@@ -518,6 +528,16 @@ static esp_err_t weather_info_handler(httpd_req_t *req) {
 static esp_err_t trigger_weather_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
     triggerWeatherDisplay(WEATHER_POPUP_DURATION_MS);
+
+    const char* resp = "{\"status\":\"ok\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t trigger_clock_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    triggerClockDisplay(WEATHER_POPUP_DURATION_MS);
 
     const char* resp = "{\"status\":\"ok\"}";
     httpd_resp_set_type(req, "application/json");
@@ -580,6 +600,7 @@ void startWebServer(void) {
     httpd_uri_t set_weather_uri       = { .uri = "/set_weather",         .method = HTTP_POST, .handler = set_weather_handler,      .user_ctx = NULL };
     httpd_uri_t weather_info_uri      = { .uri = "/weather_info",        .method = HTTP_GET,  .handler = weather_info_handler,     .user_ctx = NULL };
     httpd_uri_t trigger_weather_uri   = { .uri = "/trigger_weather",     .method = HTTP_POST, .handler = trigger_weather_handler,  .user_ctx = NULL };
+    httpd_uri_t trigger_clock_uri     = { .uri = "/trigger_clock",       .method = HTTP_POST, .handler = trigger_clock_handler,    .user_ctx = NULL };
 
     if (httpd_start(&g_camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(g_camera_httpd, &index_uri);
@@ -603,6 +624,7 @@ void startWebServer(void) {
         httpd_register_uri_handler(g_camera_httpd, &set_weather_uri);
         httpd_register_uri_handler(g_camera_httpd, &weather_info_uri);
         httpd_register_uri_handler(g_camera_httpd, &trigger_weather_uri);
+        httpd_register_uri_handler(g_camera_httpd, &trigger_clock_uri);
     }
 
     config.server_port = HTTP_PORT_STREAM;
