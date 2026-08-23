@@ -10,7 +10,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <esp_err.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,6 +41,7 @@ extern "C" {
 #define OLED_PANEL_WIDTH_PX     128
 #define OLED_PANEL_HEIGHT_PX    64
 #define OLED_DEFAULT_BRIGHTNESS 128
+#define OLED_SLEEP_BRIGHTNESS   16       /* Reduced brightness in standby to prevent OLED burn-in */
 
 /* Camera Sensor DVP Pin Mapping (XIAO ESP32-S3 Sense) */
 #define CAM_PIN_PWDN            -1
@@ -98,7 +98,7 @@ extern "C" {
 #define MAX_STREAM_CLIENTS        2        /* Maximum concurrent MJPEG stream clients */
 
 /* --- Firmware Version --- */
-#define KORE_FIRMWARE_VERSION     "2.4.0"
+#define KORE_FIRMWARE_VERSION     "2.5.0"
 
 #ifdef __cplusplus
 }

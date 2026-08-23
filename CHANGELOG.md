@@ -2,6 +2,21 @@
 
 All notable changes to the KoRe project are documented in this file.
 
+## [2.5.0] - 2026-08-23
+
+### Added
+- Web Over-The-Air (OTA) firmware update endpoint (`POST /update`) and Web UI upload progress bar.
+- Live camera sensor tuning endpoint (`POST /camera_control`) for brightness, contrast, saturation, flip, and AEC/AGC gain.
+- Active OLED Wi-Fi status indicator overlay in top-right corner (RSSI bars in STA mode, AP dot in AP mode).
+- OLED anti-burn-in protection featuring periodic micro-pixel shifting ($\pm 1\text{ px}$) and standby auto-dimming (`OLED_SLEEP_BRIGHTNESS`).
+- Dynamic Wi-Fi modem sleep (`WIFI_PS_MIN_MODEM`) during reconnaissance standby to extend portable battery runtime.
+- New "Device & OTA" control tab on the Bento grid Web Dashboard.
+
+### Fixed
+- **CRITICAL**: Fixed CI / host unit test suite compilation on Linux by isolating ESP32-IDF/FreeRTOS headers in `kore_types.h` and `kore_config.h`.
+- **CRITICAL**: Fixed camera task dispatch in `KoRe.ino` allowing continuous background sensor auto-recovery when camera is offline during initial boot.
+- Fixed buffer size discrepancies in `KORE_ENGINEERING_SPECIFICATION.md` Table 7.1 ($1.2\text{ KB}$ for differential luminance and MHI maps).
+
 ## [2.4.0] - 2026-08-23
 
 ### Added

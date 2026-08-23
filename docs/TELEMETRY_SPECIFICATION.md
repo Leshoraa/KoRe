@@ -87,8 +87,8 @@ KoRe hosts a lightweight, asynchronous dual-port HTTP server on the ESP32-S3:
 - **Schema:**
 ```json
 {
-  "firmware": "2.4.0",
-  "compiled": "Aug 23 2026 11:00:00",
+  "firmware": "2.5.0",
+  "compiled": "Aug 23 2026 12:00:00",
   "chip": "ESP32-S3",
   "cores": 2,
   "cpu_mhz": 240,
@@ -105,12 +105,30 @@ KoRe hosts a lightweight, asynchronous dual-port HTTP server on the ESP32-S3:
 }
 ```
 
-### 2.8 Extended Telemetry Fields
-The `/telemetry` endpoint now includes additional system metrics:
+### 2.8 Camera Sensor Control
+- **`POST /camera_control`:** Adjusts camera sensor parameters dynamically without re-flashing.
+  - **Body:** `{"param": "brightness", "val": 1}`
+  - **Supported Params:**
+    - `brightness` (-2 to +2)
+    - `contrast` (-2 to +2)
+    - `saturation` (-2 to +2)
+    - `vflip` (0 or 1)
+    - `hmirror` (0 or 1)
+    - `aec` (0: manual, 1: auto exposure)
+    - `agc` (0: manual, 1: auto gain)
+  - **Response:** `{"status": "ok"}`
+
+### 2.9 Web Over-The-Air (OTA) Update
+- **`POST /update`:** Uploads binary firmware (`.bin`) directly to ESP32-S3 flash partition.
+  - **Payload:** Raw binary firmware bytes (`application/octet-stream`)
+  - **Response:** `{"status": "ok", "message": "Firmware flashed! Rebooting..."}`
+
+### 2.10 Extended Telemetry Fields
+The `/telemetry` endpoint includes dynamic system and affective metrics:
 - `valence` (float): Current emotional valence [-1.0, 1.0]
 - `arousal` (float): Current emotional arousal [0.0, 1.0]
 - `heap_free` (uint): Free internal heap in bytes
 - `psram_free` (uint): Free PSRAM in bytes
 - `uptime_s` (uint): System uptime in seconds
 - `cpu_mhz` (int): Current CPU frequency in MHz
-```
+

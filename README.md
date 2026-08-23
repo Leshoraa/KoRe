@@ -208,11 +208,15 @@ $$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
 
 ## API Endpoints & Web Telemetry HUD
 
-KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection, credential setup, facial expression selection, and video streaming:
+KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection, credential setup, facial expression selection, camera tuning, OTA firmware flashing, and video streaming:
 
-- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the control panel interface rendering real-time target bounding boxes ($P_1$ Sky Blue, $P_2$ Slate, $P_3$ Charcoal), inspection badges, interactive 8-expression control buttons, and telemetry overlays.
-- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics, candidate arrays, active expression IDs, and manual override flags.
+- **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the Bento grid control panel interface rendering real-time target bounding boxes, telemetry metrics, 8-expression selection, camera tuning, and OTA firmware updater.
+- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics, candidate arrays, active expression IDs, emotional valence/arousal, and memory statistics.
+- **Camera Tuning Endpoint (`POST http://<ESP32_IP>/camera_control`):** Dynamically adjusts brightness, contrast, saturation, flip/mirror orientation, and auto-exposure.
+- **OTA Firmware Flash (`POST http://<ESP32_IP>/update`):** Wireless firmware update endpoint receiving binary `.bin` payloads.
 - **Expression Override Endpoint (`POST http://<ESP32_IP>/set_expression`):** Sets manual expression override (`0..7`) or restores the automatic biological mood engine (`"auto"`).
+- **Wi-Fi Scanner (`GET http://<ESP32_IP>/scan_wifi`):** Scans and returns nearby Wi-Fi SSIDs, RSSI levels, and encryption modes.
+- **System Information (`GET http://<ESP32_IP>/system_info`):** Reports hardware diagnostics, chip model, heap/PSRAM memory, uptime, and CPU frequency.
 - **MJPEG Video Stream (`GET http://<ESP32_IP>:81/stream`):** Dedicated Port 81 asynchronous stream handler.
 - **Network Configuration (`GET /get_wifi`, `POST /save_wifi`, `POST /switch_mode`):** Manage Wi-Fi credentials stored in ESP32 NVS (`Preferences`).
 

@@ -8,8 +8,17 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#else
+typedef int portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED 0
+typedef void* SemaphoreHandle_t;
+#define portENTER_CRITICAL(m) ((void)0)
+#define portEXIT_CRITICAL(m) ((void)0)
+#endif
 
 #ifdef __cplusplus
 extern "C" {

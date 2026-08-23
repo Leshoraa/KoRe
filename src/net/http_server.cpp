@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include "esp_heap_caps.h"
 #include <WiFi.h>
+#include <Update.h>
 
 httpd_handle_t g_stream_httpd = NULL;
 httpd_handle_t g_camera_httpd = NULL;
@@ -317,6 +318,108 @@ static esp_err_t scan_wifi_handler(httpd_req_t *req) {
     return httpd_resp_send(req, json, strlen(json));
 }
 
+static esp_err_t camera_control_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char buf[256];
+    int remaining = req->content_len;
+    if (remaining >= (int)sizeof(buf)) remaining = sizeof(buf) - 1;
+
+    int ret = httpd_req_recv(req, buf, remaining);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_408(req);
+        }
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    sensor_t* s = esp_camera_sensor_get();
+    if (!s) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera Sensor Offline");
+        return ESP_FAIL;
+    }
+
+    char param[32] = {0};
+    char val_str[32] = {0};
+    extract_json_value(buf, "param", param, sizeof(param));
+    extract_json_value(buf, "val", val_str, sizeof(val_str));
+
+    int val = atoi(val_str);
+
+    if (strcmp(param, "brightness") == 0) {
+        s->set_brightness(s, constrain(val, -2, 2));
+    } else if (strcmp(param, "contrast") == 0) {
+        s->set_contrast(s, constrain(val, -2, 2));
+    } else if (strcmp(param, "saturation") == 0) {
+        s->set_saturation(s, constrain(val, -2, 2));
+    } else if (strcmp(param, "vflip") == 0) {
+        s->set_vflip(s, val ? 1 : 0);
+    } else if (strcmp(param, "hmirror") == 0) {
+        s->set_hmirror(s, val ? 1 : 0);
+    } else if (strcmp(param, "aec") == 0) {
+        s->set_exposure_ctrl(s, val ? 1 : 0);
+    } else if (strcmp(param, "agc") == 0) {
+        s->set_gain_ctrl(s, val ? 1 : 0);
+    }
+
+    const char* resp = "{\"status\":\"ok\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t update_post_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char buf[1024];
+    int remaining = req->content_len;
+    bool is_first = true;
+
+    if (remaining <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content-Length required");
+        return ESP_FAIL;
+    }
+
+    while (remaining > 0) {
+        int to_read = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
+        int ret = httpd_req_recv(req, buf, to_read);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                httpd_resp_send_408(req);
+            }
+            Update.abort();
+            return ESP_FAIL;
+        }
+
+        if (is_first) {
+            is_first = false;
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Update.begin failed");
+                return ESP_FAIL;
+            }
+        }
+
+        if (Update.write((uint8_t*)buf, ret) != (size_t)ret) {
+            Update.abort();
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Update.write failed");
+            return ESP_FAIL;
+        }
+
+        remaining -= ret;
+    }
+
+    if (Update.end(true)) {
+        const char* resp = "{\"status\":\"ok\",\"message\":\"Firmware flashed! Rebooting...\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        httpd_resp_send(req, resp, strlen(resp));
+        scheduleSystemRestart(1500);
+        return ESP_OK;
+    } else {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Update.end failed");
+        return ESP_FAIL;
+    }
+}
+
 static esp_err_t system_info_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
     char json[512];
@@ -325,7 +428,7 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
     int32_t rssi = (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
     
     snprintf(json, sizeof(json),
-        "{\"firmware\":\"2.4.0\",\"compiled\":\"%s %s\",\"chip\":\"%s\",\"cores\":%d,\"cpu_mhz\":%d,"
+        "{\"firmware\":\"2.5.0\",\"compiled\":\"%s %s\",\"chip\":\"%s\",\"cores\":%d,\"cpu_mhz\":%d,"
         "\"heap_free\":%u,\"heap_min\":%u,\"psram_free\":%u,\"psram_total\":%u,"
         "\"uptime_s\":%lu,\"wifi_rssi\":%d,\"wifi_mode\":\"%s\",\"ip\":\"%s\","
         "\"camera_ok\":%s,\"stream_clients\":%d}",
@@ -365,6 +468,8 @@ void startWebServer(void) {
     httpd_uri_t captive_7          = { .uri = "/success.txt",         .method = HTTP_GET,  .handler = index_handler,          .user_ctx = NULL };
     httpd_uri_t scan_wifi_uri      = { .uri = "/scan_wifi",           .method = HTTP_GET,  .handler = scan_wifi_handler,      .user_ctx = NULL };
     httpd_uri_t system_info_uri    = { .uri = "/system_info",         .method = HTTP_GET,  .handler = system_info_handler,    .user_ctx = NULL };
+    httpd_uri_t camera_ctrl_uri    = { .uri = "/camera_control",      .method = HTTP_POST, .handler = camera_control_handler, .user_ctx = NULL };
+    httpd_uri_t update_uri         = { .uri = "/update",              .method = HTTP_POST, .handler = update_post_handler,    .user_ctx = NULL };
 
     if (httpd_start(&g_camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(g_camera_httpd, &index_uri);
@@ -382,6 +487,8 @@ void startWebServer(void) {
         httpd_register_uri_handler(g_camera_httpd, &captive_7);
         httpd_register_uri_handler(g_camera_httpd, &scan_wifi_uri);
         httpd_register_uri_handler(g_camera_httpd, &system_info_uri);
+        httpd_register_uri_handler(g_camera_httpd, &camera_ctrl_uri);
+        httpd_register_uri_handler(g_camera_httpd, &update_uri);
     }
 
     config.server_port = HTTP_PORT_STREAM;

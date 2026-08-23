@@ -26,5 +26,5 @@ jobs:
         run: |
           g++ -std=c++17 -I . tests/unit/test_minimum_jerk.cpp -o test_jerk && ./test_jerk
           g++ -std=c++17 -I . src/math/kore_kalman.cpp tests/unit/test_kalman_convergence.cpp -o test_kalman && ./test_kalman
-          g++ -std=c++17 -I . src/math/kore_affective.cpp tests/unit/test_affective_langevin.cpp -o test_affective && ./test_affective
-          g++ -std=c++17 -I . src/math/kore_kinematics.cpp tests/unit/test_kinematics_feedforward.cpp -o test_kinematics && ./test_kinematics
+          g++ -std=c++17 -I . tests/unit/test_affective_langevin.cpp -o test_affective && ./test_affective
+          g++ -std=c++17 -I . tests/unit/test_kinematics_feedforward.cpp -o test_kinematics && ./test_kinematics

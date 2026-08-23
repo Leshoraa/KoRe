@@ -57,8 +57,8 @@ void setup() {
     startWebServer();
     KORE_LOG_INF("MAIN", "HTTP services active");
 
-    /* Only dispatch camera task if vision buffers and camera hardware are available */
-    if (vision_buffers_ok && g_camera_init_ok) {
+    /* Dispatch camera task if vision buffers are allocated (task handles automatic sensor recovery if offline) */
+    if (vision_buffers_ok) {
         xTaskCreatePinnedToCore(
             cameraTask,
             "Camera_AI_Task",
@@ -69,7 +69,7 @@ void setup() {
             0
         );
     } else {
-        KORE_LOG_ERR("MAIN", "Camera task not started: buffers=%d camera=%d", vision_buffers_ok, g_camera_init_ok);
+        KORE_LOG_ERR("MAIN", "Camera task not started: vision buffer allocation failed");
     }
 
     /* Dispatch FreeRTOS Core 1 Display & Ocular Kinematics Task (Priority 1) */

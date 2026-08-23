@@ -646,6 +646,31 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       transform: none;
     }
 
+    .btn-cam-param, .btn-cam-toggle {
+      flex: 1;
+      padding: 8px 4px;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-control);
+      color: var(--text-main);
+      cursor: pointer;
+      text-align: center;
+      transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    }
+
+    .btn-cam-param:hover, .btn-cam-toggle:hover {
+      background-color: var(--bg-surface-hover);
+    }
+
+    .btn-cam-param.active, .btn-cam-toggle.active {
+      background-color: var(--accent-dark);
+      color: #ffffff;
+      border-color: var(--accent-dark);
+    }
+
     /* Status Alert Box - Strokeless */
     #status {
       display: none;
@@ -748,7 +773,14 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
             <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
             <line x1="12" y1="20" x2="12.01" y2="20"></line>
           </svg>
-          <span>Network Setup</span>
+          <span>Network</span>
+        </button>
+        <button type="button" class="tab-btn" data-target="tab-device">
+          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span>Device & OTA</span>
         </button>
       </div>
       <div id="mode-badge" class="mode-pill">STA Online</div>
@@ -881,6 +913,84 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
           <div id="status"></div>
         </section>
+      </div>
+    </div>
+
+    <!-- Tab 3: Device & OTA Settings -->
+    <div id="tab-device" class="tab-pane">
+      <div class="network-container">
+        
+        <!-- Live Camera Controls Card -->
+        <section class="bento-card" style="margin-bottom:14px;">
+          <div class="bento-card-header">
+            <h2 class="card-title">Camera Sensor Settings</h2>
+            <span class="card-badge">Live DVP Tuning</span>
+          </div>
+          <div class="form-grid">
+            <div class="form-section">
+              <div class="form-section-title">Image Tuning</div>
+              <div class="form-group">
+                <label>Brightness</label>
+                <div style="display:flex;gap:6px;">
+                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="-2">-2</button>
+                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="-1">-1</button>
+                  <button type="button" class="btn-cam-param active" data-param="brightness" data-val="0">0</button>
+                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="1">+1</button>
+                  <button type="button" class="btn-cam-param" data-param="brightness" data-val="2">+2</button>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Contrast</label>
+                <div style="display:flex;gap:6px;">
+                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="-2">-2</button>
+                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="-1">-1</button>
+                  <button type="button" class="btn-cam-param active" data-param="contrast" data-val="0">0</button>
+                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="1">+1</button>
+                  <button type="button" class="btn-cam-param" data-param="contrast" data-val="2">+2</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="form-section-title">Orientation & Exposure</div>
+              <div class="form-group">
+                <label>Hardware Flip</label>
+                <div style="display:flex;gap:6px;">
+                  <button type="button" id="btn-vflip" class="btn-cam-toggle active" data-param="vflip" data-state="1">V-Flip</button>
+                  <button type="button" id="btn-hmirror" class="btn-cam-toggle active" data-param="hmirror" data-state="1">H-Mirror</button>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Auto Exposure (AEC)</label>
+                <div style="display:flex;gap:6px;">
+                  <button type="button" id="btn-aec" class="btn-cam-toggle active" data-param="aec" data-state="1">AEC Auto</button>
+                  <button type="button" id="btn-agc" class="btn-cam-toggle active" data-param="agc" data-state="1">AGC Gain</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Web OTA Firmware Update Card -->
+        <section class="bento-card">
+          <div class="bento-card-header">
+            <h2 class="card-title">OTA Firmware Flash</h2>
+            <span class="card-badge">ESP32-S3 Flash</span>
+          </div>
+          <div class="form-section" style="margin-bottom:12px;">
+            <p style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px;">Pilih file binary firmware (<code>KoRe.ino.bin</code>) untuk memperbarui firmware perangkat langsung melalui Web UI.</p>
+            <input type="file" id="ota-file" accept=".bin" style="width:100%;padding:8px 0;font-size:12px;">
+            <div id="ota-progress-box" style="display:none;margin-top:10px;">
+              <div style="width:100%;height:8px;background:var(--bg-card);border-radius:4px;overflow:hidden;">
+                <div id="ota-progress-bar" style="width:0%;height:100%;background:var(--accent-dark);transition:width 0.2s;"></div>
+              </div>
+              <span id="ota-progress-text" style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px;">0%</span>
+            </div>
+          </div>
+          <button type="button" id="btn-ota-flash" class="btn-submit-main" style="width:100%;">Mulai Flash Firmware OTA →</button>
+          <div id="ota-status" style="display:none;margin-top:10px;padding:10px;font-size:12px;border-radius:var(--radius-control);background:var(--bg-surface);"></div>
+        </section>
+
       </div>
     </div>
 
@@ -1459,6 +1569,96 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     };
     document.getElementById('toggle-privacy').addEventListener('click', toggleLegal);
     document.getElementById('toggle-terms').addEventListener('click', toggleLegal);
+
+    /* Camera Control Event Handlers */
+    document.querySelectorAll('.btn-cam-param').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const param = this.dataset.param;
+        const val = this.dataset.val;
+        document.querySelectorAll(`.btn-cam-param[data-param="${param}"]`).forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+        fetch('/camera_control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ param, val })
+        }).catch(() => {});
+      });
+    });
+
+    document.querySelectorAll('.btn-cam-toggle').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const param = this.dataset.param;
+        let state = parseInt(this.dataset.state, 10);
+        state = (state === 1) ? 0 : 1;
+        this.dataset.state = state;
+        if (state === 1) {
+          this.classList.add('active');
+        } else {
+          this.classList.remove('active');
+        }
+        fetch('/camera_control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ param, val: state })
+        }).catch(() => {});
+      });
+    });
+
+    /* Web OTA Firmware Upload */
+    document.getElementById('btn-ota-flash').addEventListener('click', function() {
+      const fileInput = document.getElementById('ota-file');
+      const status = document.getElementById('ota-status');
+      const progressBox = document.getElementById('ota-progress-box');
+      const progressBar = document.getElementById('ota-progress-bar');
+      const progressText = document.getElementById('ota-progress-text');
+      const btn = this;
+
+      if (!fileInput.files || fileInput.files.length === 0) {
+        status.style.display = 'block';
+        status.style.color = '#ef4444';
+        status.innerText = 'Pilih file firmware .bin terlebih dahulu.';
+        return;
+      }
+
+      const file = fileInput.files[0];
+      btn.disabled = true;
+      status.style.display = 'block';
+      status.style.color = 'var(--text-main)';
+      status.innerText = 'Mengunggah firmware... Jangan matikan daya perangkat.';
+      progressBox.style.display = 'block';
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/update', true);
+
+      xhr.upload.onprogress = function(e) {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          progressBar.style.width = percent + '%';
+          progressText.innerText = percent + '% (' + Math.round(e.loaded / 1024) + ' KB / ' + Math.round(e.total / 1024) + ' KB)';
+        }
+      };
+
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          progressBar.style.width = '100%';
+          progressText.innerText = '100% Selesai!';
+          status.innerHTML = '<b>Flash berhasil!</b> ESP32-S3 sedang restart...<br><small>Halaman akan dimuat ulang dalam 6 detik.</small>';
+          setTimeout(() => { window.location.reload(); }, 6000);
+        } else {
+          btn.disabled = false;
+          status.style.color = '#ef4444';
+          status.innerText = 'Gagal melakukan flash OTA (HTTP ' + xhr.status + '): ' + xhr.responseText;
+        }
+      };
+
+      xhr.onerror = function() {
+        btn.disabled = false;
+        status.style.color = '#ef4444';
+        status.innerText = 'Koneksi terputus saat proses flash OTA.';
+      };
+
+      xhr.send(file);
+    });
   </script>
 </body>
 </html>

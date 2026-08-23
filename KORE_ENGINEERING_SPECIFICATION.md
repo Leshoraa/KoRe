@@ -1,7 +1,7 @@
 # KORE ENGINEERING SPECIFICATION AND ARCHITECTURAL STANDARDS
 **Kinematic Optical Recognition and Biomechanical Face Engine**
 *Target Platform: Seeed Studio XIAO ESP32-S3 Sense (Dual-Core Xtensa LX7 @ 240 MHz)*
-*Document Revision: 2.3.0 : Production Technical Specification*
+*Document Revision: 2.5.0 : Production Technical Specification*
 
 ---
 
@@ -225,8 +225,8 @@ The ESP32-S3 contains 512 KB internal SRAM and 8 MB octal SPI PSRAM. Memory allo
 | Buffer Identifier | Target Memory Space | Allocation Flag | Size | Rationale |
 | :--- | :--- | :--- | :--- | :--- |
 | `small_rgb_buf` | Internal SRAM | `MALLOC_CAP_INTERNAL` | $9.6 \text{ KB}$ | High-frequency pixel iteration (80x60 RGB565) |
-| `prev_lum_buf` | Internal SRAM | `MALLOC_CAP_INTERNAL` | $4.8 \text{ KB}$ | Differential luminance calculation |
-| `mhi_buf` | Internal SRAM | `MALLOC_CAP_INTERNAL` | $4.8 \text{ KB}$ | Temporal motion decay matrix |
+| `prev_lum_buf` | Internal SRAM | `MALLOC_CAP_INTERNAL` | $1.2 \text{ KB}$ | Differential luminance calculation |
+| `mhi_buf` | Internal SRAM | `MALLOC_CAP_INTERNAL` | $1.2 \text{ KB}$ | Temporal motion decay matrix |
 | `g_latest_jpeg_buf` | External PSRAM | `MALLOC_CAP_SPIRAM` | $64.0 \text{ KB}$ | Asynchronous HTTP MJPEG streaming chunk buffer |
 
 ### 7.2 Hot-Path Execution Rules

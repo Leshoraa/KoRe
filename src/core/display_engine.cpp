@@ -8,6 +8,8 @@
 #include "include/kore_types.h"
 #include "include/kore_kinematics.h"
 #include "include/kore_affective.h"
+#include "src/net/wifi_manager.h"
+#include <WiFi.h>
 #include <Arduino.h>
 #include <esp_random.h>
 
@@ -16,6 +18,9 @@ LGFX_Sprite canvas(&lcd);
 
 static ReconState s_prev_recon_state = STATE_ACTIVE;
 static bool s_isDoubleBlinkPending = false;
+static int s_burn_shift_x = 0;
+static int s_burn_shift_y = 0;
+static uint32_t s_last_burn_shift_ms = 0;
 
 void showBootStatus(const char* line1, const char* line2) {
     lcd.fillScreen(TFT_BLACK);
@@ -327,6 +332,34 @@ static void drawSedihMouth(int ox, int oy, float animFrame, uint16_t color, floa
     }
 }
 
+static void drawWiFiStatusOverlay(uint16_t color) {
+    bool is_ap = isWiFiAPMode();
+    bool connected = (WiFi.status() == WL_CONNECTED);
+    int8_t rssi = connected ? WiFi.RSSI() : 0;
+
+    int bx = 117;
+    int by = 3;
+
+    if (is_ap) {
+        /* AP Mode indicator */
+        canvas.drawCircle(bx + 4, by + 3, 2, color);
+        canvas.drawPixel(bx + 4, by + 3, color);
+    } else if (connected) {
+        /* 3-bar signal strength indicator */
+        canvas.fillRect(bx, by + 4, 2, 2, color);
+        if (rssi > -80) {
+            canvas.fillRect(bx + 3, by + 2, 2, 4, color);
+        }
+        if (rssi > -65) {
+            canvas.fillRect(bx + 6, by, 2, 6, color);
+        }
+    } else {
+        /* Disconnected 'x' glyph */
+        canvas.drawLine(bx + 2, by + 1, bx + 6, by + 5, color);
+        canvas.drawLine(bx + 6, by + 1, bx + 2, by + 5, color);
+    }
+}
+
 static void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCurve, float mouthY, float mouthWidth, float browAlpha, bool inverted, float vergence, float scale) {
     uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
     uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
@@ -335,7 +368,8 @@ static void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCu
     drawEyes(eyeHeightFactor, ox, oy, fgColor, vergence, scale);
     drawAngryBrows(eyeHeightFactor, ox, oy, browAlpha, bgColor, vergence, scale);
     drawMouthCustom(ox, oy, mouthCurve, mouthY, mouthWidth, 0.0f, fgColor, scale);
-    canvas.pushSprite(0, 0);
+    drawWiFiStatusOverlay(fgColor);
+    canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
 }
 
 void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offsetY, float frame, float vergence, float scale) {
@@ -349,7 +383,8 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawJoyEyes(ox, oy, 1.0f, TFT_WHITE, vergence, scale);
             drawJoyMouth(ox, oy, 1.0f, TFT_WHITE, scale);
-            canvas.pushSprite(0, 0);
+            drawWiFiStatusOverlay(TFT_WHITE);
+            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
         case EXPR_ANGRY:
             renderFaceState(eyeHeightFactor, ox, oy, 0.042f, 43.0f, 7.0f, 1.0f, true, vergence, scale);
@@ -358,7 +393,8 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawCatMouth(ox, oy, TFT_WHITE, scale);
-            canvas.pushSprite(0, 0);
+            drawWiFiStatusOverlay(TFT_WHITE);
+            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
         case EXPR_SHOCK:
             canvas.fillScreen(TFT_BLACK);
@@ -368,25 +404,29 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
                 drawEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             }
             drawShockMouth(ox, oy, TFT_WHITE, scale);
-            canvas.pushSprite(0, 0);
+            drawWiFiStatusOverlay(TFT_WHITE);
+            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
         case EXPR_OVERLOAD:
             canvas.fillScreen(TFT_BLACK);
             drawSpiralEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawOverloadMouth(ox, oy, TFT_WHITE, scale);
-            canvas.pushSprite(0, 0);
+            drawWiFiStatusOverlay(TFT_WHITE);
+            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
         case EXPR_SEDIH:
             canvas.fillScreen(TFT_BLACK);
             drawSedihEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawSedihMouth(ox, oy, frame, TFT_WHITE, scale);
-            canvas.pushSprite(0, 0);
+            drawWiFiStatusOverlay(TFT_WHITE);
+            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
         case EXPR_DEADPAN:
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawDeadpanMouth(ox, oy, TFT_WHITE, scale);
-            canvas.pushSprite(0, 0);
+            drawWiFiStatusOverlay(TFT_WHITE);
+            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
             break;
     }
 }
@@ -528,6 +568,19 @@ void oledTask(void *pvParameters) {
 
         if (g_recon_state != s_prev_recon_state) {
             s_prev_recon_state = g_recon_state;
+            if (g_recon_state == STATE_SLEEP_RECON) {
+                lcd.setBrightness(OLED_SLEEP_BRIGHTNESS);
+            } else {
+                lcd.setBrightness(OLED_DEFAULT_BRIGHTNESS);
+                s_burn_shift_x = 0;
+                s_burn_shift_y = 0;
+            }
+        }
+
+        if (g_recon_state == STATE_SLEEP_RECON && (now - s_last_burn_shift_ms > 60000)) {
+            s_last_burn_shift_ms = now;
+            s_burn_shift_x = (int)(esp_random() % 3) - 1;
+            s_burn_shift_y = (int)(esp_random() % 3) - 1;
         }
 
         if (g_currentExpr != prevExpr) {
