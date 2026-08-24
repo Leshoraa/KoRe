@@ -58,6 +58,8 @@ void drawWeatherScreen(const WeatherInfo& weather, float animFrame);
 void triggerAmbientDisplay(AmbientScreenMode mode, uint32_t duration_ms = WEATHER_POPUP_DURATION_MS);
 void triggerWeatherDisplay(uint32_t duration_ms = WEATHER_POPUP_DURATION_MS);
 void triggerClockDisplay(uint32_t duration_ms = WEATHER_POPUP_DURATION_MS);
+void transitionToAmbient(AmbientScreenMode toMode, float durationMs = 160.0f);
+void transitionFromAmbientToFace(AmbientScreenMode fromMode, Expression toExpr, float durationMs = 140.0f);
 void setOledBrightnessLive(uint8_t brightness);
 void transitionExpression(Expression fromExpr, Expression toExpr, float durationMs = 170.0f);
 void oledTask(void *pvParameters);

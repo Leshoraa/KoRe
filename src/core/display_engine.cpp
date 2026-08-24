@@ -37,14 +37,16 @@ void showBootStatus(const char* line1, const char* line2) {
 
 static void drawDualEyes(float leftHeightFactor, float rightHeightFactor, int ox, int oy, uint16_t color, float vergence, float scale) {
     (void)vergence;
-    (void)scale;
     int lx = 32 + ox;
     int rx = 96 + ox;
     int ly = 28 + oy;
     int ry = 28 + oy;
 
-    int maxEyeWidth = 28;
-    int maxEyeHeight = 38;
+    float sx = (g_currentEyeScaleX > 0.01f) ? (scale * g_currentEyeScaleX) : scale;
+    float sy = (g_currentEyeScaleY > 0.01f) ? (scale * g_currentEyeScaleY) : scale;
+
+    int maxEyeWidth = (int)roundf(28.0f * sx);
+    int maxEyeHeight = (int)roundf(38.0f * sy);
 
     int leftHeight = (int)roundf((float)maxEyeHeight * leftHeightFactor);
     int rightHeight = (int)roundf((float)maxEyeHeight * rightHeightFactor);
@@ -52,14 +54,18 @@ static void drawDualEyes(float leftHeightFactor, float rightHeightFactor, int ox
     if (leftHeight <= 3) {
         canvas.fillRoundRect(lx - maxEyeWidth / 2, ly - 1, maxEyeWidth, 3, 1, color);
     } else {
-        int radius = (leftHeight < 24) ? leftHeight / 2 : 12;
+        int radius = (leftHeight < 24) ? leftHeight / 2 : (int)roundf(12.0f * sx);
+        if (radius > maxEyeWidth / 2) radius = maxEyeWidth / 2;
+        if (radius < 1) radius = 1;
         canvas.fillRoundRect(lx - maxEyeWidth / 2, ly - leftHeight / 2, maxEyeWidth, leftHeight, radius, color);
     }
 
     if (rightHeight <= 3) {
         canvas.fillRoundRect(rx - maxEyeWidth / 2, ry - 1, maxEyeWidth, 3, 1, color);
     } else {
-        int radius = (rightHeight < 24) ? rightHeight / 2 : 12;
+        int radius = (rightHeight < 24) ? rightHeight / 2 : (int)roundf(12.0f * sx);
+        if (radius > maxEyeWidth / 2) radius = maxEyeWidth / 2;
+        if (radius < 1) radius = 1;
         canvas.fillRoundRect(rx - maxEyeWidth / 2, ry - rightHeight / 2, maxEyeWidth, rightHeight, radius, color);
     }
 }
@@ -91,10 +97,13 @@ static void drawFumoEyes(float eyeHeightFactor, int ox, int oy, uint16_t color, 
     int ly = 28 + oy;
     int ry = 28 + oy;
 
-    int maxEyeWidth = (int)roundf(28.0f * scale);
-    int maxEyeHeight = (int)roundf(34.0f * scale);
+    float sx = (g_currentEyeScaleX > 0.01f) ? (scale * g_currentEyeScaleX) : scale;
+    float sy = (g_currentEyeScaleY > 0.01f) ? (scale * g_currentEyeScaleY) : scale;
+
+    int maxEyeWidth = (int)roundf(28.0f * sx);
+    int maxEyeHeight = (int)roundf(34.0f * sy);
     int eyeHeight = (int)roundf((float)maxEyeHeight * eyeHeightFactor);
-    int topRad = (int)roundf(14.0f * scale);
+    int topRad = (int)roundf(14.0f * sx);
 
     drawFumoEye(lx, ly, maxEyeWidth, eyeHeight, topRad, color);
     drawFumoEye(rx, ry, maxEyeWidth, eyeHeight, topRad, color);
@@ -420,8 +429,9 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
     float startBrow = (fromExpr == EXPR_ANGRY) ? 1.0f : 0.0f;
     float endBrow   = (toExpr == EXPR_ANGRY)   ? 1.0f : 0.0f;
 
-    int steps = 10;
-    float stepDelay = durationMs / steps;
+    int steps = 14;
+    float stepDelay = durationMs / (float)steps;
+    float arousal = getEmotionArousal();
 
     for (int i = 0; i <= steps; i++) {
         updateGazeSystem();
@@ -430,29 +440,38 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
 
         float curLeftEyeH;
         float curRightEyeH;
-        if (t <= 0.40f) {
-            float p = t / 0.40f;
+        if (t <= 0.35f) {
+            float p = t / 0.35f;
             float blinkFactor = fmaxf(0.04f, 1.0f - p * p);
             curLeftEyeH = startLeftEyeH * blinkFactor;
             curRightEyeH = startRightEyeH * blinkFactor;
-        } else if (t <= 0.60f) {
+        } else if (t <= 0.50f) {
             curLeftEyeH = 0.04f;
             curRightEyeH = 0.04f;
         } else {
-            float p = (t - 0.60f) / 0.40f;
-            float blinkFactor = fmaxf(0.04f, sinf(p * 1.5707963f));
+            float p = (t - 0.50f) / 0.50f;
+            /* Biological eyelid opening with elastic pop */
+            float blinkFactor = fmaxf(0.04f, blinkOpenEase(p));
             curLeftEyeH = endLeftEyeH * blinkFactor;
             curRightEyeH = endRightEyeH * blinkFactor;
         }
 
-        float easedT = easeInOutCubic(t);
-        float curCurve = customLerp(startCurve, endCurve, easedT);
-        float curY     = customLerp(startY, endY, easedT);
-        float curW     = customLerp(startW, endW, easedT);
-        float curAsym  = customLerp(startAsym, endAsym, easedT);
-        float curBrow  = customLerp(startBrow, endBrow, easedT);
+        /* Viscoelastic underdamped elastic bounce easing */
+        float elasticT = eval_elastic_bounce_ease(t);
+        float curCurve = customLerp(startCurve, endCurve, elasticT);
+        float curY     = customLerp(startY, endY, elasticT);
+        float curW     = customLerp(startW, endW, elasticT);
+        float curAsym  = customLerp(startAsym, endAsym, elasticT);
+        float curBrow  = customLerp(startBrow, endBrow, elasticT);
+
+        /* Biological volume-conserving Squash & Stretch */
+        float squashX = 1.0f, squashY = 1.0f;
+        compute_squash_stretch_factors(t, arousal, &squashX, &squashY);
+        g_currentEyeScaleX = squashX;
+        g_currentEyeScaleY = squashY;
 
         float joyScale = (t < 0.5f) ? fmaxf(0.0f, 1.0f - t * 2.0f) : fmaxf(0.0f, (t - 0.5f) * 2.0f);
+        joyScale *= squashY;
 
         bool inverted = (t < 0.5f) ? (fromExpr == EXPR_ANGRY) : (toExpr == EXPR_ANGRY);
         uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
@@ -471,11 +490,11 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
         } else if (activeExpr == EXPR_JOY) {
             drawJoyEyes(ox, oy, joyScale, fgColor, g_currentVergence, g_currentEyeScale);
         } else if (activeExpr == EXPR_SHOCK) {
-            drawShockEyes(ox, oy, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
+            drawShockEyes(ox, oy, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH * squashY);
         } else if (activeExpr == EXPR_OVERLOAD) {
-            drawSpiralEyes(ox, oy, t * 2.0f, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
+            drawSpiralEyes(ox, oy, t * 2.0f, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH * squashY);
         } else if (activeExpr == EXPR_SAD) {
-            drawSadEyes(ox, oy, t * 4.0f, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH);
+            drawSadEyes(ox, oy, t * 4.0f, fgColor, g_currentVergence, g_currentEyeScale * curLeftEyeH * squashY);
         }
 
         if (curBrow > 0.01f) {
@@ -486,35 +505,35 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
         bool toCurveMouth   = (toExpr == EXPR_IDLE || toExpr == EXPR_ANGRY);
 
         if (fromCurveMouth && toCurveMouth) {
-            drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor, g_currentEyeScale);
+            drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor, g_currentEyeScale * squashX);
         } else {
             Expression mouthExpr = (t < 0.5f) ? fromExpr : toExpr;
             if (mouthExpr == EXPR_IDLE || mouthExpr == EXPR_ANGRY) {
-                drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor, g_currentEyeScale);
+                drawMouthCustom(ox, oy, curCurve, curY, curW, curAsym, fgColor, g_currentEyeScale * squashX);
             } else if (mouthExpr == EXPR_SMIRK) {
-                drawCatMouth(ox, oy, fgColor, g_currentEyeScale);
+                drawCatMouth(ox, oy, fgColor, g_currentEyeScale * squashX);
             } else if (mouthExpr == EXPR_DEADPAN) {
-                drawDeadpanMouth(ox, oy, fgColor, g_currentEyeScale);
+                drawDeadpanMouth(ox, oy, fgColor, g_currentEyeScale * squashX);
             } else if (mouthExpr == EXPR_JOY) {
                 drawJoyMouth(ox, oy, joyScale, fgColor, g_currentEyeScale);
             } else if (mouthExpr == EXPR_SHOCK) {
-                drawShockMouth(ox, oy, fgColor, g_currentEyeScale);
+                drawShockMouth(ox, oy, fgColor, g_currentEyeScale * squashY);
             } else if (mouthExpr == EXPR_OVERLOAD) {
-                drawOverloadMouth(ox, oy, fgColor, g_currentEyeScale);
+                drawOverloadMouth(ox, oy, fgColor, g_currentEyeScale * squashX);
             } else if (mouthExpr == EXPR_SAD) {
-                drawSadMouth(ox, oy, t * 4.0f, fgColor, g_currentEyeScale);
+                drawSadMouth(ox, oy, t * 4.0f, fgColor, g_currentEyeScale * squashX);
             }
         }
 
-        canvas.pushSprite(0, 0);
+        canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
         vTaskDelay(pdMS_TO_TICKS((int)stepDelay));
     }
+    g_currentEyeScaleX = 1.0f;
+    g_currentEyeScaleY = 1.0f;
     g_currentExpr = toExpr;
 }
 
-void drawClockScreen(float animFrame) {
-    canvas.fillScreen(TFT_BLACK);
-
+void renderClockToCanvas(float animFrame, int offsetY = 0) {
     time_t now_sec;
     time(&now_sec);
     struct tm timeinfo;
@@ -535,7 +554,7 @@ void drawClockScreen(float animFrame) {
         int time_x = (OLED_PANEL_WIDTH_PX - time_w) / 2;
         canvas.setTextSize(3);
         canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-        canvas.setCursor(time_x, 15);
+        canvas.setCursor(time_x, 15 + offsetY);
         canvas.print(hm_buf);
     } else {
         bool colon_on = ((int)(animFrame * 2.5f) % 2 == 0);
@@ -545,7 +564,7 @@ void drawClockScreen(float animFrame) {
         int time_x = (OLED_PANEL_WIDTH_PX - time_w) / 2;
         canvas.setTextSize(3);
         canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-        canvas.setCursor(time_x, 15);
+        canvas.setCursor(time_x, 15 + offsetY);
         canvas.print(hm_buf);
     }
 
@@ -566,31 +585,33 @@ void drawClockScreen(float animFrame) {
         );
 
         // Bottom Left: Day Name
-        canvas.setCursor(6, 50);
+        canvas.setCursor(6, 50 + offsetY);
         canvas.print(day_str);
 
         // Bottom Right: Date
         int date_w = strlen(date_str) * 6;
         int date_x = OLED_PANEL_WIDTH_PX - 6 - date_w;
         if (date_x < 60) date_x = 60;
-        canvas.setCursor(date_x, 50);
+        canvas.setCursor(date_x, 50 + offsetY);
         canvas.print(date_str);
     } else {
-        canvas.setCursor(6, 50);
+        canvas.setCursor(6, 50 + offsetY);
         canvas.print("Syncing");
 
         const char* r_str = "NTP Clock";
         int rw = strlen(r_str) * 6;
-        canvas.setCursor(OLED_PANEL_WIDTH_PX - 6 - rw, 50);
+        canvas.setCursor(OLED_PANEL_WIDTH_PX - 6 - rw, 50 + offsetY);
         canvas.print(r_str);
     }
+}
 
+void drawClockScreen(float animFrame) {
+    canvas.fillScreen(TFT_BLACK);
+    renderClockToCanvas(animFrame, 0);
     canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
 }
 
-void drawWeatherScreen(const WeatherInfo& weather, float animFrame) {
-    canvas.fillScreen(TFT_BLACK);
-
+void renderWeatherToCanvas(const WeatherInfo& weather, float animFrame, int offsetY = 0) {
     /* 1. City Name on Top (Centered, clean 1x font) */
     canvas.setTextSize(1);
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -600,13 +621,13 @@ void drawWeatherScreen(const WeatherInfo& weather, float animFrame) {
     int city_w = strlen(city_buf) * 6;
     int city_x = (OLED_PANEL_WIDTH_PX - city_w) / 2;
     if (city_x < 0) city_x = 0;
-    canvas.setCursor(city_x, 6);
+    canvas.setCursor(city_x, 6 + offsetY);
     canvas.print(city_buf);
 
     /* 2. Hero Center: Minimalist Weather Icon on Left + Large Temperature on Right */
     int code = weather.weather_code;
     int icx = 34;
-    int icy = 31;
+    int icy = 31 + offsetY;
 
     if (code == 0 || code == 1) {
         /* Clear / Sun */
@@ -667,10 +688,10 @@ void drawWeatherScreen(const WeatherInfo& weather, float animFrame) {
     }
 
     canvas.setTextSize(2);
-    canvas.setCursor(62, 24);
+    canvas.setCursor(62, 24 + offsetY);
     canvas.print(temp_buf);
     int deg_x = 62 + strlen(temp_buf) * 12;
-    canvas.drawCircle(deg_x + 3, 25, 2, TFT_WHITE);
+    canvas.drawCircle(deg_x + 3, 25 + offsetY, 2, TFT_WHITE);
 
     /* 3. Minimalist Footer: Condition & Humidity */
     canvas.setTextSize(1);
@@ -686,9 +707,13 @@ void drawWeatherScreen(const WeatherInfo& weather, float animFrame) {
     int cond_w = strlen(cond_buf) * 6;
     int cond_x = (OLED_PANEL_WIDTH_PX - cond_w) / 2;
     if (cond_x < 0) cond_x = 0;
-    canvas.setCursor(cond_x, 49);
+    canvas.setCursor(cond_x, 49 + offsetY);
     canvas.print(cond_buf);
+}
 
+void drawWeatherScreen(const WeatherInfo& weather, float animFrame) {
+    canvas.fillScreen(TFT_BLACK);
+    renderWeatherToCanvas(weather, animFrame, 0);
     canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
 }
 
@@ -701,11 +726,107 @@ static uint32_t s_ambient_popup_until_ms = 0;
 static uint32_t s_next_random_ambient_check_ms = 0;
 static uint8_t s_last_applied_brightness = 0;
 static volatile bool s_is_manual_ambient = false;
+static volatile AmbientScreenMode s_pending_ambient_mode = AMBIENT_NONE;
+static volatile uint32_t s_pending_ambient_duration = 0;
+
+void transitionToAmbient(AmbientScreenMode toMode, float durationMs) {
+    if (toMode == AMBIENT_NONE) return;
+
+    int steps = 11;
+    float stepDelay = durationMs / (float)steps;
+    Expression startExpr = g_currentExpr;
+
+    WeatherInfo local_weather;
+    if (toMode == AMBIENT_WEATHER) {
+        portENTER_CRITICAL(&g_weather_mutex);
+        local_weather = g_weather_info;
+        portEXIT_CRITICAL(&g_weather_mutex);
+    }
+
+    for (int i = 0; i <= steps; i++) {
+        float t = (float)i / (float)steps;
+
+        if (t <= 0.45f) {
+            /* Phase 1: Face squashes down and blinks closed */
+            float p = t / 0.45f;
+            float eyeH = fmaxf(0.04f, 1.0f - p * p);
+            float squashX = 1.0f + 0.16f * p;
+            float squashY = fmaxf(0.04f, 1.0f - 0.96f * p);
+            g_currentEyeScaleX = squashX;
+            g_currentEyeScaleY = squashY;
+
+            drawFace(startExpr, eyeH, g_currentOffsetX, g_currentOffsetY, 0.0f, g_currentVergence, 1.0f);
+        } else {
+            /* Phase 2: Ambient screen elements pop up with underdamped elastic bounce */
+            float p = (t - 0.45f) / 0.55f;
+            float bounceT = eval_elastic_bounce_ease(p);
+            int offsetY = (int)roundf((1.0f - bounceT) * 32.0f);
+
+            canvas.fillScreen(TFT_BLACK);
+            if (toMode == AMBIENT_CLOCK) {
+                renderClockToCanvas(g_animFrame, offsetY);
+            } else if (toMode == AMBIENT_WEATHER) {
+                renderWeatherToCanvas(local_weather, g_animFrame, offsetY);
+            }
+            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS((int)stepDelay));
+    }
+    g_currentEyeScaleX = 1.0f;
+    g_currentEyeScaleY = 1.0f;
+}
+
+void transitionFromAmbientToFace(AmbientScreenMode fromMode, Expression toExpr, float durationMs) {
+    if (fromMode == AMBIENT_NONE) return;
+
+    int steps = 11;
+    float stepDelay = durationMs / (float)steps;
+
+    WeatherInfo local_weather;
+    if (fromMode == AMBIENT_WEATHER) {
+        portENTER_CRITICAL(&g_weather_mutex);
+        local_weather = g_weather_info;
+        portEXIT_CRITICAL(&g_weather_mutex);
+    }
+
+    for (int i = 0; i <= steps; i++) {
+        float t = (float)i / (float)steps;
+
+        if (t <= 0.40f) {
+            /* Phase 1: Ambient screen squashes / drops down */
+            float p = t / 0.40f;
+            int offsetY = (int)roundf((p * p) * 32.0f);
+
+            canvas.fillScreen(TFT_BLACK);
+            if (fromMode == AMBIENT_CLOCK) {
+                renderClockToCanvas(g_animFrame, offsetY);
+            } else if (fromMode == AMBIENT_WEATHER) {
+                renderWeatherToCanvas(local_weather, g_animFrame, offsetY);
+            }
+            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+        } else {
+            /* Phase 2: Face pops open with fast-twitch elastic rebound */
+            float p = (t - 0.40f) / 0.60f;
+            float eyeH = fmaxf(0.04f, blinkOpenEase(p));
+            float squashX = 1.0f, squashY = 1.0f;
+            compute_squash_stretch_factors(p, getEmotionArousal(), &squashX, &squashY);
+            g_currentEyeScaleX = squashX;
+            g_currentEyeScaleY = squashY;
+
+            drawFace(toExpr, eyeH, g_currentOffsetX, g_currentOffsetY, 0.0f, g_currentVergence, 1.0f);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS((int)stepDelay));
+    }
+    g_currentEyeScaleX = 1.0f;
+    g_currentEyeScaleY = 1.0f;
+}
 
 void triggerAmbientDisplay(AmbientScreenMode mode, uint32_t duration_ms) {
+    s_pending_ambient_mode = mode;
+    s_pending_ambient_duration = duration_ms;
     s_is_manual_ambient = true;
-    s_active_ambient_mode = mode;
-    s_ambient_popup_until_ms = millis() + duration_ms;
 }
 
 void triggerClockDisplay(uint32_t duration_ms) {
@@ -758,14 +879,17 @@ void oledTask(void *pvParameters) {
         target_engaged = (g_recon_state == STATE_ACTIVE && g_current_target.detected && (now - g_current_target.last_seen_ms < 600));
         portEXIT_CRITICAL(&g_target_mutex);
 
-        /* CAMERA RESPONSIVENESS HOOK:
-         * If a face is detected by the camera while a SPONTANEOUS ambient glance (not a manual web preview) is showing,
-         * immediately dismiss the spontaneous glance so KoRe instantly locks eye contact with the user! */
-        if (!s_is_manual_ambient && target_engaged && s_active_ambient_mode != AMBIENT_NONE) {
-            s_active_ambient_mode = AMBIENT_NONE;
-            s_ambient_popup_until_ms = 0;
-            uint32_t interval_span = (AMBIENT_INTERVAL_MAX_MS > AMBIENT_INTERVAL_MIN_MS) ? (AMBIENT_INTERVAL_MAX_MS - AMBIENT_INTERVAL_MIN_MS) : 60000;
-            s_next_random_ambient_check_ms = now + (esp_random() % interval_span) + AMBIENT_INTERVAL_MIN_MS;
+        /* Check manual preview request from Web UI */
+        if (s_pending_ambient_mode != AMBIENT_NONE) {
+            AmbientScreenMode target = s_pending_ambient_mode;
+            uint32_t dur = s_pending_ambient_duration;
+            s_pending_ambient_mode = AMBIENT_NONE;
+            if (s_active_ambient_mode != target) {
+                transitionToAmbient(target, 160.0f);
+            }
+            s_active_ambient_mode = target;
+            s_ambient_popup_until_ms = millis() + dur;
+            s_is_manual_ambient = true;
         }
 
         /* Spontaneous organic ambient glance (Personality & Attention-Driven):
@@ -790,30 +914,27 @@ void oledTask(void *pvParameters) {
 
                 bool weather_available = isWeatherEnabled() && weather_valid;
                 uint32_t roll = esp_random() % 100;
+                AmbientScreenMode chosen_mode = AMBIENT_NONE;
 
                 if (weather_available) {
                     if (roll < 45) {
                         /* 45% chance: Glances at clock */
-                        s_active_ambient_mode = AMBIENT_CLOCK;
+                        chosen_mode = AMBIENT_CLOCK;
                     } else if (roll < 85) {
                         /* 40% chance: Glances at weather */
-                        s_active_ambient_mode = AMBIENT_WEATHER;
-                    } else {
-                        /* 15% chance: Stays focused on facial expression / ocular gaze */
-                        s_active_ambient_mode = AMBIENT_NONE;
+                        chosen_mode = AMBIENT_WEATHER;
                     }
                 } else {
                     if (roll < 60) {
                         /* 60% chance: Glances at clock */
-                        s_active_ambient_mode = AMBIENT_CLOCK;
-                    } else {
-                        /* 40% chance: Stays focused on facial expression */
-                        s_active_ambient_mode = AMBIENT_NONE;
+                        chosen_mode = AMBIENT_CLOCK;
                     }
                 }
 
-                if (s_active_ambient_mode != AMBIENT_NONE) {
+                if (chosen_mode != AMBIENT_NONE) {
                     s_is_manual_ambient = false;
+                    transitionToAmbient(chosen_mode, 160.0f);
+                    s_active_ambient_mode = chosen_mode;
                     uint32_t duration_span = (AMBIENT_POPUP_DURATION_MAX_MS > AMBIENT_POPUP_DURATION_MIN_MS) ? (AMBIENT_POPUP_DURATION_MAX_MS - AMBIENT_POPUP_DURATION_MIN_MS) : 2000;
                     uint32_t random_duration_ms = (esp_random() % duration_span) + AMBIENT_POPUP_DURATION_MIN_MS;
                     s_ambient_popup_until_ms = now + random_duration_ms;
@@ -834,8 +955,12 @@ void oledTask(void *pvParameters) {
                 drawWeatherScreen(local_weather, g_animFrame);
             }
         } else {
-            s_active_ambient_mode = AMBIENT_NONE;
-            s_is_manual_ambient = false;
+            if (s_active_ambient_mode != AMBIENT_NONE) {
+                AmbientScreenMode prev_mode = s_active_ambient_mode;
+                s_active_ambient_mode = AMBIENT_NONE;
+                s_is_manual_ambient = false;
+                transitionFromAmbientToFace(prev_mode, g_currentExpr, 140.0f);
+            }
             Expression prevExpr = g_currentExpr;
             updateBiologicalMoodEngine();
 

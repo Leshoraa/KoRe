@@ -15,6 +15,8 @@ float g_currentOffsetX = 0.0f;
 float g_currentOffsetY = 0.0f;
 float g_currentVergence = 0.0f;
 float g_currentEyeScale = 1.0f;
+float g_currentEyeScaleX = 1.0f;
+float g_currentEyeScaleY = 1.0f;
 bool g_is_transitioning = false;
 
 /* Internal Dynamic State */
@@ -51,7 +53,14 @@ static float s_stable_oy = 0.0f;
 float eval_minimum_jerk_spline(float p) {
     if (p <= 0.0f) return 0.0f;
     if (p >= 1.0f) return 1.0f;
-    return p * p * p * (10.0f + p * (-15.0f + 6.0f * p));
+    float base_spline = p * p * p * (10.0f + p * (-15.0f + 6.0f * p));
+    /* Post-saccadic ocular glissade rebound upon target landing */
+    if (p > 0.70f) {
+        float norm_tail = (p - 0.70f) / 0.30f;
+        float glissade = GLISSADE_REBOUND_GAIN * sinf(norm_tail * 3.14159265f) * expf(-3.5f * norm_tail);
+        base_spline += glissade;
+    }
+    return constrain(base_spline, 0.0f, 1.06f);
 }
 
 uint32_t compute_saccade_duration_ms(float displacement_px) {
@@ -71,12 +80,50 @@ float easeInOutCubic(float t) {
     }
 }
 
+float eval_elastic_bounce_ease(float t) {
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    /* Analytical Kelvin-Voigt underdamped transient compliance (zeta = 0.72, omega = 7.2 rad/s) */
+    const float zeta = 0.72f;
+    const float omega = 7.2f;
+    const float omega_d = 4.996f; // omega * sqrt(1 - zeta^2)
+    const float decay = expf(-zeta * omega * t);
+    float response = 1.0f - decay * (cosf(omega_d * t) + (zeta / 0.6939f) * sinf(omega_d * t));
+    return response;
+}
+
+void compute_squash_stretch_factors(float progress, float arousal, float* scaleX, float* scaleY) {
+    if (!scaleX || !scaleY) return;
+    if (progress <= 0.0f || progress >= 1.0f) {
+        *scaleX = 1.0f;
+        *scaleY = 1.0f;
+        return;
+    }
+    /* Biological incompressibility volume conservation: Sy * Sx^2 ≈ 1.0 -> Sx = 1.0 / sqrt(Sy) */
+    float effective_arousal = constrain(arousal, 0.20f, 1.0f);
+    float bounce_amp = BOUNCE_SQUASH_STRETCH_GAIN * effective_arousal;
+    float phase = progress * 6.2831853f; // 2 * PI
+    float decay = expf(-3.2f * progress);
+    float delta_y = bounce_amp * sinf(phase) * decay;
+    
+    float sy = constrain(1.0f + delta_y, 0.80f, 1.25f);
+    float sx = constrain(1.0f / sqrtf(sy), 0.80f, 1.25f);
+    
+    *scaleX = sx;
+    *scaleY = sy;
+}
+
 float blinkCloseEase(float t) {
     return 1.0f - (t * t);
 }
 
 float blinkOpenEase(float t) {
-    return sinf(t * 1.5707963f);
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    /* Fast-twitch muscular pop with 5.5% elastic overshoot */
+    float base = sinf(t * 1.5707963f);
+    float pop = 0.055f * sinf(t * 3.14159265f) * expf(-3.8f * t);
+    return constrain(base + pop, 0.0f, 1.08f);
 }
 
 float customLerp(float a, float b, float t) {

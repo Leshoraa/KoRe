@@ -86,8 +86,10 @@ extern "C" {
 #define FRAME_BUDGET_SLEEP_US   33333    /* 33.33 ms frame period (30 FPS) */
 
 /* --- Biomechanical Dynamic Modeling Parameters --- */
-#define GAZE_NATURAL_FREQUENCY_RAD_S  38.0f    /* Ocular natural frequency omega_n */
-#define GAZE_DAMPING_RATIO            1.00f    /* Critical damping zeta */
+#define GAZE_NATURAL_FREQUENCY_RAD_S  32.0f    /* Ocular natural frequency omega_n (viscoelastic soft tissue) */
+#define GAZE_DAMPING_RATIO            0.72f    /* Underdamped compliance zeta: optimal 4.3% biological bounce */
+#define BOUNCE_SQUASH_STRETCH_GAIN    0.14f    /* Volume-conserving biological squash/stretch amplitude */
+#define GLISSADE_REBOUND_GAIN         0.045f   /* Saccadic landing ocular micro-glissade rebound */
 #define GAZE_GAIN_X                   1.75f    /* Horizontal tracking gain */
 #define GAZE_GAIN_Y                   1.45f    /* Vertical tracking gain */
 #define GAZE_DEADBAND_RADIUS_PX       1.35f    /* Sub-pixel noise gate threshold */
