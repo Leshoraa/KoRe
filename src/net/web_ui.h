@@ -1192,7 +1192,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
           <div style="margin-top:12px;display:flex;align-items:center;gap:8px;">
             <input type="checkbox" id="weather-enable-check" checked style="accent-color:var(--accent-dark);width:16px;height:16px;cursor:pointer;">
-            <label for="weather-enable-check" style="font-size:12px;font-weight:600;cursor:pointer;margin:0;">Show Random Weather & Clock Popup (6s) during Idle Standby</label>
+            <label for="weather-enable-check" style="font-size:12px;font-weight:600;cursor:pointer;margin:0;">Show Spontaneous Weather & Clock Glances during Idle Standby</label>
           </div>
 
           <div class="form-actions-row" style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
@@ -2159,14 +2159,34 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     const btnPreviewClock = document.getElementById('btn-preview-clock');
     if (btnPreviewClock) {
       btnPreviewClock.addEventListener('click', function() {
-        fetch('/trigger_clock', { method: 'POST' }).catch(() => {});
+        const orig = btnPreviewClock.innerText;
+        btnPreviewClock.innerText = 'Showing...';
+        btnPreviewClock.disabled = true;
+        fetch('/trigger_clock', { method: 'POST' })
+          .catch(() => {})
+          .finally(() => {
+            setTimeout(() => {
+              btnPreviewClock.innerText = orig;
+              btnPreviewClock.disabled = false;
+            }, 5000);
+          });
       });
     }
 
     const btnPreviewWeather = document.getElementById('btn-preview-weather');
     if (btnPreviewWeather) {
       btnPreviewWeather.addEventListener('click', function() {
-        fetch('/trigger_weather', { method: 'POST' }).catch(() => {});
+        const orig = btnPreviewWeather.innerText;
+        btnPreviewWeather.innerText = 'Showing...';
+        btnPreviewWeather.disabled = true;
+        fetch('/trigger_weather', { method: 'POST' })
+          .catch(() => {})
+          .finally(() => {
+            setTimeout(() => {
+              btnPreviewWeather.innerText = orig;
+              btnPreviewWeather.disabled = false;
+            }, 5000);
+          });
       });
     }
   </script>

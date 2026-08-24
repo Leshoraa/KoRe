@@ -46,7 +46,11 @@ extern "C" {
 #define WEATHER_DEFAULT_CITY        "Jakarta"
 #define WEATHER_DEFAULT_LAT         -6.2088f
 #define WEATHER_DEFAULT_LON         106.8456f
-#define WEATHER_POPUP_DURATION_MS   6000     /* 6 seconds display on OLED */
+#define AMBIENT_POPUP_DURATION_MIN_MS 3500     /* 3.5 seconds brief glance on OLED */
+#define AMBIENT_POPUP_DURATION_MAX_MS 5500     /* 5.5 seconds maximum glance on OLED */
+#define AMBIENT_INTERVAL_MIN_MS       45000    /* 45 seconds minimum between spontaneous glances */
+#define AMBIENT_INTERVAL_MAX_MS       120000   /* 120 seconds (2 mins) maximum between glances */
+#define WEATHER_POPUP_DURATION_MS     5000     /* 5 seconds manual trigger display on OLED */
 #define WEATHER_FETCH_INTERVAL_MS   1800000  /* 30 minutes periodic sync */
 
 /* Camera Sensor DVP Pin Mapping (XIAO ESP32-S3 Sense) */

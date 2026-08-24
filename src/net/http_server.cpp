@@ -578,6 +578,10 @@ void startWebServer(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 32;
     config.server_port = HTTP_PORT_WEB_CONTROL;
+    config.stack_size = 10240;
+    config.core_id = 0;
+    config.lru_purge_enable = true;
+    config.max_open_sockets = 7;
 
     httpd_uri_t index_uri             = { .uri = "/",                   .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
     httpd_uri_t telemetry_uri         = { .uri = "/telemetry",           .method = HTTP_GET,  .handler = telemetry_handler,         .user_ctx = NULL };
@@ -629,6 +633,10 @@ void startWebServer(void) {
 
     config.server_port = HTTP_PORT_STREAM;
     config.ctrl_port   = 32769;
+    config.stack_size  = 8192;
+    config.core_id     = 0;
+    config.max_open_sockets = 4;
+    config.lru_purge_enable = true;
     httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = NULL };
 
     if (httpd_start(&g_stream_httpd, &config) == ESP_OK) {

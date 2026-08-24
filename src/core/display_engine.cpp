@@ -699,10 +699,11 @@ void setOledBrightnessLive(uint8_t brightness) {
 static AmbientScreenMode s_active_ambient_mode = AMBIENT_NONE;
 static uint32_t s_ambient_popup_until_ms = 0;
 static uint32_t s_next_random_ambient_check_ms = 0;
-static uint8_t s_ambient_cycle_toggle = 0; /* 0 = Clock, 1 = Weather */
 static uint8_t s_last_applied_brightness = 0;
+static volatile bool s_is_manual_ambient = false;
 
 void triggerAmbientDisplay(AmbientScreenMode mode, uint32_t duration_ms) {
+    s_is_manual_ambient = true;
     s_active_ambient_mode = mode;
     s_ambient_popup_until_ms = millis() + duration_ms;
 }
@@ -718,10 +719,8 @@ void triggerWeatherDisplay(uint32_t duration_ms) {
 void oledTask(void *pvParameters) {
     (void)pvParameters;
 
-    lcd.init();
-    lcd.setRotation(2);
-    lcd.setBrightness(g_oled_brightness);
     s_last_applied_brightness = g_oled_brightness;
+    lcd.setBrightness(g_oled_brightness);
 
     canvas.setColorDepth(1);
     canvas.createSprite(OLED_PANEL_WIDTH_PX, OLED_PANEL_HEIGHT_PX);
@@ -739,9 +738,6 @@ void oledTask(void *pvParameters) {
             lcd.setBrightness(g_oled_brightness);
         }
 
-        Expression prevExpr = g_currentExpr;
-        updateBiologicalMoodEngine();
-
         if (g_recon_state != s_prev_recon_state) {
             s_prev_recon_state = g_recon_state;
             if (g_recon_state == STATE_ACTIVE) {
@@ -756,22 +752,72 @@ void oledTask(void *pvParameters) {
             s_burn_shift_y = (int)(esp_random() % 3) - 1;
         }
 
-        /* Periodic random ambient screen trigger during idle standby (Alternating Clock and Weather) */
-        if (g_recon_state == STATE_SLEEP_RECON && now >= s_next_random_ambient_check_ms) {
-            s_next_random_ambient_check_ms = now + (esp_random() % 12000) + 18000; /* Every 18-30 seconds */
+        /* Check if target face is actively engaged */
+        bool target_engaged = false;
+        portENTER_CRITICAL(&g_target_mutex);
+        target_engaged = (g_recon_state == STATE_ACTIVE && g_current_target.detected && (now - g_current_target.last_seen_ms < 600));
+        portEXIT_CRITICAL(&g_target_mutex);
+
+        /* CAMERA RESPONSIVENESS HOOK:
+         * If a face is detected by the camera while a SPONTANEOUS ambient glance (not a manual web preview) is showing,
+         * immediately dismiss the spontaneous glance so KoRe instantly locks eye contact with the user! */
+        if (!s_is_manual_ambient && target_engaged && s_active_ambient_mode != AMBIENT_NONE) {
+            s_active_ambient_mode = AMBIENT_NONE;
+            s_ambient_popup_until_ms = 0;
+            uint32_t interval_span = (AMBIENT_INTERVAL_MAX_MS > AMBIENT_INTERVAL_MIN_MS) ? (AMBIENT_INTERVAL_MAX_MS - AMBIENT_INTERVAL_MIN_MS) : 60000;
+            s_next_random_ambient_check_ms = now + (esp_random() % interval_span) + AMBIENT_INTERVAL_MIN_MS;
+        }
+
+        /* Spontaneous organic ambient glance (Personality & Attention-Driven):
+         * - Only triggers when robot is NOT engaged with a person and manual expression is inactive.
+         * - True stochastic weighted selection: Clock vs Weather vs skipping to staying in eye gaze.
+         * - Natural organic interval: 45s - 120s between spontaneous glances.
+         * - Brief glance duration: 3.5s - 5.5s. */
+        if (s_next_random_ambient_check_ms == 0) {
+            uint32_t interval_span = (AMBIENT_INTERVAL_MAX_MS > AMBIENT_INTERVAL_MIN_MS) ? (AMBIENT_INTERVAL_MAX_MS - AMBIENT_INTERVAL_MIN_MS) : 60000;
+            s_next_random_ambient_check_ms = now + (esp_random() % interval_span) + AMBIENT_INTERVAL_MIN_MS;
+        }
+
+        if (!target_engaged && !isManualExpressionActive() && now >= s_next_random_ambient_check_ms) {
+            uint32_t interval_span = (AMBIENT_INTERVAL_MAX_MS > AMBIENT_INTERVAL_MIN_MS) ? (AMBIENT_INTERVAL_MAX_MS - AMBIENT_INTERVAL_MIN_MS) : 60000;
+            s_next_random_ambient_check_ms = now + (esp_random() % interval_span) + AMBIENT_INTERVAL_MIN_MS;
+
             if (s_ambient_popup_until_ms < now) {
-                if (s_ambient_cycle_toggle == 0) {
-                    s_active_ambient_mode = AMBIENT_CLOCK;
-                    s_ambient_cycle_toggle = 1;
-                } else {
-                    if (isWeatherEnabled() && g_weather_info.valid) {
+                bool weather_valid = false;
+                portENTER_CRITICAL(&g_weather_mutex);
+                weather_valid = g_weather_info.valid;
+                portEXIT_CRITICAL(&g_weather_mutex);
+
+                bool weather_available = isWeatherEnabled() && weather_valid;
+                uint32_t roll = esp_random() % 100;
+
+                if (weather_available) {
+                    if (roll < 45) {
+                        /* 45% chance: Glances at clock */
+                        s_active_ambient_mode = AMBIENT_CLOCK;
+                    } else if (roll < 85) {
+                        /* 40% chance: Glances at weather */
                         s_active_ambient_mode = AMBIENT_WEATHER;
                     } else {
-                        s_active_ambient_mode = AMBIENT_CLOCK;
+                        /* 15% chance: Stays focused on facial expression / ocular gaze */
+                        s_active_ambient_mode = AMBIENT_NONE;
                     }
-                    s_ambient_cycle_toggle = 0;
+                } else {
+                    if (roll < 60) {
+                        /* 60% chance: Glances at clock */
+                        s_active_ambient_mode = AMBIENT_CLOCK;
+                    } else {
+                        /* 40% chance: Stays focused on facial expression */
+                        s_active_ambient_mode = AMBIENT_NONE;
+                    }
                 }
-                s_ambient_popup_until_ms = now + WEATHER_POPUP_DURATION_MS;
+
+                if (s_active_ambient_mode != AMBIENT_NONE) {
+                    s_is_manual_ambient = false;
+                    uint32_t duration_span = (AMBIENT_POPUP_DURATION_MAX_MS > AMBIENT_POPUP_DURATION_MIN_MS) ? (AMBIENT_POPUP_DURATION_MAX_MS - AMBIENT_POPUP_DURATION_MIN_MS) : 2000;
+                    uint32_t random_duration_ms = (esp_random() % duration_span) + AMBIENT_POPUP_DURATION_MIN_MS;
+                    s_ambient_popup_until_ms = now + random_duration_ms;
+                }
             }
         }
 
@@ -781,10 +827,18 @@ void oledTask(void *pvParameters) {
             if (s_active_ambient_mode == AMBIENT_CLOCK) {
                 drawClockScreen(g_animFrame);
             } else if (s_active_ambient_mode == AMBIENT_WEATHER) {
-                drawWeatherScreen(g_weather_info, g_animFrame);
+                WeatherInfo local_weather;
+                portENTER_CRITICAL(&g_weather_mutex);
+                local_weather = g_weather_info;
+                portEXIT_CRITICAL(&g_weather_mutex);
+                drawWeatherScreen(local_weather, g_animFrame);
             }
         } else {
             s_active_ambient_mode = AMBIENT_NONE;
+            s_is_manual_ambient = false;
+            Expression prevExpr = g_currentExpr;
+            updateBiologicalMoodEngine();
+
             if (g_currentExpr != prevExpr) {
                 frame_start_us = micros();
             } else {
@@ -856,11 +910,13 @@ void oledTask(void *pvParameters) {
         uint32_t frame_elapsed_us = micros() - frame_start_us;
         if (frame_elapsed_us < frame_budget_us) {
             uint32_t wait_us = frame_budget_us - frame_elapsed_us;
-            uint32_t wait_ms = wait_us / 1000;
-            if (wait_ms > 0) {
-                vTaskDelay(pdMS_TO_TICKS(wait_ms));
-            } else {
-                vTaskDelay(1);
+            if (wait_us > 2000) {
+                vTaskDelay(pdMS_TO_TICKS((wait_us - 500) / 1000));
+            }
+            /* Fine-grained sub-ms timing: yield once then accept frame */
+            uint32_t remaining_us = frame_budget_us - (micros() - frame_start_us);
+            if (remaining_us > 0 && remaining_us < 2000) {
+                delayMicroseconds(remaining_us);
             }
         } else {
             vTaskDelay(1);

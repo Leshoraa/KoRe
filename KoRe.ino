@@ -66,7 +66,7 @@ void setup() {
         xTaskCreatePinnedToCore(
             cameraTask,
             "Camera_AI_Task",
-            10240,
+            8192,
             NULL,
             2,
             NULL,

@@ -124,7 +124,7 @@ static void restartTask(void *pvParameters) {
 }
 
 void scheduleSystemRestart(uint32_t delay_ms) {
-    xTaskCreate(restartTask, "restart_task", 2048, (void*)(uintptr_t)delay_ms, 1, NULL);
+    xTaskCreate(restartTask, "restart_task", 3072, (void*)(uintptr_t)delay_ms, 1, NULL);
 }
 
 void saveWiFiCredentials(const char* sta_s, const char* sta_p, const char* ap_s, const char* ap_p) {
@@ -298,15 +298,17 @@ bool initWiFiAndNetwork(void) {
         s_dnsServer.start(53, "*", WiFi.softAPIP());
         s_is_ap_mode = true;
 
-        xTaskCreate([](void* arg) {
+        xTaskCreatePinnedToCore([](void* arg) {
             (void)arg;
             while (true) {
                 if (s_is_ap_mode) {
                     s_dnsServer.processNextRequest();
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                } else {
+                    vTaskDelay(pdMS_TO_TICKS(100));
                 }
-                vTaskDelay(pdMS_TO_TICKS(5));
             }
-        }, "AP_DNS_Task", 4096, NULL, 1, NULL);
+        }, "AP_DNS_Task", 4096, NULL, 1, NULL, 0);
 
         char ap_ip_buf[40];
         if (!force_ap && strlen(s_sta_ssid) > 0) {

@@ -44,6 +44,7 @@ static KalmanTracker2D s_k_tracker;
 static float s_lock_confidence = 0.0f;
 static uint32_t s_last_valid_human_time = 0;
 static float s_ema_global_luminance = 100.0f;
+static int s_warmup_frames = 3;
 
 static uint32_t s_last_inspection_time_ms = 0;
 static uint32_t s_inspection_hold_time_ms = 2800;
@@ -213,13 +214,17 @@ void processFrameAI(camera_fb_t *fb) {
         }
     }
 
-    static bool first_frame = true;
-    if (first_frame) {
+    if (s_warmup_frames > 0) {
+        s_warmup_frames--;
         memcpy(prev_lum_buf, smooth_40x30, 1200);
         memset(mhi_buf, 0, 1200);
-        first_frame = false;
         kf2d_tracker_init(&s_k_tracker);
         s_k_tracker.last_update_us = micros();
+        s_lock_confidence = 0.0f;
+        portENTER_CRITICAL(&g_target_mutex);
+        g_current_target.detected = false;
+        g_current_target.confidence = 0.0f;
+        portEXIT_CRITICAL(&g_target_mutex);
         return;
     }
 
@@ -708,6 +713,7 @@ void cameraTask(void *pvParameters) {
                     s_sleep_miss_count = 0;
                 }
             } else if (now - state_timer > active_duration_ms) {
+                setCameraSleep(true);
                 g_recon_state = STATE_SLEEP_RECON;
                 state_timer = now;
 
@@ -722,6 +728,9 @@ void cameraTask(void *pvParameters) {
             }
         } else if (g_recon_state == STATE_SLEEP_RECON) {
             if (web_active || (now - state_timer > sleep_duration_ms)) {
+                setCameraSleep(false);
+                vTaskDelay(pdMS_TO_TICKS(30));
+
                 kf2d_tracker_init(&s_k_tracker);
                 portENTER_CRITICAL(&g_target_mutex);
                 g_current_target.detected = false;
@@ -733,6 +742,7 @@ void cameraTask(void *pvParameters) {
                 g_current_target.proximity = 0.0f;
                 portEXIT_CRITICAL(&g_target_mutex);
 
+                s_warmup_frames = 3;
                 g_recon_state = STATE_ACTIVE;
                 state_timer = now;
                 active_duration_ms = ACTIVE_STATE_TIMEOUT_MS;
