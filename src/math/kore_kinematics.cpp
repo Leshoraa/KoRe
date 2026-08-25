@@ -199,7 +199,7 @@ void updateGazeSystem(void) {
         return;
     }
 
-    bool targetActive = (g_recon_state == STATE_ACTIVE) && (target.detected || ((now - target.last_seen_ms) < 300 && target.last_seen_ms > 0));
+    bool targetActive = (g_recon_state == STATE_ACTIVE) && target.detected;
     if (targetActive) {
         float normX = constrain((target.error_x / 100.0f) * GAZE_GAIN_X, -1.0f, 1.0f);
         float normY = constrain((target.error_y / 100.0f) * GAZE_GAIN_Y, -1.0f, 1.0f);
@@ -318,15 +318,24 @@ void updateGazeSystem(void) {
         return;
     }
 
-    s_prevTargetDetected = false;
-    s_hasTargetLock = false;
-    s_trackInSaccade = false;
+    /* On target loss: smoothly ease eyes back to center before resuming calm idle exploration */
+    if (s_prevTargetDetected) {
+        s_prevTargetDetected = false;
+        s_hasTargetLock = false;
+        s_trackInSaccade = false;
+        s_inSaccade = false;
+        s_eye_vx = 0.0f;
+        s_eye_vy = 0.0f;
+        /* Pause at center for 2.5 - 4.0 seconds before starting idle saccades */
+        s_nextGazeTime = now + (uint32_t)(esp_random() % 1500 + 2500);
+    }
 
     float alpha_decay = 1.0f - expf(-8.0f * dt);
     g_currentVergence += (0.0f - g_currentVergence) * alpha_decay;
     g_currentEyeScale += (1.0f - g_currentEyeScale) * alpha_decay;
 
     bool isSleep = (g_recon_state == STATE_SLEEP_RECON);
+    float y_bias = getPersonalityIdleGazeYBias();
 
     if (!s_inSaccade && !g_is_transitioning && now >= s_nextGazeTime) {
         s_startOffsetX = g_currentOffsetX;
@@ -341,17 +350,17 @@ void updateGazeSystem(void) {
                 s_targetOffsetY = ((float)(esp_random() % 16) - 8.0f) * 0.1f;
             } else if (pick < 75) {
                 float signX = (s_startOffsetX > 1.0f) ? -1.0f : ((s_startOffsetX < -1.0f) ? 1.0f : ((esp_random() % 2 == 0) ? -1.0f : 1.0f));
-                s_targetOffsetX = signX * (4.5f + (float)(esp_random() % 800) * 0.01f);
-                s_targetOffsetY = ((float)(esp_random() % 600) - 300.0f) * 0.01f;
+                s_targetOffsetX = signX * (3.5f + (float)(esp_random() % 500) * 0.01f);
+                s_targetOffsetY = ((float)(esp_random() % 400) - 200.0f) * 0.01f;
             } else {
                 float signX = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
                 float signY = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
-                s_targetOffsetX = signX * (4.0f + (float)(esp_random() % 600) * 0.01f);
-                s_targetOffsetY = signY * (2.5f + (float)(esp_random() % 400) * 0.01f);
+                s_targetOffsetX = signX * (3.0f + (float)(esp_random() % 400) * 0.01f);
+                s_targetOffsetY = signY * (2.0f + (float)(esp_random() % 300) * 0.01f);
             }
 
-            s_targetOffsetX = constrain(s_targetOffsetX, -15.0f, 15.0f);
-            s_targetOffsetY = constrain(s_targetOffsetY, -9.5f, 8.5f);
+            s_targetOffsetX = constrain(s_targetOffsetX, -12.0f, 12.0f);
+            s_targetOffsetY = constrain(s_targetOffsetY, -8.0f, 7.0f);
 
             float ds = sqrtf((s_targetOffsetX - s_startOffsetX) * (s_targetOffsetX - s_startOffsetX) +
                              (s_targetOffsetY - s_startOffsetY) * (s_targetOffsetY - s_startOffsetY));
@@ -360,33 +369,35 @@ void updateGazeSystem(void) {
             s_gazeStartTime = now;
             s_inSaccade = true;
         } else {
-            /* Personality-driven idle saccade target selection.
-             * Shy personalities bias gaze targets downward (avoidant).
-             * Bold personalities prefer center or upward engagement. */
-            float y_bias = getPersonalityIdleGazeYBias();
+            /* Organic idle saccade distribution:
+             * 60% center micro-shifts (calm attentive resting),
+             * 28% gentle peripheral glances, 12% wider curiosities. */
             uint32_t pick = esp_random() % 100;
-            if (pick < 40) {
-                s_targetOffsetX = 0.0f;
-                s_targetOffsetY = y_bias * 0.5f;
-            } else if (pick < 70) {
-                s_targetOffsetX = -1.0f * (float)(esp_random() % 9 + 6);
-                s_targetOffsetY = (float)(esp_random() % 7) - 3.0f + y_bias;
+            if (pick < 60) {
+                /* Subtle micro-shift around center */
+                s_targetOffsetX = ((float)(esp_random() % 70) - 35.0f) * 0.1f;
+                s_targetOffsetY = ((float)(esp_random() % 40) - 20.0f) * 0.1f + y_bias * 0.5f;
+            } else if (pick < 88) {
+                /* Gentle glance */
+                float signX = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
+                s_targetOffsetX = signX * (4.0f + (float)(esp_random() % 40) * 0.1f);
+                s_targetOffsetY = ((float)(esp_random() % 50) - 25.0f) * 0.1f + y_bias;
             } else {
-                s_targetOffsetX = (float)(esp_random() % 9 + 6);
-                s_targetOffsetY = (float)(esp_random() % 7) - 3.0f + y_bias;
+                /* Wider exploratory glance */
+                float signX = (esp_random() % 2 == 0) ? -1.0f : 1.0f;
+                s_targetOffsetX = signX * (8.0f + (float)(esp_random() % 35) * 0.1f);
+                s_targetOffsetY = ((float)(esp_random() % 60) - 30.0f) * 0.1f + y_bias;
             }
 
-            s_targetOffsetX = constrain(s_targetOffsetX, -16.5f, 16.5f);
-            s_targetOffsetY = constrain(s_targetOffsetY, -10.0f, 9.0f);
+            s_targetOffsetX = constrain(s_targetOffsetX, -14.0f, 14.0f);
+            s_targetOffsetY = constrain(s_targetOffsetY, -9.0f, 8.0f);
 
             float ds = sqrtf((s_targetOffsetX - s_startOffsetX) * (s_targetOffsetX - s_startOffsetX) +
                              (s_targetOffsetY - s_startOffsetY) * (s_targetOffsetY - s_startOffsetY));
             s_gazeDuration = compute_saccade_duration_ms(ds);
-            /* Personality-scaled inter-saccade interval.
-             * Playful + high energy: shorter pauses (darting, curious gaze).
-             * Shy + low energy: longer pauses (lingering, hesitant gaze). */
+            /* Natural inter-saccade intervals (3.0s - 6.0s) scaled by personality */
             float interval_scale = getPersonalityIdleIntervalScale();
-            s_nextGazeTime = now + s_gazeDuration + (uint32_t)(interval_scale * (float)(esp_random() % 1800 + 2200));
+            s_nextGazeTime = now + s_gazeDuration + (uint32_t)(interval_scale * (float)(esp_random() % 2500 + 3200));
             s_gazeStartTime = now;
             s_inSaccade = true;
         }

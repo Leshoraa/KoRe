@@ -933,13 +933,24 @@ void oledTask(void *pvParameters) {
                 uint32_t roll = esp_random() % 100;
                 AmbientScreenMode chosen_mode = AMBIENT_NONE;
 
+                static AmbientScreenMode s_last_spontaneous_mode = AMBIENT_NONE;
+
                 if (weather_available) {
-                    /* Alternate 50% clock / 50% weather */
-                    chosen_mode = (roll < 50) ? AMBIENT_CLOCK : AMBIENT_WEATHER;
+                    /* Weighted ambient glance: 75% Clock / 25% Weather.
+                     * Clock is the primary utility glance (time awareness),
+                     * while weather provides occasional periodic updates.
+                     * Weather is never shown twice in a row. */
+                    if (s_last_spontaneous_mode == AMBIENT_WEATHER || roll < 75) {
+                        chosen_mode = AMBIENT_CLOCK;
+                    } else {
+                        chosen_mode = AMBIENT_WEATHER;
+                    }
                 } else {
                     /* If weather not enabled or syncing, always show clock */
                     chosen_mode = AMBIENT_CLOCK;
                 }
+
+                s_last_spontaneous_mode = chosen_mode;
 
                 if (chosen_mode != AMBIENT_NONE) {
                     s_is_manual_ambient = false;

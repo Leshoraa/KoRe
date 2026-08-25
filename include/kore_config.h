@@ -105,9 +105,9 @@ extern "C" {
 #define VISION_HABITUATION_FRAMES     45       /* Number of static frames (~1.5-2.0s) before static cream surfaces are habituated */
 #define VISION_STATIC_DELTA_THRESH    3.5f     /* Maximum luminance delta considered stationary */
 #define VISION_TEXTURE_MIN_GRADIENT   2.0f     /* Minimum local edge texture variance for skin verification */
-#define VISION_MIN_ACQUIRE_SKIN_PX    6        /* Minimum dynamic skin pixels to acquire a new candidate */
-#define VISION_MIN_ACQUIRE_ENERGY     20.0f    /* Minimum dynamic energy required to lock on initial acquisition */
-#define VISION_MIN_R_G_DIFF           12       /* Minimum Red over Green margin (hemoglobin absorption vs yellow/mustard fabric) */
+#define VISION_MIN_ACQUIRE_SKIN_PX    4        /* Minimum dynamic skin pixels to acquire a new candidate */
+#define VISION_MIN_ACQUIRE_ENERGY     15.0f    /* Minimum dynamic energy required to lock on initial acquisition */
+#define VISION_MIN_R_G_DIFF           3        /* Minimum Red over Green margin (hemoglobin absorption vs yellow fabric) */
 #define VISION_CLUSTER_HABITUATION_FRAMES  90  /* Low-likelihood frames (~3s at 30fps) before the whole cluster is treated as inanimate */
 #define VISION_CLUSTER_CENTROID_RESET_PX   15.0f /* Centroid jump that means a new object, not the habituated blob */
 #define HUMAN_CLUSTER_SUPPRESS_THRESH 0.30f    /* Composite below this with persistent skin is a false-positive cluster */

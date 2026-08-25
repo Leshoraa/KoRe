@@ -181,10 +181,10 @@ void processFrameAI(camera_fb_t *fb) {
             sec_max_cb[sy][sx] = (int)(129.0f + delta_local);
             sec_min_cr[sy][sx] = (int)(127.0f - delta_local);
             sec_max_cr[sy][sx] = (int)(180.0f + delta_local);
-            sec_shadow_margin[sy][sx]   = (local_lum < 65.0f) ? 4 : 0;
-            sec_min_r_thresh[sy][sx]    = (local_lum < 65.0f) ? 8 : 10;
-            sec_min_cr_cb_diff[sy][sx]  = (local_lum < 65.0f) ? 4 : 6;
-            sec_min_rg_diff[sy][sx]     = (local_lum < 65.0f) ? 6 : VISION_MIN_R_G_DIFF;
+            sec_shadow_margin[sy][sx]   = (local_lum < 75.0f) ? 6 : 0;
+            sec_min_r_thresh[sy][sx]    = (local_lum < 75.0f) ? 6 : 8;
+            sec_min_cr_cb_diff[sy][sx]  = (local_lum < 75.0f) ? 2 : 4;
+            sec_min_rg_diff[sy][sx]     = (local_lum < 75.0f) ? 1 : VISION_MIN_R_G_DIFF;
             if (local_lum > 185.0f) {
                 sec_min_cb[sy][sx] += 3;
                 sec_max_cb[sy][sx] -= 3;
@@ -219,7 +219,7 @@ void processFrameAI(camera_fb_t *fb) {
             int min_rg_diff = sec_min_rg_diff[sec_y][sec_x];
 
             /* Hemoglobin absorption gate: human skin exhibits strict Red dominance over Green (r - g >= min_rg_diff).
-             * Inanimate yellow/mustard fabrics reflect Red and Green equally (r ~ g), and are immediately rejected. */
+             * Inanimate yellow fabrics reflect Red and Green equally (r ~ g), and are rejected. */
             bool raw_skin = (r + shadow_margin >= b) && 
                            ((r - g) >= min_rg_diff) &&
                            ((cr - cb) >= min_cr_cb_diff) && 
@@ -338,11 +338,11 @@ void processFrameAI(camera_fb_t *fb) {
             float energy = 0.0f;
 
             if (is_skin) {
-                if (mhi_weight > 0.04f || delta > 2.0f) {
+                if (mhi_weight > 0.03f || delta > 1.5f) {
                     /* Dynamic non-stationary chrominance target */
                     energy = raw_energy * 1.8f + 8.0f;
-                } else if (s_k_tracker.active && s_lock_confidence > 0.30f) {
-                    /* Sustained state tracking: only grant stationary energy to skin pixels
+                } else if (s_k_tracker.active && s_lock_confidence > 0.25f) {
+                    /* Sustained state tracking: grant stationary energy to skin pixels
                      * in the spatial neighborhood of the active tracked target */
                     float dist_x_tr = (float)x - prev_grid_x;
                     float dist_y_tr = (float)y - prev_grid_y;
@@ -353,15 +353,23 @@ void processFrameAI(camera_fb_t *fb) {
                         energy = 0.0f;
                     }
                 } else {
-                    /* Static unacquired candidate: zero base energy */
-                    energy = 0.0f;
+                    /* Static unacquired candidate: base energy for skin allows instant acquisition */
+                    energy = 2.0f + 0.2f * (gy + gx);
                 }
             } else {
-                float tex_val = (float)texture_40x30[idx];
-                float texture_factor = 1.0f - (tex_val - 15.0f) / 40.0f;
-                if (texture_factor < 0.20f) texture_factor = 0.20f;
-                if (texture_factor > 1.0f)  texture_factor = 1.0f;
-                energy = raw_energy * (0.04f * texture_factor);
+                /* Non-skin pixels carry motion energy ONLY if near active human tracker (hair/body silhouette support) */
+                if (s_k_tracker.active && (mhi_weight > 0.04f || delta > 2.0f)) {
+                    float dist_x_tr = (float)x - prev_grid_x;
+                    float dist_y_tr = (float)y - prev_grid_y;
+                    float track_sq = (dist_x_tr * dist_x_tr) * (1.0f / 64.0f) + (dist_y_tr * dist_y_tr) * (1.0f / 49.0f);
+                    if (track_sq <= 1.5f) {
+                        energy = raw_energy * 0.35f;
+                    } else {
+                        energy = 0.0f;
+                    }
+                } else {
+                    energy = 0.0f;
+                }
             }
 
             if (energy < 0.8f) continue;
@@ -404,7 +412,8 @@ void processFrameAI(camera_fb_t *fb) {
     int active_cnt = 0;
 
     for (int s = 0; s < 3; s++) {
-        if (sec_M00[s] >= 10.0f || (sec_skin[s] >= VISION_MIN_ACQUIRE_SKIN_PX && sec_motion[s] >= 6.0f)) {
+        /* Candidate generation strictly requires verified skin pixels */
+        if (sec_skin[s] >= VISION_MIN_ACQUIRE_SKIN_PX && (sec_motion[s] >= 4.0f || sec_M00[s] >= 8.0f)) {
             float inv_M = 1.0f / fmaxf(1.0f, sec_M00[s]);
             float mx = sec_M10[s] * inv_M;
             float my = sec_M01[s] * inv_M;
@@ -518,18 +527,22 @@ void processFrameAI(camera_fb_t *fb) {
         cand_bh = fmaxf(180.0f, fminf(310.0f, coupled_bh));
 
         if (!s_k_tracker.active) {
-            if ((skin_pixel_count >= VISION_MIN_ACQUIRE_SKIN_PX && M00 >= VISION_MIN_ACQUIRE_ENERGY) || (M00 >= 55.0f)) {
+            /* Initial acquisition strictly requires valid skin pixels AND minimum energy */
+            if (skin_pixel_count >= VISION_MIN_ACQUIRE_SKIN_PX && M00 >= VISION_MIN_ACQUIRE_ENERGY) {
                 cand_cx = raw_cx;
                 cand_cy = raw_cy;
                 candidate_found = true;
             }
         } else {
-            float effective_radius = (skin_pixel_count >= VISION_MIN_ACQUIRE_SKIN_PX) ? 400.0f : search_radius;
-            float dist_sq = (raw_cx - pred_x) * (raw_cx - pred_x) + (raw_cy - pred_y) * (raw_cy - pred_y);
-            if (dist_sq <= (effective_radius * effective_radius)) {
-                cand_cx = raw_cx;
-                cand_cy = raw_cy;
-                candidate_found = true;
+            /* Continuation: require skin pixels to avoid snapping onto non-skin background edges */
+            if (skin_pixel_count >= 4) {
+                float effective_radius = (skin_pixel_count >= VISION_MIN_ACQUIRE_SKIN_PX) ? 400.0f : search_radius;
+                float dist_sq = (raw_cx - pred_x) * (raw_cx - pred_x) + (raw_cy - pred_y) * (raw_cy - pred_y);
+                if (dist_sq <= (effective_radius * effective_radius)) {
+                    cand_cx = raw_cx;
+                    cand_cy = raw_cy;
+                    candidate_found = true;
+                }
             }
         }
     } else if (s_k_tracker.active && skin_pixel_count >= (VISION_MIN_ACQUIRE_SKIN_PX + 2)) {
@@ -617,11 +630,13 @@ void processFrameAI(camera_fb_t *fb) {
         s_k_tracker.active = true;
         s_last_valid_human_time = now_ms;
     } else {
-        s_k_tracker.kf_x.v *= 0.85f;
-        s_k_tracker.kf_y.v *= 0.85f;
+        s_k_tracker.kf_x.v *= 0.70f;
+        s_k_tracker.kf_y.v *= 0.70f;
+        s_lock_confidence *= 0.75f;
 
-        if (now_ms - s_last_valid_human_time > 450) {
+        if (now_ms - s_last_valid_human_time > 300) {
             s_k_tracker.active = false;
+            s_lock_confidence = 0.0f;
             s_k_tracker.kf_x.v = 0.0f;
             s_k_tracker.kf_y.v = 0.0f;
         }
@@ -756,7 +771,10 @@ void processFrameAI(camera_fb_t *fb) {
         }
     }
 
-    if (s_k_tracker.active && s_lock_confidence > 0.25f && !s_cluster_suppressed) {
+    /* Target publication strictly requires active tracker with verified skin pixels
+     * and high confidence. As soon as the human departs, detected drops to false immediately
+     * to prevent snapping onto background room textures. */
+    if (s_k_tracker.active && s_lock_confidence > 0.35f && skin_pixel_count >= 4 && !s_cluster_suppressed) {
         float center_x = FRAME_W / 2.0f;
         float center_y = FRAME_H / 2.0f;
         float err_x = ((s_k_tracker.kf_x.p - center_x) / center_x) * 100.0f;
