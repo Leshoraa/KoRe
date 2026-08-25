@@ -118,17 +118,46 @@ static void drawJoyEyes(int ox, int oy, float joyScale, uint16_t color, float ve
     int rx = 96 + ox;
     int ly = 31 + oy;
 
-    float eyeWidth = 24.0f * joyScale;
-    float archHeight = 9.0f * joyScale;
-
-    for (int eye = 0; eye < 2; eye++) {
-        int cx = (eye == 0) ? lx : rx;
-        for (float x = -eyeWidth / 2.0f; x <= eyeWidth / 2.0f; x += 0.3f) {
-            float angle = (x / (eyeWidth / 2.0f)) * (3.14159265f / 2.0f);
-            float y = (float)ly - archHeight * cosf(angle);
-            canvas.fillCircle(cx + (int)roundf(x), (int)roundf(y), (joyScale < 0.5f) ? 1 : 2, color);
+    auto drawThickLine = [&](float x0, float y0, float x1, float y1, int thickness) {
+        float dx = x1 - x0;
+        float dy = y1 - y0;
+        float len = sqrtf(dx * dx + dy * dy);
+        int steps = (int)ceilf(len / 0.5f);
+        if (steps < 1) steps = 1;
+        for (int i = 0; i <= steps; i++) {
+            float t = (float)i / steps;
+            int cx = (int)roundf(x0 + dx * t);
+            int cy = (int)roundf(y0 + dy * t);
+            if (thickness <= 2) {
+                canvas.fillCircle(cx, cy, 1, color);
+            } else {
+                int offset = thickness / 2;
+                canvas.fillRect(cx - offset, cy - offset, thickness, thickness, color);
+            }
         }
-    }
+    };
+
+    float ew = 9.0f * joyScale;
+    float eh = 9.0f * joyScale;
+
+    // Left eye
+    drawThickLine(lx - ew, ly - eh, lx + ew, ly, 4);
+    drawThickLine(lx + ew, ly, lx - ew, ly + eh, 4);
+
+    // Right eye
+    drawThickLine(rx + ew, ly - eh, rx - ew, ly, 4);
+    drawThickLine(rx - ew, ly, rx + ew, ly + eh, 4);
+
+    // Left blush marks
+    float blx = lx - 22.0f * joyScale;
+    float by = ly - 14.0f * joyScale;
+    drawThickLine(blx, by, blx + 3.0f * joyScale, by + 5.0f * joyScale, 2);
+    drawThickLine(blx + 6.0f * joyScale, by, blx + 9.0f * joyScale, by + 5.0f * joyScale, 2);
+
+    // Right blush marks
+    float brx = rx + 14.0f * joyScale;
+    drawThickLine(brx, by, brx + 3.0f * joyScale, by + 5.0f * joyScale, 2);
+    drawThickLine(brx + 6.0f * joyScale, by, brx + 9.0f * joyScale, by + 5.0f * joyScale, 2);
 }
 
 static void drawAngryBrows(float eyeHeightFactor, int ox, int oy, float browAlpha, uint16_t color, float vergence, float scale) {
@@ -299,17 +328,20 @@ static void drawDeadpanMouth(int ox, int oy, uint16_t color, float scale) {
 static void drawJoyMouth(int ox, int oy, float joyScale, uint16_t color, float scale) {
     if (joyScale <= 0.05f) return;
     int mx = 64 + ox;
-    float width = 11.0f * joyScale * scale;
-    int baseY = (int)roundf(39.0f + (float)oy);
+    float width = 12.0f * joyScale * scale; 
+    float depth = 6.0f * joyScale * scale;
+    int baseY = (int)roundf(38.0f + (float)oy);
 
-    for (float x = -width; x <= width; x += 0.4f) {
-        float normX = (width > 0) ? (x / width) : 0;
-        float yTop = (float)baseY - (0.02f * (x / scale) * (x / scale)) * scale;
-        float yBottom = yTop + (11.0f * joyScale * scale) * (1.0f - normX * normX);
+    float halfWidth = width / 2.0f;
 
-        for (float y = yTop; y <= yBottom; y += 0.6f) {
-            canvas.fillCircle(mx + (int)roundf(x), (int)roundf(y), 1, color);
-        }
+    for (float x = -width; x <= width; x += 0.3f) {
+        float local_x = fabsf(x) - halfWidth;
+        float norm = local_x / halfWidth;
+        float y = (float)baseY + depth - depth * (norm * norm);
+        
+        int cx = mx + (int)roundf(x);
+        int cy = (int)roundf(y);
+        canvas.fillRect(cx - 2, cy - 2, 4, 4, color);
     }
 }
 
