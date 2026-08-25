@@ -231,14 +231,13 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       grid-template-columns: 1.28fr 1fr;
       gap: 14px;
       width: 100%;
-      align-items: stretch;
+      align-items: start;
     }
 
     .bento-col {
       display: flex;
       flex-direction: column;
       gap: 12px;
-      height: 100%;
     }
 
     .bento-card {
@@ -249,13 +248,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       box-shadow: var(--shadow-card);
       display: flex;
       flex-direction: column;
-    }
-
-    .bento-col > .bento-card:last-child {
-      flex: 1 1 auto;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
+      height: auto;
     }
 
     .bento-card-header {
