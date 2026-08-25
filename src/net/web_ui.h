@@ -1243,6 +1243,36 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
           <div id="weather-live-info" style="margin-top:10px;padding:10px 12px;font-size:11.5px;background:var(--bg-surface);border-radius:var(--radius-control);color:var(--text-muted);display:none;"></div>
         </section>
 
+        <!-- Phone Notifications (Ntfy.sh Cloud Push & Local Webhook) -->
+        <section class="bento-card" style="margin-bottom:14px;">
+          <div class="bento-card-header">
+            <h2 class="card-title">Phone Notifications (ntfy.sh & Webhook)</h2>
+            <span class="card-badge" id="ntfy-status-badge">ntfy: idle</span>
+          </div>
+
+          <div class="form-section" style="padding:10px 12px;">
+            <div class="form-group">
+              <label for="ntfy-topic-input">Ntfy.sh Topic Name (Unique / Private)</label>
+              <div style="display:flex;gap:6px;">
+                <input type="text" id="ntfy-topic-input" placeholder="e.g. kore_notif_myphone123" value="kore_notif_default" style="flex:1;">
+                <button type="button" id="btn-save-ntfy" class="btn-cam-toggle active" style="flex:none;padding:0 14px;border-radius:10px;">Save Topic</button>
+              </div>
+            </div>
+
+            <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+              <button type="button" id="btn-test-notif" class="btn-switch-mode" style="flex:1;min-width:140px;">Send Test Notification</button>
+            </div>
+
+            <div style="margin-top:12px;padding:10px 12px;background:var(--bg-surface);border-radius:var(--radius-control);font-size:11px;color:var(--text-muted);line-height:1.5;">
+              <b style="color:var(--text-main);">Cara Hubungkan ke HP (Android / iPhone):</b><br>
+              1. <b>Metode MacroDroid / Tasker:</b> Buat Trigger <i>"Notification Received"</i> (WhatsApp/Telegram), lalu Action <i>"HTTP Request POST"</i> ke <code style="background:var(--bg-card);padding:2px 4px;border-radius:4px;" id="code-ntfy-url">https://ntfy.sh/kore_notif_default</code> dengan Header <code style="background:var(--bg-card);padding:2px 4px;border-radius:4px;">Title: [notif_title]</code> dan Body <code style="background:var(--bg-card);padding:2px 4px;border-radius:4px;">[notif_body]</code>.<br>
+              2. <b>Metode App ntfy:</b> Download app <b>ntfy</b> di Play Store/App Store, lalu publish pesan ke topik Anda.<br>
+              3. <b>Metode Webhook Lokal:</b> POST ke <code style="background:var(--bg-card);padding:2px 4px;border-radius:4px;" id="code-local-url">http://kore.local/api/notify</code> (JSON: <code style="background:var(--bg-card);padding:2px 4px;border-radius:4px;">{"sender":"Budi","message":"Halo"}</code>).<br>
+              4. <b>Metode Bluetooth BLE (Offline / Outdoor):</b> Kirim teks notifikasi langsung ke Bluetooth <b>KoRe-Sense</b> via Plugin Serial Bluetooth di MacroDroid (format: <code style="background:var(--bg-card);padding:2px 4px;border-radius:4px;">[WA] {not_title}: {not_body}</code>).
+            </div>
+          </div>
+        </section>
+
       </div>
     </div>
 
@@ -1261,13 +1291,17 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
   </div>
 
   <script>
-    const host = window.location.hostname;
+    const host = window.location.hostname || '192.168.18.16';
+    const streamPort = 81;
+    const streamProto = (window.location.protocol === 'https:') ? 'https:' : 'http:';
+    const streamBaseUrl = `${streamProto}//${host}:${streamPort}/stream`;
+
     const img = document.getElementById('stream-img');
     const skeleton = document.getElementById('stream-skeleton');
     const canvas = document.getElementById('hud-canvas');
     const ctx = canvas.getContext('2d');
 
-    img.src = 'http://' + host + ':81/stream';
+    img.src = streamBaseUrl;
     
     img.onload = function() {
       if (skeleton) skeleton.style.display = 'none';
@@ -1277,14 +1311,18 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     img.onerror = function() {
       if (skeleton) skeleton.style.display = 'flex';
       setTimeout(function() {
-        img.src = 'http://' + host + ':81/stream?t=' + Date.now();
+        img.src = `${streamBaseUrl}?t=` + Date.now();
       }, 1500);
     };
 
     function resizeCanvas() {
-      if (img.clientWidth > 0 && img.clientHeight > 0) {
-        canvas.width = img.clientWidth;
-        canvas.height = img.clientHeight;
+      const w = img.clientWidth || img.offsetWidth || 0;
+      const h = img.clientHeight || img.offsetHeight || 0;
+      if (w > 0 && h > 0) {
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
       }
     }
     window.addEventListener('resize', resizeCanvas);
@@ -1388,6 +1426,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
      */
     function drawTrajectoryTrail(ctx, trail) {
       if (!trail || trail.length < 2) return;
+      const validTrail = trail.filter(p => p && Number.isFinite(p.cx) && Number.isFinite(p.cy));
+      if (validTrail.length < 2) return;
 
       ctx.save();
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
@@ -1397,11 +1437,11 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       ctx.shadowBlur = 3;
 
       ctx.beginPath();
-      ctx.moveTo(trail[0].cx, trail[0].cy);
+      ctx.moveTo(validTrail[0].cx, validTrail[0].cy);
 
-      for (let i = 1; i < trail.length; i++) {
-        const pPrev = trail[i - 1];
-        const pCurr = trail[i];
+      for (let i = 1; i < validTrail.length; i++) {
+        const pPrev = validTrail[i - 1];
+        const pCurr = validTrail[i];
         const midX = (pPrev.cx + pCurr.cx) / 2;
         const midY = (pPrev.cy + pCurr.cy) / 2;
         ctx.quadraticCurveTo(pPrev.cx, pPrev.cy, midX, midY);
@@ -1409,10 +1449,10 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       ctx.stroke();
 
       // Draw directional arrows along trajectory segments
-      const step = Math.max(1, Math.floor(trail.length / 3));
-      for (let i = step; i < trail.length; i += step) {
-        const p1 = trail[i - 1];
-        const p2 = trail[i];
+      const step = Math.max(1, Math.floor(validTrail.length / 3));
+      for (let i = step; i < validTrail.length; i += step) {
+        const p1 = validTrail[i - 1];
+        const p2 = validTrail[i];
         const dx = p2.cx - p1.cx;
         const dy = p2.cy - p1.cy;
         const dist = Math.hypot(dx, dy);
@@ -1432,16 +1472,18 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
      */
     function drawInterTargetArcs(ctx, targets) {
       if (!targets || targets.length < 2) return;
+      const validTargets = targets.filter(t => t && Number.isFinite(t.cx) && Number.isFinite(t.cy));
+      if (validTargets.length < 2) return;
 
       ctx.save();
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
       ctx.lineWidth = 1.2;
       ctx.setLineDash([6, 5]);
 
-      for (let i = 0; i < targets.length; i++) {
-        for (let j = i + 1; j < targets.length; j++) {
-          const t1 = targets[i];
-          const t2 = targets[j];
+      for (let i = 0; i < validTargets.length; i++) {
+        for (let j = i + 1; j < validTargets.length; j++) {
+          const t1 = validTargets[i];
+          const t2 = validTargets[j];
           const x1 = t1.cx, y1 = t1.cy;
           const x2 = t2.cx, y2 = t2.cy;
           const dx = x2 - x1, dy = y2 - y1;
@@ -1469,8 +1511,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
           const apexY1 = 0.25 * y1 + 0.5 * cpy1 + 0.25 * y2;
           drawCurveArrow(ctx, apexX1, apexY1, arrowAngle1 + Math.PI, 6.5, 'rgba(255, 255, 255, 0.9)');
 
-          // If 2 targets, also draw lower arc (elliptical loop like in Photo 4)
-          if (targets.length === 2) {
+          // If 2 targets, also draw lower arc
+          if (validTargets.length === 2) {
             const cpx2 = mx - nx * archH;
             const cpy2 = my - ny * archH;
 
@@ -1493,8 +1535,14 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
      * Generate & render spark sub-nodes for dense multi-point cluster visual
      */
     function renderSparkClusters(ctx, cands, primaryTarget, scaleX, scaleY, now) {
-      const activeCands = cands.filter(c => c.cx > 0);
-      if (activeCands.length === 0 && (!primaryTarget || !primaryTarget.detected)) {
+      const activeCands = (cands || []).filter(c => c && c.cx > 0);
+      if (activeCands.length === 0 && (!primaryTarget || !primaryTarget.detected || !primaryTarget.cx)) {
+        sparkNodes = [];
+        return;
+      }
+
+      const fallbackParent = activeCands[0] || (primaryTarget && primaryTarget.cx ? primaryTarget : null);
+      if (!fallbackParent) {
         sparkNodes = [];
         return;
       }
@@ -1504,7 +1552,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
       while (sparkNodes.length < totalNodes) {
         const pIdx = sparkNodes.length % (activeCands.length || 1);
-        const parent = activeCands[pIdx] || primaryTarget;
+        const parent = activeCands[pIdx] || fallbackParent;
         const angle = (sparkNodes.length * 1.57) + Math.random() * 0.8;
         const dist = 24 + Math.random() * 45;
         sparkNodes.push({
@@ -1521,7 +1569,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       for (let i = 0; i < sparkNodes.length; i++) {
         const node = sparkNodes[i];
         const pIdx = node.parentIdx % (activeCands.length || 1);
-        const parent = activeCands[pIdx] || primaryTarget;
+        const parent = activeCands[pIdx] || fallbackParent;
+        if (!parent || !parent.cx || !parent.cy) continue;
 
         const wobbleX = Math.sin(now * 0.003 + node.phase) * 6;
         const wobbleY = Math.cos(now * 0.003 + node.phase) * 6;
@@ -1561,126 +1610,136 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       }
 
       try {
-        const res = await fetch('http://' + host + '/telemetry');
-        const data = await res.json();
-        lastData = data;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        document.getElementById('tel-fps').innerText = (data.fps_ai || 0).toFixed(1);
-        document.getElementById('tel-conf').innerText = (data.conf || 0).toFixed(2);
-        document.getElementById('tel-human').innerText = (data.human_likelihood || 0).toFixed(2);
-        document.getElementById('tel-prox').innerText = ((data.prox || 0) * 100).toFixed(0) + '%';
-
-        const now = Date.now();
-
-        if (data.detected && data.fw > 0 && data.fh > 0) {
+        const res = await fetch('/telemetry');
+        if (res.ok) {
+          const data = await res.json();
+          lastData = data;
           resizeCanvas();
-          const scaleX = canvas.width / data.fw;
-          const scaleY = canvas.height / data.fh;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-          const numCands = data.num_cands || 1;
-          const cands = [
-            { cx: data.c0_cx || data.cx, cy: data.c0_cy || data.cy, w: data.c0_w || data.w || 160, h: data.c0_h || data.h || 200, p: data.c0_p || 100 },
-            { cx: data.c1_cx || 0, cy: data.c1_cy || 0, w: data.c1_w || 140, h: data.c1_h || 160, p: data.c1_p || 0 },
-            { cx: data.c2_cx || 0, cy: data.c2_cy || 0, w: data.c2_w || 140, h: data.c2_h || 160, p: data.c2_p || 0 }
-          ];
+          const elFps = document.getElementById('tel-fps');
+          const elConf = document.getElementById('tel-conf');
+          const elHuman = document.getElementById('tel-human');
+          const elProx = document.getElementById('tel-prox');
 
-          // Update motion trajectory history trail for primary target
-          const primCx = data.cx || cands[0].cx;
-          const primCy = data.cy || cands[0].cy;
-          const primScreenX = primCx * scaleX;
-          const primScreenY = primCy * scaleY;
+          if (elFps) elFps.innerText = (data.fps_ai !== undefined) ? Number(data.fps_ai).toFixed(1) : '0.0';
+          if (elConf) elConf.innerText = (data.conf !== undefined) ? Number(data.conf).toFixed(2) : '0.00';
+          if (elHuman) elHuman.innerText = (data.human_likelihood !== undefined) ? Number(data.human_likelihood).toFixed(2) : '0.00';
+          if (elProx) elProx.innerText = (data.prox !== undefined) ? (Number(data.prox) * 100).toFixed(0) + '%' : '0%';
 
-          trajectoryTrail.push({
-            cx: primScreenX,
-            cy: primScreenY,
-            rawX: primCx,
-            rawY: primCy,
-            time: now
-          });
+          const now = Date.now();
 
-          // Keep recent trajectory trail (last 16 points or 1.2 seconds)
-          trajectoryTrail = trajectoryTrail.filter(p => now - p.time < 1200);
-          if (trajectoryTrail.length > 18) trajectoryTrail.shift();
+          if (data.detected && data.fw > 0 && data.fh > 0 && canvas.width > 0 && canvas.height > 0) {
+            const scaleX = canvas.width / data.fw;
+            const scaleY = canvas.height / data.fh;
 
-          // 1. Draw Trajectory Path with directional arrows
-          drawTrajectoryTrail(ctx, trajectoryTrail);
+            const numCands = data.num_cands || 1;
+            const cands = [
+              { cx: data.c0_cx || data.cx, cy: data.c0_cy || data.cy, w: data.c0_w || data.w || 160, h: data.c0_h || data.h || 200, p: data.c0_p || 100 },
+              { cx: data.c1_cx || 0, cy: data.c1_cy || 0, w: data.c1_w || 140, h: data.c1_h || 160, p: data.c1_p || 0 },
+              { cx: data.c2_cx || 0, cy: data.c2_cy || 0, w: data.c2_w || 140, h: data.c2_h || 160, p: data.c2_p || 0 }
+            ];
 
-          // 2. Draw Inter-Target connection arcs if multiple candidates detected
-          const detectedTargetsForArcs = [];
-          for (let i = 0; i < numCands; i++) {
-            if (cands[i].cx > 0) {
-              detectedTargetsForArcs.push({
-                cx: cands[i].cx * scaleX,
-                cy: cands[i].cy * scaleY,
-                rawX: cands[i].cx,
-                rawY: cands[i].cy
-              });
-            }
-          }
-          drawInterTargetArcs(ctx, detectedTargetsForArcs);
+            // Update motion trajectory history trail for primary target
+            const primCx = data.cx || cands[0].cx;
+            const primCy = data.cy || cands[0].cy;
+            const primScreenX = primCx * scaleX;
+            const primScreenY = primCy * scaleY;
 
-          // 3. Render dynamic spark cluster sub-nodes (photos 1, 2, 3)
-          renderSparkClusters(ctx, cands, data, scaleX, scaleY, now);
+            trajectoryTrail.push({
+              cx: primScreenX,
+              cy: primScreenY,
+              rawX: primCx,
+              rawY: primCy,
+              time: now
+            });
 
-          // 4. Render Main Target & Candidate Bounding Boxes
-          for (let i = 0; i < numCands; i++) {
-            const cand = cands[i];
-            if (cand.cx <= 0) continue;
+            // Keep recent trajectory trail (last 16 points or 1.2 seconds)
+            trajectoryTrail = trajectoryTrail.filter(p => now - p.time < 1200);
+            if (trajectoryTrail.length > 18) trajectoryTrail.shift();
 
-            const bw = cand.w || 160;
-            const bh = cand.h || 200;
-
-            const targetBx = (cand.cx - bw / 2) * scaleX;
-            const targetBy = (cand.cy - bh / 2) * scaleY;
-            const targetBw = bw * scaleX;
-            const targetBh = bh * scaleY;
-
-            if (!renderBoxes[i]) {
-              renderBoxes[i] = { bx: targetBx, by: targetBy, bw: targetBw, bh: targetBh, rawX: cand.cx, rawY: cand.cy };
-            } else {
-              renderBoxes[i].bx = renderBoxes[i].bx * 0.25 + targetBx * 0.75;
-              renderBoxes[i].by = renderBoxes[i].by * 0.25 + targetBy * 0.75;
-              renderBoxes[i].bw = renderBoxes[i].bw * 0.25 + targetBw * 0.75;
-              renderBoxes[i].bh = renderBoxes[i].bh * 0.25 + targetBh * 0.75;
-              renderBoxes[i].rawX = cand.cx;
-              renderBoxes[i].rawY = cand.cy;
-            }
-
-            const rBox = renderBoxes[i];
-            const isPrimary = (i === data.insp_idx || i === 0);
-
-            drawCyberTrackerBox(ctx, rBox.bx, rBox.by, rBox.bw, rBox.bh, rBox.rawX, rBox.rawY, isPrimary);
-          }
-        } else {
-          renderBoxes = [];
-          if (trajectoryTrail.length > 0) {
-            trajectoryTrail = trajectoryTrail.filter(p => now - p.time < 600);
+            // 1. Draw Trajectory Path with directional arrows
             drawTrajectoryTrail(ctx, trajectoryTrail);
-          }
-          sparkNodes = [];
-        }
 
-        /* Update active expression indicator */
-        const isManual = (data.is_manual === true || data.is_manual === 'true');
-        const currentExpr = (data.expr !== undefined) ? parseInt(data.expr, 10) : -1;
-        const btnAuto = document.getElementById('btn-expr-auto');
-
-        if (!isManual) {
-          if (btnAuto) btnAuto.classList.add('active');
-          document.querySelectorAll('.btn-expr').forEach(btn => btn.classList.remove('active'));
-        } else {
-          if (btnAuto) btnAuto.classList.remove('active');
-          document.querySelectorAll('.btn-expr').forEach(btn => {
-            if (parseInt(btn.dataset.expr, 10) === currentExpr) {
-              btn.classList.add('active');
-            } else {
-              btn.classList.remove('active');
+            // 2. Draw Inter-Target connection arcs if multiple candidates detected
+            const detectedTargetsForArcs = [];
+            for (let i = 0; i < numCands; i++) {
+              if (cands[i].cx > 0) {
+                detectedTargetsForArcs.push({
+                  cx: cands[i].cx * scaleX,
+                  cy: cands[i].cy * scaleY,
+                  rawX: cands[i].cx,
+                  rawY: cands[i].cy
+                });
+              }
             }
-          });
+            drawInterTargetArcs(ctx, detectedTargetsForArcs);
+
+            // 3. Render dynamic spark cluster sub-nodes
+            renderSparkClusters(ctx, cands, data, scaleX, scaleY, now);
+
+            // 4. Render Main Target & Candidate Bounding Boxes
+            for (let i = 0; i < numCands; i++) {
+              const cand = cands[i];
+              if (cand.cx <= 0) continue;
+
+              const bw = cand.w || 160;
+              const bh = cand.h || 200;
+
+              const targetBx = (cand.cx - bw / 2) * scaleX;
+              const targetBy = (cand.cy - bh / 2) * scaleY;
+              const targetBw = bw * scaleX;
+              const targetBh = bh * scaleY;
+
+              if (!renderBoxes[i]) {
+                renderBoxes[i] = { bx: targetBx, by: targetBy, bw: targetBw, bh: targetBh, rawX: cand.cx, rawY: cand.cy };
+              } else {
+                renderBoxes[i].bx = renderBoxes[i].bx * 0.25 + targetBx * 0.75;
+                renderBoxes[i].by = renderBoxes[i].by * 0.25 + targetBy * 0.75;
+                renderBoxes[i].bw = renderBoxes[i].bw * 0.25 + targetBw * 0.75;
+                renderBoxes[i].bh = renderBoxes[i].bh * 0.25 + targetBh * 0.75;
+                renderBoxes[i].rawX = cand.cx;
+                renderBoxes[i].rawY = cand.cy;
+              }
+
+              const rBox = renderBoxes[i];
+              const isPrimary = (i === data.insp_idx || i === 0);
+
+              drawCyberTrackerBox(ctx, rBox.bx, rBox.by, rBox.bw, rBox.bh, rBox.rawX, rBox.rawY, isPrimary);
+            }
+          } else {
+            renderBoxes = [];
+            if (trajectoryTrail.length > 0) {
+              trajectoryTrail = trajectoryTrail.filter(p => now - p.time < 600);
+              drawTrajectoryTrail(ctx, trajectoryTrail);
+            }
+            sparkNodes = [];
+          }
+
+          /* Update active expression indicator */
+          const isManual = (data.is_manual === true || data.is_manual === 'true');
+          const currentExpr = (data.expr !== undefined) ? parseInt(data.expr, 10) : -1;
+          const btnAuto = document.getElementById('btn-expr-auto');
+
+          if (!isManual) {
+            if (btnAuto) btnAuto.classList.add('active');
+            document.querySelectorAll('.btn-expr').forEach(btn => btn.classList.remove('active'));
+          } else {
+            if (btnAuto) btnAuto.classList.remove('active');
+            document.querySelectorAll('.btn-expr').forEach(btn => {
+              if (parseInt(btn.dataset.expr, 10) === currentExpr) {
+                btn.classList.add('active');
+              } else {
+                btn.classList.remove('active');
+              }
+            });
+          }
         }
-      } catch (e) {}
-      telemetryTimer = setTimeout(updateTelemetry, 80);
+      } catch (e) {
+        console.error('Telemetry fetch error:', e);
+      } finally {
+        telemetryTimer = setTimeout(updateTelemetry, 150);
+      }
     }
 
     document.addEventListener('visibilitychange', () => {
@@ -2275,6 +2334,74 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
               btnPreviewWeather.disabled = false;
             }, 5000);
           });
+      });
+    }
+
+    /* Ntfy & Notification Management */
+    function loadNtfySettings() {
+      fetch('/api/ntfy')
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.topic) {
+            const topicInput = document.getElementById('ntfy-topic-input');
+            if (topicInput) topicInput.value = data.topic;
+            const codeNtfy = document.getElementById('code-ntfy-url');
+            if (codeNtfy) codeNtfy.innerText = `https://ntfy.sh/${data.topic}`;
+            const badge = document.getElementById('ntfy-status-badge');
+            if (badge) {
+              badge.innerText = data.connected ? 'ntfy: connected' : 'ntfy: standby';
+              badge.style.color = data.connected ? 'var(--accent-dark)' : 'var(--text-muted)';
+            }
+          }
+        }).catch(() => {});
+      
+      const codeLocal = document.getElementById('code-local-url');
+      if (codeLocal) codeLocal.innerText = `http://${window.location.host}/api/notify`;
+    }
+
+    loadNtfySettings();
+
+    const btnSaveNtfy = document.getElementById('btn-save-ntfy');
+    if (btnSaveNtfy) {
+      btnSaveNtfy.addEventListener('click', function() {
+        const topic = (document.getElementById('ntfy-topic-input').value || '').trim();
+        if (!topic) return;
+        btnSaveNtfy.disabled = true;
+        btnSaveNtfy.innerText = 'Saving...';
+        fetch('/api/ntfy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic: topic })
+        }).finally(() => {
+          setTimeout(() => {
+            btnSaveNtfy.disabled = false;
+            btnSaveNtfy.innerText = 'Save Topic';
+            loadNtfySettings();
+          }, 800);
+        });
+      });
+    }
+
+    const btnTestNotif = document.getElementById('btn-test-notif');
+    if (btnTestNotif) {
+      btnTestNotif.addEventListener('click', function() {
+        const orig = btnTestNotif.innerText;
+        btnTestNotif.innerText = 'Sending...';
+        btnTestNotif.disabled = true;
+        fetch('/api/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            app: 'WhatsApp',
+            sender: 'Budi (Test)',
+            message: 'Halo! Notifikasi KoRe berhasil terhubung!'
+          })
+        }).finally(() => {
+          setTimeout(() => {
+            btnTestNotif.innerText = orig;
+            btnTestNotif.disabled = false;
+          }, 4000);
+        });
       });
     }
   </script>

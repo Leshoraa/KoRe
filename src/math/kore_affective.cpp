@@ -31,6 +31,7 @@ static volatile bool s_manual_override = false;
 static volatile int s_manual_expr_code = -1;
 static volatile bool s_manual_expr_pending = false;
 static volatile int s_pending_expr_code = -1;
+static uint32_t s_manual_expr_start_ms = 0;
 
 extern void transitionExpression(Expression fromExpr, Expression toExpr, float durationMs);
 
@@ -84,6 +85,8 @@ void setNextExpression(Expression newExpr) {
 }
 
 void updateBiologicalMoodEngine(void) {
+    unsigned long now = millis();
+
     if (s_manual_expr_pending) {
         s_manual_expr_pending = false;
         int code = s_pending_expr_code;
@@ -91,19 +94,29 @@ void updateBiologicalMoodEngine(void) {
             s_manual_override = false;
             s_manual_expr_code = -1;
             s_mood_lock_until = 0;
-            s_nextMoodShiftTime = millis() + 4000;
+            s_nextMoodShiftTime = now + 4000;
             setNextExpression(EXPR_IDLE);
         } else {
             s_manual_override = true;
             s_manual_expr_code = code;
+            s_manual_expr_start_ms = now;
             setNextExpression((Expression)code);
         }
         return;
     }
 
-    if (s_manual_override) return;
+    if (s_manual_override) {
+        /* Auto-revert manual expression to autonomous mood to prevent OLED burn-in */
+        if (now - s_manual_expr_start_ms > MANUAL_EXPR_TIMEOUT_MS) {
+            s_manual_override = false;
+            s_manual_expr_code = -1;
+            s_mood_lock_until = 0;
+            s_nextMoodShiftTime = now + 3000;
+            setNextExpression(EXPR_IDLE);
+        }
+        return;
+    }
 
-    unsigned long now = millis();
     if (g_is_transitioning || now < s_mood_lock_until) return;
 
     TrackTarget target;

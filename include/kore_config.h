@@ -41,6 +41,21 @@ extern "C" {
 #define OLED_PANEL_WIDTH_PX     128
 #define OLED_PANEL_HEIGHT_PX    64
 #define OLED_DEFAULT_BRIGHTNESS 128
+#define OLED_BURN_SHIFT_INTERVAL_MS 35000 /* 35 seconds periodic anti-burn pixel orbit shift */
+#define MANUAL_EXPR_TIMEOUT_MS      60000 /* 60 seconds auto-revert timeout for manual expressions */
+
+/* Phone Notifications & Ntfy.sh Cloud Push Integration */
+#define NTFY_DEFAULT_TOPIC            "kore_notif_default"
+#define NOTIFICATION_POPUP_DURATION_MS 6000    /* 6 seconds notification display on OLED */
+#define NTFY_POLL_INTERVAL_MS         2500     /* 2.5 seconds periodic stream/poll interval */
+
+/* Bluetooth Low Energy (BLE) Companion Notifications */
+#define BLE_DEVICE_NAME               "KoRe-Sense"
+#define BLE_NUS_SERVICE_UUID          "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define BLE_NUS_CHAR_RX_UUID          "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define BLE_NUS_CHAR_TX_UUID          "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+
+
 
 /* Weather Configuration & Open-Meteo Integration */
 #define WEATHER_DEFAULT_CITY        "Jakarta"

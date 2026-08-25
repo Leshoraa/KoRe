@@ -272,7 +272,7 @@ static void drawSadEyes(int ox, int oy, float animFrame, uint16_t color, float v
         for (int t = 0; t < 2; t++) {
             int tx = cx + (int)roundf((float)tearOffsets[t] * scale);
             int startY = ly + 2;
-            int endY = 62;
+            int endY = 58; /* Bounded safely above bottom row to prevent edge white accumulation */
 
             for (int ty = startY; ty <= endY; ty += 2) {
                 float phase = ((float)(ty - startY) * 0.35f) - (animFrame * 3.5f);
@@ -383,12 +383,12 @@ static void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCu
     drawEyes(eyeHeightFactor, ox, oy, fgColor, vergence, scale);
     drawAngryBrows(eyeHeightFactor, ox, oy, browAlpha, bgColor, vergence, scale);
     drawMouthCustom(ox, oy, mouthCurve, mouthY, mouthWidth, 0.0f, fgColor, scale);
-    canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+    canvas.pushSprite(0, 0);
 }
 
 void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offsetY, float frame, float vergence, float scale) {
-    int ox = getFilteredOx(offsetX);
-    int oy = getFilteredOy(offsetY);
+    int ox = getFilteredOx(offsetX) + s_burn_shift_x;
+    int oy = getFilteredOy(offsetY) + s_burn_shift_y;
     switch (expr) {
         case EXPR_IDLE:
             renderFaceState(eyeHeightFactor, ox, oy, -0.030f, 44.0f, 7.5f, 0.0f, false, vergence, scale);
@@ -397,7 +397,7 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawJoyEyes(ox, oy, 1.0f, TFT_WHITE, vergence, scale);
             drawJoyMouth(ox, oy, 1.0f, TFT_WHITE, scale);
-            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+            canvas.pushSprite(0, 0);
             break;
         case EXPR_ANGRY:
             renderFaceState(eyeHeightFactor, ox, oy, 0.042f, 43.0f, 7.0f, 1.0f, true, vergence, scale);
@@ -406,7 +406,7 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawCatMouth(ox, oy, TFT_WHITE, scale);
-            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+            canvas.pushSprite(0, 0);
             break;
         case EXPR_SHOCK:
             canvas.fillScreen(TFT_BLACK);
@@ -416,25 +416,25 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
                 drawEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             }
             drawShockMouth(ox, oy, TFT_WHITE, scale);
-            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+            canvas.pushSprite(0, 0);
             break;
         case EXPR_OVERLOAD:
             canvas.fillScreen(TFT_BLACK);
             drawSpiralEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawOverloadMouth(ox, oy, TFT_WHITE, scale);
-            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+            canvas.pushSprite(0, 0);
             break;
         case EXPR_SAD:
             canvas.fillScreen(TFT_BLACK);
             drawSadEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawSadMouth(ox, oy, frame, TFT_WHITE, scale);
-            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+            canvas.pushSprite(0, 0);
             break;
         case EXPR_DEADPAN:
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawDeadpanMouth(ox, oy, TFT_WHITE, scale);
-            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+            canvas.pushSprite(0, 0);
             break;
     }
 }
@@ -510,8 +510,8 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
         uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
         uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
 
-        int ox = getFilteredOx(g_currentOffsetX);
-        int oy = getFilteredOy(g_currentOffsetY);
+        int ox = getFilteredOx(g_currentOffsetX) + s_burn_shift_x;
+        int oy = getFilteredOy(g_currentOffsetY) + s_burn_shift_y;
 
         canvas.fillScreen(bgColor);
 
@@ -558,7 +558,7 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
             }
         }
 
-        canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+        canvas.pushSprite(0, 0);
         vTaskDelay(pdMS_TO_TICKS((int)stepDelay));
     }
     g_currentEyeScaleX = 1.0f;
@@ -640,8 +640,8 @@ void renderClockToCanvas(float animFrame, int offsetY = 0) {
 
 void drawClockScreen(float animFrame) {
     canvas.fillScreen(TFT_BLACK);
-    renderClockToCanvas(animFrame, 0);
-    canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+    renderClockToCanvas(animFrame, s_burn_shift_y);
+    canvas.pushSprite(0, 0);
 }
 
 void renderWeatherToCanvas(const WeatherInfo& weather, float animFrame, int offsetY = 0) {
@@ -746,8 +746,64 @@ void renderWeatherToCanvas(const WeatherInfo& weather, float animFrame, int offs
 
 void drawWeatherScreen(const WeatherInfo& weather, float animFrame) {
     canvas.fillScreen(TFT_BLACK);
-    renderWeatherToCanvas(weather, animFrame, 0);
-    canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+    renderWeatherToCanvas(weather, animFrame, s_burn_shift_y);
+    canvas.pushSprite(0, 0);
+}
+
+void renderNotificationToCanvas(const NotificationInfo& notif, float animFrame, int offsetY = 0) {
+    (void)animFrame;
+    /* 1. Header with Envelope Icon + Title */
+    canvas.setTextSize(1);
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+
+    // Envelope Icon at (6, 5 + offsetY)
+    int ix = 6;
+    int iy = 5 + offsetY;
+    canvas.drawRect(ix, iy, 11, 8, TFT_WHITE);
+    canvas.drawLine(ix, iy, ix + 5, iy + 4, TFT_WHITE);
+    canvas.drawLine(ix + 10, iy, ix + 5, iy + 4, TFT_WHITE);
+
+    // Header text (e.g. "[WA] Budi" or "Telegram")
+    char header_buf[32];
+    snprintf(header_buf, sizeof(header_buf), "%s", (notif.title[0] != '\0') ? notif.title : notif.app);
+    canvas.setCursor(ix + 15, iy);
+    canvas.print(header_buf);
+
+    // Clean divider line
+    canvas.drawFastHLine(4, 16 + offsetY, OLED_PANEL_WIDTH_PX - 8, TFT_WHITE);
+
+    /* 2. Message Body (multi-line word wrap up to 3 lines) */
+    const char* msg = (notif.message[0] != '\0') ? notif.message : "New alert";
+    size_t len = strlen(msg);
+
+    int line_y = 20 + offsetY;
+    size_t pos = 0;
+    for (int l = 0; l < 3 && pos < len; l++) {
+        char line_buf[24];
+        size_t take = (len - pos > 20) ? 20 : (len - pos);
+        if (take == 20 && pos + take < len && msg[pos + take] != ' ' && msg[pos + take - 1] != ' ') {
+            size_t last_space = 0;
+            for (size_t s = 0; s < take; s++) {
+                if (msg[pos + s] == ' ') last_space = s;
+            }
+            if (last_space > 6) take = last_space;
+        }
+        strncpy(line_buf, msg + pos, take);
+        line_buf[take] = '\0';
+        while (pos + take < len && msg[pos + take] == ' ') take++;
+        pos += take;
+
+        canvas.setCursor(6, line_y);
+        canvas.print(line_buf);
+        line_y += 11;
+    }
+
+}
+
+void drawNotificationScreen(const NotificationInfo& notif, float animFrame) {
+    canvas.fillScreen(TFT_BLACK);
+    renderNotificationToCanvas(notif, animFrame, s_burn_shift_y);
+    canvas.pushSprite(0, 0);
 }
 
 void setOledBrightnessLive(uint8_t brightness) {
@@ -776,6 +832,13 @@ void transitionToAmbient(AmbientScreenMode toMode, float durationMs) {
         portEXIT_CRITICAL(&g_weather_mutex);
     }
 
+    NotificationInfo local_notif;
+    if (toMode == AMBIENT_NOTIFICATION) {
+        portENTER_CRITICAL(&g_notification_mutex);
+        local_notif = g_notification_info;
+        portEXIT_CRITICAL(&g_notification_mutex);
+    }
+
     for (int i = 0; i <= steps; i++) {
         float t = (float)i / (float)steps;
 
@@ -800,8 +863,10 @@ void transitionToAmbient(AmbientScreenMode toMode, float durationMs) {
                 renderClockToCanvas(g_animFrame, offsetY);
             } else if (toMode == AMBIENT_WEATHER) {
                 renderWeatherToCanvas(local_weather, g_animFrame, offsetY);
+            } else if (toMode == AMBIENT_NOTIFICATION) {
+                renderNotificationToCanvas(local_notif, g_animFrame, offsetY);
             }
-            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+            canvas.pushSprite(0, 0);
         }
 
         vTaskDelay(pdMS_TO_TICKS((int)stepDelay));
@@ -823,6 +888,13 @@ void transitionFromAmbientToFace(AmbientScreenMode fromMode, Expression toExpr, 
         portEXIT_CRITICAL(&g_weather_mutex);
     }
 
+    NotificationInfo local_notif;
+    if (fromMode == AMBIENT_NOTIFICATION) {
+        portENTER_CRITICAL(&g_notification_mutex);
+        local_notif = g_notification_info;
+        portEXIT_CRITICAL(&g_notification_mutex);
+    }
+
     for (int i = 0; i <= steps; i++) {
         float t = (float)i / (float)steps;
 
@@ -836,8 +908,10 @@ void transitionFromAmbientToFace(AmbientScreenMode fromMode, Expression toExpr, 
                 renderClockToCanvas(g_animFrame, offsetY);
             } else if (fromMode == AMBIENT_WEATHER) {
                 renderWeatherToCanvas(local_weather, g_animFrame, offsetY);
+            } else if (fromMode == AMBIENT_NOTIFICATION) {
+                renderNotificationToCanvas(local_notif, g_animFrame, offsetY);
             }
-            canvas.pushSprite(s_burn_shift_x, s_burn_shift_y);
+            canvas.pushSprite(0, 0);
         } else {
             /* Phase 2: Face pops open with fast-twitch elastic rebound */
             float p = (t - 0.40f) / 0.60f;
@@ -870,6 +944,11 @@ void triggerWeatherDisplay(uint32_t duration_ms) {
     triggerAmbientDisplay(AMBIENT_WEATHER, duration_ms);
 }
 
+void triggerNotificationDisplay(const NotificationInfo& notif, uint32_t duration_ms) {
+    (void)notif;
+    triggerAmbientDisplay(AMBIENT_NOTIFICATION, duration_ms);
+}
+
 void oledTask(void *pvParameters) {
     (void)pvParameters;
 
@@ -894,16 +973,13 @@ void oledTask(void *pvParameters) {
 
         if (g_recon_state != s_prev_recon_state) {
             s_prev_recon_state = g_recon_state;
-            if (g_recon_state == STATE_ACTIVE) {
-                s_burn_shift_x = 0;
-                s_burn_shift_y = 0;
-            }
         }
 
-        if (g_recon_state == STATE_SLEEP_RECON && (now - s_last_burn_shift_ms > 60000)) {
+        /* Continuous anti-burn-in micro-pixel orbital shifting across all operational states */
+        if (now - s_last_burn_shift_ms > OLED_BURN_SHIFT_INTERVAL_MS) {
             s_last_burn_shift_ms = now;
-            s_burn_shift_x = (int)(esp_random() % 3) - 1;
-            s_burn_shift_y = (int)(esp_random() % 3) - 1;
+            s_burn_shift_x = (int)(esp_random() % 3) - 1; /* -1, 0, 1 */
+            s_burn_shift_y = (int)(esp_random() % 3) - 1; /* -1, 0, 1 */
         }
 
         /* Clock/weather glances must not be suppressed by YCbCr false positives
@@ -1006,6 +1082,12 @@ void oledTask(void *pvParameters) {
                 local_weather = g_weather_info;
                 portEXIT_CRITICAL(&g_weather_mutex);
                 drawWeatherScreen(local_weather, g_animFrame);
+            } else if (s_active_ambient_mode == AMBIENT_NOTIFICATION) {
+                NotificationInfo local_notif;
+                portENTER_CRITICAL(&g_notification_mutex);
+                local_notif = g_notification_info;
+                portEXIT_CRITICAL(&g_notification_mutex);
+                drawNotificationScreen(local_notif, g_animFrame);
             }
         } else {
             if (s_active_ambient_mode != AMBIENT_NONE) {

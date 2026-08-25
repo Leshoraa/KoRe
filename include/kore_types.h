@@ -117,12 +117,25 @@ typedef struct {
     uint32_t last_sync_ms;
 } WeatherInfo;
 
+/**
+ * @struct NotificationInfo
+ * @brief Phone notification payload for OLED visualization and Web telemetry.
+ */
+typedef struct {
+    char title[36];     /* e.g. "WhatsApp - Budi" or "Telegram" */
+    char message[96];   /* e.g. "Bro jadi ngopi nanti malam?" */
+    char app[16];       /* e.g. "WhatsApp", "SMS", "Gmail" */
+    uint32_t received_ms;
+    bool active;
+} NotificationInfo;
+
 #define MAX_OBJECT_CANDIDATES 3
 
 /* Cross-Core Synchronization Handles */
 extern portMUX_TYPE g_target_mutex;
 extern portMUX_TYPE g_stream_mutex;
 extern portMUX_TYPE g_weather_mutex;
+extern portMUX_TYPE g_notification_mutex;
 extern SemaphoreHandle_t g_frame_sem;
 
 /* Global Cross-Core State Variables */
@@ -140,6 +153,8 @@ extern size_t g_latest_jpeg_len;
 extern volatile bool g_camera_init_ok;
 extern volatile uint8_t g_oled_brightness;
 extern WeatherInfo g_weather_info;
+extern NotificationInfo g_notification_info;
+
 
 #ifdef __cplusplus
 }

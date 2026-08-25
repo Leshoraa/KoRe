@@ -7,6 +7,7 @@
 #include "src/net/web_ui.h"
 #include "src/net/wifi_manager.h"
 #include "src/net/weather_client.h"
+#include "src/net/notification_client.h"
 #include "src/core/display_engine.h"
 #include "include/kore_config.h"
 #include "include/kore_types.h"
@@ -30,6 +31,8 @@ static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u
 static esp_err_t index_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
     httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
     return httpd_resp_send(req, HTML_PAGE, strlen(HTML_PAGE));
 }
 
@@ -85,6 +88,8 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
     );
 
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, json, strlen(json));
 }
@@ -614,14 +619,105 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
     return httpd_resp_send(req, json, strlen(json));
 }
 
+static esp_err_t notify_post_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char buf[256];
+    int remaining = req->content_len;
+    if (remaining >= (int)sizeof(buf)) remaining = sizeof(buf) - 1;
+
+    int ret = httpd_req_recv(req, buf, remaining);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    char app[16] = {0};
+    char title[36] = {0};
+    char message[96] = {0};
+
+    extract_json_value(buf, "app", app, sizeof(app));
+    extract_json_value(buf, "sender", title, sizeof(title));
+    if (title[0] == '\0') {
+        extract_json_value(buf, "title", title, sizeof(title));
+    }
+    extract_json_value(buf, "message", message, sizeof(message));
+    if (message[0] == '\0') {
+        extract_json_value(buf, "msg", message, sizeof(message));
+    }
+    if (message[0] == '\0') {
+        extract_json_value(buf, "text", message, sizeof(message));
+    }
+
+    pushLocalNotification(app, title, message);
+
+    const char* resp = "{\"status\":\"ok\",\"message\":\"Notification dispatched\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t ntfy_get_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char json[192];
+    snprintf(json, sizeof(json),
+        "{\"topic\":\"%s\",\"connected\":%s,\"last_msg_ts\":%u}",
+        getNtfyTopic(), isNtfyConnected() ? "true" : "false", (unsigned)getNtfyLastMessageTime()
+    );
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json, strlen(json));
+}
+
+static esp_err_t ntfy_post_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char buf[128];
+    int remaining = req->content_len;
+    if (remaining >= (int)sizeof(buf)) remaining = sizeof(buf) - 1;
+
+    int ret = httpd_req_recv(req, buf, remaining);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) httpd_resp_send_408(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    char topic[64] = {0};
+    if (extract_json_value(buf, "topic", topic, sizeof(topic))) {
+        setNtfyTopic(topic);
+    }
+
+    const char* resp = "{\"status\":\"ok\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t stream_redirect_handler(httpd_req_t *req) {
+    char host[64] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK) {
+        char* colon = strchr(host, ':');
+        if (colon) *colon = '\0';
+    } else {
+        strncpy(host, "192.168.18.16", sizeof(host) - 1);
+    }
+    char redirect_url[128];
+    snprintf(redirect_url, sizeof(redirect_url), "http://%s:%d/stream", host, HTTP_PORT_STREAM);
+    httpd_resp_set_status(req, "307 Temporary Redirect");
+    httpd_resp_set_hdr(req, "Location", redirect_url);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, NULL, 0);
+}
+
 void startWebServer(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 32;
     config.server_port = HTTP_PORT_WEB_CONTROL;
-    config.stack_size = 10240;
+    config.ctrl_port = 32768;
+    config.stack_size = 8192;
     config.core_id = 0;
     config.lru_purge_enable = true;
-    config.max_open_sockets = 7;
+    config.max_open_sockets = 6;
 
     httpd_uri_t index_uri             = { .uri = "/",                   .method = HTTP_GET,  .handler = index_handler,             .user_ctx = NULL };
     httpd_uri_t telemetry_uri         = { .uri = "/telemetry",           .method = HTTP_GET,  .handler = telemetry_handler,         .user_ctx = NULL };
@@ -646,6 +742,10 @@ void startWebServer(void) {
     httpd_uri_t trigger_weather_uri   = { .uri = "/trigger_weather",     .method = HTTP_POST, .handler = trigger_weather_handler,  .user_ctx = NULL };
     httpd_uri_t trigger_clock_uri     = { .uri = "/trigger_clock",       .method = HTTP_POST, .handler = trigger_clock_handler,    .user_ctx = NULL };
     httpd_uri_t sync_time_uri         = { .uri = "/sync_time",           .method = HTTP_POST, .handler = sync_time_handler,        .user_ctx = NULL };
+    httpd_uri_t notify_uri            = { .uri = "/api/notify",          .method = HTTP_POST, .handler = notify_post_handler,      .user_ctx = NULL };
+    httpd_uri_t ntfy_get_uri          = { .uri = "/api/ntfy",            .method = HTTP_GET,  .handler = ntfy_get_handler,        .user_ctx = NULL };
+    httpd_uri_t ntfy_post_uri         = { .uri = "/api/ntfy",            .method = HTTP_POST, .handler = ntfy_post_handler,       .user_ctx = NULL };
+    httpd_uri_t stream_redir_uri      = { .uri = "/stream",             .method = HTTP_GET,  .handler = stream_redirect_handler,   .user_ctx = NULL };
 
     if (httpd_start(&g_camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(g_camera_httpd, &index_uri);
@@ -671,17 +771,30 @@ void startWebServer(void) {
         httpd_register_uri_handler(g_camera_httpd, &trigger_weather_uri);
         httpd_register_uri_handler(g_camera_httpd, &trigger_clock_uri);
         httpd_register_uri_handler(g_camera_httpd, &sync_time_uri);
+        httpd_register_uri_handler(g_camera_httpd, &notify_uri);
+        httpd_register_uri_handler(g_camera_httpd, &ntfy_get_uri);
+        httpd_register_uri_handler(g_camera_httpd, &ntfy_post_uri);
+        httpd_register_uri_handler(g_camera_httpd, &stream_redir_uri);
+        KORE_LOG_INF("HTTP", "Web control server registered on port %d", HTTP_PORT_WEB_CONTROL);
+    } else {
+        KORE_LOG_ERR("HTTP", "Failed to start HTTP web control server");
     }
 
-    config.server_port = HTTP_PORT_STREAM;
-    config.ctrl_port   = 32769;
-    config.stack_size  = 8192;
-    config.core_id     = 0;
-    config.max_open_sockets = 4;
-    config.lru_purge_enable = true;
+    httpd_config_t stream_config = HTTPD_DEFAULT_CONFIG();
+    stream_config.server_port = HTTP_PORT_STREAM;
+    stream_config.ctrl_port = 32769;
+    stream_config.stack_size = 8192;
+    stream_config.core_id = 0;
+    stream_config.lru_purge_enable = true;
+    stream_config.max_open_sockets = MAX_STREAM_CLIENTS + 2;
+
     httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = NULL };
 
-    if (httpd_start(&g_stream_httpd, &config) == ESP_OK) {
+    if (httpd_start(&g_stream_httpd, &stream_config) == ESP_OK) {
         httpd_register_uri_handler(g_stream_httpd, &stream_uri);
+        KORE_LOG_INF("HTTP", "MJPEG stream server registered on port %d", HTTP_PORT_STREAM);
+    } else {
+        KORE_LOG_ERR("HTTP", "Failed to start HTTP stream server");
     }
 }
+

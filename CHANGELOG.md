@@ -2,6 +2,14 @@
 
 All notable changes to the KoRe project are documented in this file.
 
+## [2.6.0] - 2026-08-25
+
+### Added
+- Bluetooth Low Energy (BLE) Nordic UART Service (NUS) GATT server (`src/net/ble_manager.cpp`, `src/net/ble_manager.h`) enabling direct, offline companion notifications from Android/MacroDroid.
+- Intelligent multi-format payload parser for BLE stream (JSON, bracket app tags, pipe/colon separators, and raw strings).
+- Seamless coexistence with phone Bluetooth audio (TWS) and Wi-Fi stack.
+- Automatic BLE advertising restart upon device disconnection.
+
 ## [2.5.0] - 2026-08-23
 
 ### Added

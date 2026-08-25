@@ -19,6 +19,8 @@
 #include "src/net/wifi_manager.h"
 #include "src/net/http_server.h"
 #include "src/net/weather_client.h"
+#include "src/net/notification_client.h"
+#include "src/net/ble_manager.h"
 #include <Arduino.h>
 
 void setup() {
@@ -65,6 +67,12 @@ void setup() {
     /* Initialize background Open-Meteo weather client */
     initWeatherClient();
 
+    /* Initialize background Ntfy.sh notification client */
+    initNotificationClient();
+
+    /* Initialize background Bluetooth Low Energy (BLE) notification server */
+    initBleNotificationServer();
+
     /* Start HTTP web dashboard (Port 80) and MJPEG video stream (Port 81) */
     startWebServer();
     KORE_LOG_INF("MAIN", "HTTP services active");
@@ -88,7 +96,7 @@ void setup() {
     xTaskCreatePinnedToCore(
         oledTask,
         "OLED_Task",
-        10240,
+        6144,
         NULL,
         1,
         NULL,
