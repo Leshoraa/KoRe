@@ -925,6 +925,13 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
               </div>
 
               <div class="metric-box">
+                <span class="metric-label">Human</span>
+                <div class="metric-value-row">
+                  <span id="tel-human" class="metric-number">0.00</span>
+                </div>
+              </div>
+
+              <div class="metric-box">
                 <span class="metric-label">Proximity</span>
                 <div class="metric-value-row">
                   <span id="tel-prox" class="metric-number">0%</span>
@@ -1083,9 +1090,9 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
               <div class="form-group">
                 <label for="weather-preset-select">City Preset List</label>
                 <select id="weather-preset-select" style="width:100%;padding:10px 12px;font-family:inherit;font-size:12px;border:1px solid var(--border-card);border-radius:var(--radius-control);background:var(--bg-card);color:var(--text-main);">
-                  <option value="custom">-- Select From Preset / Search Result --</option>
+                  <option value="custom">-- Custom / Search Result / GPS --</option>
                   <optgroup label="Indonesia - Java">
-                    <option value="jakarta" selected>Jakarta (-6.2088, 106.8456)</option>
+                    <option value="jakarta">Jakarta (-6.2088, 106.8456)</option>
                     <option value="bandung">Bandung (-6.9175, 107.6191)</option>
                     <option value="surabaya">Surabaya (-7.2575, 112.7521)</option>
                     <option value="semarang">Semarang (-6.9667, 110.4167)</option>
@@ -1517,6 +1524,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 
         document.getElementById('tel-fps').innerText = (data.fps_ai || 0).toFixed(1);
         document.getElementById('tel-conf').innerText = (data.conf || 0).toFixed(2);
+        document.getElementById('tel-human').innerText = (data.human_likelihood || 0).toFixed(2);
         document.getElementById('tel-prox').innerText = ((data.prox || 0) * 100).toFixed(0) + '%';
 
         const now = Date.now();
@@ -1979,19 +1987,52 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     const presetSel = document.getElementById('weather-preset-select');
     const tzSel = document.getElementById('weather-tz-select');
 
+    function syncWeatherPresetSelection(city, lat, lon) {
+      if (!presetSel) return;
+      let matchedKey = 'custom';
+      const parsedLat = parseFloat(lat);
+      const parsedLon = parseFloat(lon);
+      const cleanCity = (city || '').trim().toLowerCase();
+
+      for (const [key, p] of Object.entries(weatherPresets)) {
+        const cityMatch = cleanCity && (p.city.toLowerCase() === cleanCity || key === cleanCity);
+        const coordMatch = !isNaN(parsedLat) && !isNaN(parsedLon) &&
+                           Math.abs(p.lat - parsedLat) < 0.015 &&
+                           Math.abs(p.lon - parsedLon) < 0.015;
+        if (cityMatch || coordMatch) {
+          matchedKey = key;
+          break;
+        }
+      }
+      presetSel.value = matchedKey;
+    }
+
     if (presetSel) {
       presetSel.addEventListener('change', function() {
         const key = this.value;
         if (weatherPresets[key]) {
           document.getElementById('weather-city-input').value = weatherPresets[key].city;
-          document.getElementById('weather-lat-input').value = weatherPresets[key].lat;
-          document.getElementById('weather-lon-input').value = weatherPresets[key].lon;
+          document.getElementById('weather-lat-input').value = weatherPresets[key].lat.toFixed ? weatherPresets[key].lat.toFixed(4) : weatherPresets[key].lat;
+          document.getElementById('weather-lon-input').value = weatherPresets[key].lon.toFixed ? weatherPresets[key].lon.toFixed(4) : weatherPresets[key].lon;
           if (tzSel && weatherPresets[key].tz !== undefined) {
             tzSel.value = weatherPresets[key].tz;
           }
         }
       });
     }
+
+    ['weather-city-input', 'weather-lat-input', 'weather-lon-input'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('input', () => {
+          syncWeatherPresetSelection(
+            document.getElementById('weather-city-input').value,
+            document.getElementById('weather-lat-input').value,
+            document.getElementById('weather-lon-input').value
+          );
+        });
+      }
+    });
 
     /* Live Open-Meteo Geocoding Autocomplete Search */
     const searchInput = document.getElementById('weather-search-input');
@@ -2029,7 +2070,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                     document.getElementById('weather-lon-input').value = item.longitude.toFixed(4);
                     searchResults.style.display = 'none';
                     searchInput.value = `${item.name}, ${item.country || ''}`;
-                    if (presetSel) presetSel.value = 'custom';
+                    syncWeatherPresetSelection(item.name, item.latitude, item.longitude);
                   });
                   searchResults.appendChild(div);
                 });
@@ -2080,6 +2121,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                   const cName = (geo.city || geo.locality || 'GPS Location').substring(0, 16);
                   document.getElementById('weather-city-input').value = cName;
                   if (searchInput) searchInput.value = `${cName}, ${geo.countryName || ''}`;
+                  syncWeatherPresetSelection(cName, lat, lon);
                 }
               }).catch(() => {});
           },
@@ -2098,10 +2140,12 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         .then(res => res.json())
         .then(data => {
           if (data.city) document.getElementById('weather-city-input').value = data.city;
-          if (data.lat !== undefined) document.getElementById('weather-lat-input').value = data.lat;
-          if (data.lon !== undefined) document.getElementById('weather-lon-input').value = data.lon;
+          if (data.lat !== undefined) document.getElementById('weather-lat-input').value = data.lat.toFixed ? data.lat.toFixed(4) : data.lat;
+          if (data.lon !== undefined) document.getElementById('weather-lon-input').value = data.lon.toFixed ? data.lon.toFixed(4) : data.lon;
           if (data.enabled !== undefined) document.getElementById('weather-enable-check').checked = data.enabled;
           if (data.tz_offset_sec !== undefined && tzSel) tzSel.value = data.tz_offset_sec;
+
+          syncWeatherPresetSelection(data.city, data.lat, data.lon);
 
           const infoBox = document.getElementById('weather-live-info');
           const badge = document.getElementById('weather-badge-status');
@@ -2151,7 +2195,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
             btn.disabled = false;
             btn.innerText = 'Save & Fetch Weather →';
             loadWeatherAndSystemSettings();
-          }, 2500);
+          }, 1500);
         });
       });
     }

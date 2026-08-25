@@ -4,6 +4,8 @@
  */
 
 #include "include/kore_affective.h"
+#include "include/kore_ai.h"
+#include "include/kore_personality.h"
 #include "include/kore_config.h"
 #include "include/kore_types.h"
 #include "include/kore_kinematics.h"
@@ -74,7 +76,9 @@ void setNextExpression(Expression newExpr) {
         g_animFrame = 0.0f;
         g_blinkState = BLINK_IDLE_STATE;
         g_blinkEyeHeight = 1.0f;
-        g_nextBlinkTime = millis() + ((newExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500));
+        uint32_t blink_iv = getPersonalityBlinkInterval();
+        if (newExpr == EXPR_ANGRY) blink_iv = (uint32_t)(blink_iv * 1.20f);
+        g_nextBlinkTime = millis() + blink_iv;
         g_is_transitioning = false;
     }
 }
@@ -107,7 +111,7 @@ void updateBiologicalMoodEngine(void) {
     target = g_current_target;
     portEXIT_CRITICAL(&g_target_mutex);
 
-    float raw_pres = (target.detected && target.confidence > 0.28f) ? 1.0f : 0.0f;
+    float raw_pres = (target.detected && target.human_likelihood > HUMAN_LIKELIHOOD_THRESHOLD) ? 1.0f : 0.0f;
     s_target_presence_ema = s_target_presence_ema * 0.88f + raw_pres * 0.12f;
     bool is_detected = (s_target_presence_ema > 0.58f);
 
@@ -115,15 +119,22 @@ void updateBiologicalMoodEngine(void) {
     dt = constrain(dt, 0.01f, 0.20f);
     s_last_mood_update = now;
 
-    float target_v = 0.05f;
-    float target_a = 0.15f;
+    /* Advance circadian rhythm state before computing emotional targets,
+     * so that energy and mood baseline are current for this tick. */
+    updateCircadianCycle();
+    CircadianState circa = getCircadianState();
+
+    /* 1. Advance Affective Continuous Dynamics (Langevin SDE)
+     * Circadian mood_baseline shifts the emotional equilibrium point,
+     * and circadian energy_level scales arousal responsiveness. */
+    float target_v = 0.05f + circa.mood_baseline;
+    float target_a = 0.12f * circa.energy_level;
 
     if (is_detected) {
-        target_a = 0.50f + 0.30f * target.proximity;
-        target_v = 0.40f;
-    } else {
-        target_v = 0.05f;
-        target_a = 0.15f;
+        float bonding = getBrainBondingLevel();
+        float motion_factor = fminf(1.0f, (fabsf(target.vx) + fabsf(target.vy)) * 0.02f);
+        target_a = (0.18f + 0.12f * target.proximity + 0.35f * motion_factor) * circa.energy_level;
+        target_v = 0.20f + 0.40f * bonding + circa.mood_baseline;
     }
 
     float tau_v = AFFECTIVE_TAU_VALENCE_S;
@@ -131,9 +142,11 @@ void updateBiologicalMoodEngine(void) {
     s_emotion_valence += ((target_v - s_emotion_valence) / tau_v) * dt;
     s_emotion_arousal += ((target_a - s_emotion_arousal) / tau_a) * dt;
 
-    /* Stochastic Langevin diffusion term: +Sigma * dW_t */
-    float sigma_v = 0.02f;  /* Valence diffusion coefficient */
-    float sigma_a = 0.015f; /* Arousal diffusion coefficient */
+    /* Stochastic Langevin diffusion term: sigma scaled by personality volatility.
+     * Volatile personalities experience larger mood fluctuations; stable
+     * personalities maintain steadier emotional trajectories. */
+    float sigma_v = getPersonalityValenceSigma();
+    float sigma_a = getPersonalityArousalSigma();
     float sqrt_dt = sqrtf(dt);
     float noise_v = ((float)(esp_random() % 2000) - 1000.0f) * 0.001f;
     float noise_a = ((float)(esp_random() % 2000) - 1000.0f) * 0.001f;
@@ -144,43 +157,24 @@ void updateBiologicalMoodEngine(void) {
     s_emotion_valence = constrain(s_emotion_valence, -1.0f, 1.0f);
     s_emotion_arousal = constrain(s_emotion_arousal, 0.0f, 1.0f);
 
+    /* 2. Advance TinyML Micro-Brain Homeostatic Drives & Neural Policy Inference */
+    updateBrainEngine(dt);
+
+    /* 3. Event-Driven Biological State Transitions */
     if (is_detected && !s_lastTargetDetectedState) {
         s_lastTargetDetectedState = true;
-        uint32_t roll = esp_random() % 100;
-        Expression reactExpr = EXPR_IDLE;
-        if (roll < 40) {
-            reactExpr = EXPR_ANGRY;
-            s_emotion_valence = -0.6f;
-            s_emotion_arousal = 0.75f;
-        } else if (roll < 60) {
-            reactExpr = EXPR_SHOCK;
-            s_emotion_valence = -0.2f;
-            s_emotion_arousal = 0.85f;
-        } else if (roll < 75) {
-            reactExpr = EXPR_SMIRK;
-            s_emotion_valence = 0.45f;
-            s_emotion_arousal = 0.35f;
-        } else if (roll < 88) {
-            reactExpr = EXPR_DEADPAN;
-            s_emotion_valence = 0.0f;
-            s_emotion_arousal = 0.15f;
-        } else {
-            reactExpr = EXPR_IDLE;
-            s_emotion_valence = 0.10f;
-            s_emotion_arousal = 0.25f;
-        }
+        Expression reactExpr = sampleBrainExpressionPolicy();
         setNextExpression(reactExpr);
-        s_mood_lock_until = now + (esp_random() % 3000 + 5000);
+        s_mood_lock_until = now + (esp_random() % 2500 + 4000);
         s_nextMoodShiftTime = s_mood_lock_until + (esp_random() % 4000 + 4000);
         return;
     }
 
     if (!is_detected && s_lastTargetDetectedState && s_target_presence_ema < 0.15f) {
         s_lastTargetDetectedState = false;
-        uint32_t roll = esp_random() % 100;
-        Expression reactExpr = (roll < 65) ? EXPR_IDLE : ((roll < 80) ? EXPR_DEADPAN : ((roll < 90) ? EXPR_SAD : EXPR_ANGRY));
+        Expression reactExpr = sampleBrainExpressionPolicy();
         setNextExpression(reactExpr);
-        s_mood_lock_until = now + (esp_random() % 2500 + 4500);
+        s_mood_lock_until = now + (esp_random() % 2500 + 4000);
         s_nextMoodShiftTime = s_mood_lock_until + (esp_random() % 4000 + 4000);
         return;
     }
@@ -189,75 +183,15 @@ void updateBiologicalMoodEngine(void) {
         s_nextMoodShiftTime = now + (esp_random() % 6000 + 8000);
     }
 
+    /* 4. Stochastic Periodic Neural Policy Re-Sampling */
     if (now >= s_nextMoodShiftTime) {
-        uint32_t roll = esp_random() % 100;
-        Expression nextMood = EXPR_IDLE;
-
-        switch (g_currentExpr) {
-            case EXPR_IDLE:
-                if (roll < 58) nextMood = EXPR_IDLE;
-                else if (roll < 73) nextMood = EXPR_ANGRY;
-                else if (roll < 82) nextMood = EXPR_SMIRK;
-                else if (roll < 90) nextMood = EXPR_DEADPAN;
-                else if (roll < 95) nextMood = EXPR_JOY;
-                else if (roll < 98) nextMood = EXPR_SAD;
-                else nextMood = EXPR_OVERLOAD;
-                break;
-
-            case EXPR_ANGRY:
-                if (roll < 65) nextMood = EXPR_IDLE;
-                else if (roll < 80) nextMood = EXPR_SMIRK;
-                else if (roll < 90) nextMood = EXPR_DEADPAN;
-                else nextMood = EXPR_SAD;
-                break;
-
-            case EXPR_JOY:
-                if (roll < 70) nextMood = EXPR_IDLE;
-                else if (roll < 88) nextMood = EXPR_SMIRK;
-                else if (roll < 95) nextMood = EXPR_DEADPAN;
-                else nextMood = EXPR_ANGRY;
-                break;
-
-            case EXPR_SMIRK:
-                if (roll < 65) nextMood = EXPR_IDLE;
-                else if (roll < 80) nextMood = EXPR_DEADPAN;
-                else if (roll < 92) nextMood = EXPR_JOY;
-                else nextMood = EXPR_ANGRY;
-                break;
-
-            case EXPR_SHOCK:
-                if (roll < 65) nextMood = EXPR_IDLE;
-                else if (roll < 80) nextMood = EXPR_DEADPAN;
-                else if (roll < 92) nextMood = EXPR_SMIRK;
-                else nextMood = EXPR_ANGRY;
-                break;
-
-            case EXPR_OVERLOAD:
-                if (roll < 75) nextMood = EXPR_IDLE;
-                else nextMood = EXPR_SAD;
-                break;
-
-            case EXPR_SAD:
-                if (roll < 65) nextMood = EXPR_IDLE;
-                else if (roll < 80) nextMood = EXPR_DEADPAN;
-                else if (roll < 92) nextMood = EXPR_SMIRK;
-                else nextMood = EXPR_JOY;
-                break;
-
-            case EXPR_DEADPAN:
-                if (roll < 65) nextMood = EXPR_IDLE;
-                else if (roll < 80) nextMood = EXPR_SMIRK;
-                else if (roll < 92) nextMood = EXPR_JOY;
-                else nextMood = EXPR_ANGRY;
-                break;
-        }
-
+        Expression nextMood = sampleBrainExpressionPolicy();
         setNextExpression(nextMood);
         s_mood_lock_until = now + (esp_random() % 3000 + 5000);
         if (nextMood == EXPR_IDLE) {
-            s_nextMoodShiftTime = s_mood_lock_until + (esp_random() % 8000 + 8000);
+            s_nextMoodShiftTime = s_mood_lock_until + (esp_random() % 7000 + 7000);
         } else {
-            s_nextMoodShiftTime = s_mood_lock_until + (esp_random() % 4000 + 5000);
+            s_nextMoodShiftTime = s_mood_lock_until + (esp_random() % 4000 + 4000);
         }
     }
 }

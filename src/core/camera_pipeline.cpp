@@ -20,7 +20,7 @@ portMUX_TYPE g_stream_mutex = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_weather_mutex = portMUX_INITIALIZER_UNLOCKED;
 SemaphoreHandle_t g_frame_sem = NULL;
 
-TrackTarget g_current_target = {false, 0, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0};
+TrackTarget g_current_target = {false, 0, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0};
 ObjectCandidate g_object_candidates[MAX_OBJECT_CANDIDATES] = {0};
 int g_num_candidates = 0;
 int g_inspected_candidate_idx = 0;
@@ -39,6 +39,7 @@ WeatherInfo g_weather_info = {0.0f, 0, 0, "", "", false, 0};
 static uint8_t* small_rgb_buf = NULL;
 static uint8_t* prev_lum_buf  = NULL;
 static uint8_t* mhi_buf       = NULL;
+static uint8_t s_static_skin_age[1200] = {0};
 
 static KalmanTracker2D s_k_tracker;
 static float s_lock_confidence = 0.0f;
@@ -49,6 +50,30 @@ static int s_warmup_frames = 3;
 static uint32_t s_last_inspection_time_ms = 0;
 static uint32_t s_inspection_hold_time_ms = 2800;
 static uint8_t s_sleep_miss_count = 0;
+
+/* Human Likelihood Composite Scoring State
+ * These running statistics accumulate evidence from 4 independent discrimination
+ * channels to estimate the probability that a tracked target is a real human.
+ * All computations are O(1) per frame using exponential moving averages. */
+static float s_skin_area_ema = 0.0f;         /* EMA of skin pixel count for cluster stability */
+static float s_skin_area_var_ema = 0.0f;      /* EMA of squared deviation for variance estimation */
+static float s_motion_autocorr_ema = 0.0f;    /* EMA of velocity direction consistency */
+static float s_prev_vx_norm = 0.0f;           /* Previous frame velocity direction for autocorrelation */
+static float s_prev_vy_norm = 0.0f;
+static float s_spatial_coherence_ema = 0.0f;  /* EMA of skin_px / bounding_box_area ratio */
+static float s_human_likelihood = 0.0f;       /* Final composite score published to g_current_target */
+static uint32_t s_continuous_track_start = 0; /* Timestamp when current continuous tracking began */
+static uint8_t s_cluster_low_lik_frames = 0;  /* Consecutive low-likelihood frames on the same spatial blob */
+static bool s_cluster_suppressed = false;     /* Entire cluster gated until centroid identity changes */
+static float s_cluster_cx = 0.0f;
+static float s_cluster_cy = 0.0f;
+
+static inline bool clusterCentroidMoved(float cx, float cy, float ref_x, float ref_y) {
+    float dx = cx - ref_x;
+    float dy = cy - ref_y;
+    float lim = VISION_CLUSTER_CENTROID_RESET_PX;
+    return (dx * dx + dy * dy) > (lim * lim);
+}
 
 static const int FRAME_W = 640;
 static const int FRAME_H = 480;
@@ -91,6 +116,7 @@ bool allocateVisionBuffers(void) {
 
     if (prev_lum_buf) memset(prev_lum_buf, 0, 40 * 30);
     if (mhi_buf) memset(mhi_buf, 0, 40 * 30);
+    memset(s_static_skin_age, 0, sizeof(s_static_skin_age));
 
     g_frame_sem = xSemaphoreCreateBinary();
     return (small_rgb_buf && prev_lum_buf && mhi_buf && g_latest_jpeg_buf);
@@ -146,7 +172,7 @@ void processFrameAI(camera_fb_t *fb) {
 
     /* Pre-compute integer-scaled sector boundaries to eliminate per-pixel float-to-int casts */
     int sec_min_cb[3][4], sec_max_cb[3][4], sec_min_cr[3][4], sec_max_cr[3][4];
-    int sec_shadow_margin[3][4], sec_min_r_thresh[3][4], sec_min_cr_cb_diff[3][4];
+    int sec_shadow_margin[3][4], sec_min_r_thresh[3][4], sec_min_cr_cb_diff[3][4], sec_min_rg_diff[3][4];
     for (int sy = 0; sy < 3; sy++) {
         for (int sx = 0; sx < 4; sx++) {
             float local_lum = sec_mean_lum[sy][sx];
@@ -158,6 +184,7 @@ void processFrameAI(camera_fb_t *fb) {
             sec_shadow_margin[sy][sx]   = (local_lum < 65.0f) ? 4 : 0;
             sec_min_r_thresh[sy][sx]    = (local_lum < 65.0f) ? 8 : 10;
             sec_min_cr_cb_diff[sy][sx]  = (local_lum < 65.0f) ? 4 : 6;
+            sec_min_rg_diff[sy][sx]     = (local_lum < 65.0f) ? 6 : VISION_MIN_R_G_DIFF;
             if (local_lum > 185.0f) {
                 sec_min_cb[sy][sx] += 3;
                 sec_max_cb[sy][sx] -= 3;
@@ -189,14 +216,33 @@ void processFrameAI(camera_fb_t *fb) {
             int shadow_margin = sec_shadow_margin[sec_y][sec_x];
             int min_r_thresh = sec_min_r_thresh[sec_y][sec_x];
             int min_cr_cb_diff = sec_min_cr_cb_diff[sec_y][sec_x];
+            int min_rg_diff = sec_min_rg_diff[sec_y][sec_x];
 
-            bool is_skin = (r + shadow_margin >= b) && 
+            /* Hemoglobin absorption gate: human skin exhibits strict Red dominance over Green (r - g >= min_rg_diff).
+             * Inanimate yellow/mustard fabrics reflect Red and Green equally (r ~ g), and are immediately rejected. */
+            bool raw_skin = (r + shadow_margin >= b) && 
+                           ((r - g) >= min_rg_diff) &&
                            ((cr - cb) >= min_cr_cb_diff) && 
                            (r >= min_r_thresh) && 
                            (cb >= min_cb && cb <= max_cb && cr >= min_cr && cr <= max_cr);
 
+            int idx = y * 40 + x;
+            bool is_skin = false;
+
+            if (raw_skin) {
+                /* Temporal habituation and spatial flatness rejection */
+                bool is_habituated = (s_static_skin_age[idx] >= VISION_HABITUATION_FRAMES);
+                bool is_flat_surface = (texture_40x30[idx] < (uint8_t)VISION_TEXTURE_MIN_GRADIENT && s_static_skin_age[idx] >= 10);
+
+                if (!is_habituated && !is_flat_surface) {
+                    is_skin = true;
+                    skin_pixel_count++;
+                }
+            } else {
+                s_static_skin_age[idx] = 0;
+            }
+
             *p_skin++ = is_skin;
-            if (is_skin) skin_pixel_count++;
         }
     }
 
@@ -218,12 +264,17 @@ void processFrameAI(camera_fb_t *fb) {
         s_warmup_frames--;
         memcpy(prev_lum_buf, smooth_40x30, 1200);
         memset(mhi_buf, 0, 1200);
+        memset(s_static_skin_age, 0, 1200);
         kf2d_tracker_init(&s_k_tracker);
         s_k_tracker.last_update_us = micros();
         s_lock_confidence = 0.0f;
+        s_human_likelihood = 0.0f;
+        s_cluster_low_lik_frames = 0;
+        s_cluster_suppressed = false;
         portENTER_CRITICAL(&g_target_mutex);
         g_current_target.detected = false;
         g_current_target.confidence = 0.0f;
+        g_current_target.human_likelihood = 0.0f;
         portEXIT_CRITICAL(&g_target_mutex);
         return;
     }
@@ -267,19 +318,44 @@ void processFrameAI(camera_fb_t *fb) {
             }
             float mhi_weight = (float)mhi_buf[idx] / 255.0f;
 
+            /* Track spatial stationary duration for chrominance candidates */
+            bool is_skin = skin_mask_40x30[idx];
+            if (is_skin) {
+                if (local_delta <= VISION_STATIC_DELTA_THRESH && mhi_buf[idx] == 0) {
+                    if (s_static_skin_age[idx] < 255) s_static_skin_age[idx]++;
+                } else {
+                    s_static_skin_age[idx] = 0;
+                }
+            }
+
             float gy = (float)abs((int)smooth_40x30[idx + 40] - (int)smooth_40x30[idx - 40]);
             float gx = (float)abs((int)smooth_40x30[idx + 1] - (int)smooth_40x30[idx - 1]);
 
-            bool is_skin = skin_mask_40x30[idx];
             uint8_t raw_lum = cur_40x30[idx];
-
             if (!is_skin && raw_lum > 215) continue;
 
             float raw_energy = 2.5f * delta + 16.0f * mhi_weight + 1.5f * gy + 0.8f * gx;
-            float energy = raw_energy;
+            float energy = 0.0f;
 
             if (is_skin) {
-                energy = 10.0f + 0.3f * (gy + gx);
+                if (mhi_weight > 0.04f || delta > 2.0f) {
+                    /* Dynamic non-stationary chrominance target */
+                    energy = raw_energy * 1.8f + 8.0f;
+                } else if (s_k_tracker.active && s_lock_confidence > 0.30f) {
+                    /* Sustained state tracking: only grant stationary energy to skin pixels
+                     * in the spatial neighborhood of the active tracked target */
+                    float dist_x_tr = (float)x - prev_grid_x;
+                    float dist_y_tr = (float)y - prev_grid_y;
+                    float track_sq = (dist_x_tr * dist_x_tr) * (1.0f / 64.0f) + (dist_y_tr * dist_y_tr) * (1.0f / 49.0f);
+                    if (track_sq <= 2.25f) {
+                        energy = 3.5f + 0.3f * (gy + gx);
+                    } else {
+                        energy = 0.0f;
+                    }
+                } else {
+                    /* Static unacquired candidate: zero base energy */
+                    energy = 0.0f;
+                }
             } else {
                 float tex_val = (float)texture_40x30[idx];
                 float texture_factor = 1.0f - (tex_val - 15.0f) / 40.0f;
@@ -288,7 +364,7 @@ void processFrameAI(camera_fb_t *fb) {
                 energy = raw_energy * (0.04f * texture_factor);
             }
 
-            if (!is_skin && (raw_energy < 22.0f || energy < 1.0f)) continue;
+            if (energy < 0.8f) continue;
 
             float weight = energy;
             float dx = (float)x;
@@ -328,7 +404,7 @@ void processFrameAI(camera_fb_t *fb) {
     int active_cnt = 0;
 
     for (int s = 0; s < 3; s++) {
-        if (sec_M00[s] >= 8.0f || sec_skin[s] >= 2) {
+        if (sec_M00[s] >= 10.0f || (sec_skin[s] >= VISION_MIN_ACQUIRE_SKIN_PX && sec_motion[s] >= 6.0f)) {
             float inv_M = 1.0f / fmaxf(1.0f, sec_M00[s]);
             float mx = sec_M10[s] * inv_M;
             float my = sec_M01[s] * inv_M;
@@ -342,7 +418,7 @@ void processFrameAI(camera_fb_t *fb) {
             float bh = fmaxf(160.0f, fminf(310.0f, 2.8f * fmaxf(3.2f, sig_y) * 16.0f));
 
             float center_dist = fabsf(cx - 320.0f);
-            float priority = 15.0f * sec_skin[s] + 1.8f * sec_motion[s] + 0.10f * sec_M00[s] - 0.06f * center_dist;
+            float priority = 12.0f * sec_skin[s] + 2.0f * sec_motion[s] + 0.12f * sec_M00[s] - 0.06f * center_dist;
 
             float area_norm = sqrtf(bw * bh);
             float prox = constrain((area_norm - 140.0f) / 130.0f, 0.0f, 1.0f);
@@ -406,7 +482,7 @@ void processFrameAI(camera_fb_t *fb) {
     float dt = fmaxf(0.01f, fminf(0.20f, dt_sec));
     s_k_tracker.last_update_us = now_us;
 
-    float q_process = (skin_pixel_count >= 4) ? 850.0f : 450.0f;
+    float q_process = (skin_pixel_count >= VISION_MIN_ACQUIRE_SKIN_PX) ? 850.0f : 450.0f;
     kf1d_predict(&s_k_tracker.kf_x, dt, q_process);
     kf1d_predict(&s_k_tracker.kf_y, dt, q_process);
 
@@ -442,13 +518,13 @@ void processFrameAI(camera_fb_t *fb) {
         cand_bh = fmaxf(180.0f, fminf(310.0f, coupled_bh));
 
         if (!s_k_tracker.active) {
-            if (skin_pixel_count >= 4) {
+            if ((skin_pixel_count >= VISION_MIN_ACQUIRE_SKIN_PX && M00 >= VISION_MIN_ACQUIRE_ENERGY) || (M00 >= 55.0f)) {
                 cand_cx = raw_cx;
                 cand_cy = raw_cy;
                 candidate_found = true;
             }
         } else {
-            float effective_radius = (skin_pixel_count >= 4) ? 450.0f : search_radius;
+            float effective_radius = (skin_pixel_count >= VISION_MIN_ACQUIRE_SKIN_PX) ? 400.0f : search_radius;
             float dist_sq = (raw_cx - pred_x) * (raw_cx - pred_x) + (raw_cy - pred_y) * (raw_cy - pred_y);
             if (dist_sq <= (effective_radius * effective_radius)) {
                 cand_cx = raw_cx;
@@ -456,7 +532,7 @@ void processFrameAI(camera_fb_t *fb) {
                 candidate_found = true;
             }
         }
-    } else if (s_k_tracker.active && skin_pixel_count >= 8) {
+    } else if (s_k_tracker.active && skin_pixel_count >= (VISION_MIN_ACQUIRE_SKIN_PX + 2)) {
         float M00_skin = 0.0f, M10_skin = 0.0f, M01_skin = 0.0f;
         float M20_skin = 0.0f, M02_skin = 0.0f;
         for (int y = 1; y < 29; y++) {
@@ -466,6 +542,10 @@ void processFrameAI(camera_fb_t *fb) {
                 if (skin_mask_40x30[idx]) {
                     float fx = (float)x;
                     float fy = (float)y;
+                    float dist_x_s = fx - prev_grid_x;
+                    float dist_y_s = fy - prev_grid_y;
+                    float norm_sq = (dist_x_s * dist_x_s) * (1.0f / 100.0f) + (dist_y_s * dist_y_s) * (1.0f / 81.0f);
+                    if (norm_sq > 2.25f) continue;
                     M00_skin += 1.0f;
                     M10_skin += fx;
                     M01_skin += fy;
@@ -474,7 +554,7 @@ void processFrameAI(camera_fb_t *fb) {
                 }
             }
         }
-        if (M00_skin >= 15.0f) {
+        if (M00_skin >= 12.0f) {
             float inv_M00_skin = 1.0f / M00_skin;
             float mean_x_skin = M10_skin * inv_M00_skin;
             float mean_y_skin = M01_skin * inv_M00_skin;
@@ -496,13 +576,27 @@ void processFrameAI(camera_fb_t *fb) {
             cand_bw = fmaxf(s_k_tracker.w * 0.85f, fmaxf(140.0f, fminf(240.0f, raw_bw_skin)));
             cand_bh = fmaxf(s_k_tracker.h * 0.85f, fmaxf(180.0f, fminf(310.0f, coupled_bh_skin)));
 
-            float effective_radius_skin = (skin_pixel_count >= 4) ? 450.0f : search_radius;
+            float effective_radius_skin = (skin_pixel_count >= VISION_MIN_ACQUIRE_SKIN_PX) ? 400.0f : search_radius;
             float dist_sq_skin = (raw_cx_skin - pred_x) * (raw_cx_skin - pred_x) + (raw_cy_skin - pred_y) * (raw_cy_skin - pred_y);
             if (dist_sq_skin <= (effective_radius_skin * effective_radius_skin)) {
                 cand_cx = raw_cx_skin;
                 cand_cy = raw_cy_skin;
                 candidate_found = true;
             }
+        }
+    }
+
+    /* Pixel-level habituation still lets a compact cream blob lock. If that same
+     * spatial cluster has already been classified as non-human, reject re-acquire
+     * until the centroid identity changes (person walked into a new location). */
+    if (s_cluster_suppressed && candidate_found) {
+        if (!clusterCentroidMoved(cand_cx, cand_cy, s_cluster_cx, s_cluster_cy)) {
+            candidate_found = false;
+        } else {
+            s_cluster_suppressed = false;
+            s_cluster_low_lik_frames = 0;
+            s_cluster_cx = cand_cx;
+            s_cluster_cy = cand_cy;
         }
     }
 
@@ -539,7 +633,130 @@ void processFrameAI(camera_fb_t *fb) {
     float current_area = sqrtf(s_k_tracker.w * s_k_tracker.h);
     float proximity_z = constrain((current_area - 140.0f) / 130.0f, 0.0f, 1.0f);
 
-    if (s_k_tracker.active && s_lock_confidence > 0.25f) {
+    /* ---------------------------------------------------------------
+     * Human Likelihood Composite Scoring
+     * Fuses 4 independent discrimination signals into a single probability
+     * estimate. Each signal captures a different aspect of "human-ness"
+     * that skin color alone cannot determine. The composite score gates
+     * bonding growth and social drive in the brain engine, preventing
+     * personality development from being triggered by inanimate objects.
+     * --------------------------------------------------------------- */
+    {
+        /* Signal 1: Skin Cluster Consistency (variance of skin pixel count)
+         * Humans produce moderate variance (natural breathing, head tilt, gestures).
+         * Static objects (walls, furniture) produce near-zero variance.
+         * Erratic sources (flickering lights, rotating objects) produce high variance.
+         * The optimal human range is bounded: too stable = inanimate, too chaotic = noise. */
+        float skin_f = (float)skin_pixel_count;
+        float skin_delta = skin_f - s_skin_area_ema;
+        s_skin_area_ema = s_skin_area_ema * 0.92f + skin_f * 0.08f;
+        s_skin_area_var_ema = s_skin_area_var_ema * 0.95f + (skin_delta * skin_delta) * 0.05f;
+        float skin_stdev = sqrtf(s_skin_area_var_ema + 1e-6f);
+        /* Map stdev to score: peak at stdev ~3-8 (human range), low at 0 and >20 */
+        float skin_consistency_score = 0.0f;
+        if (s_skin_area_ema > 3.0f) {
+            float norm_var = skin_stdev / (s_skin_area_ema + 1e-6f);
+            /* Gaussian-like scoring centered at coefficient of variation ~0.15 */
+            float cv_dist = (norm_var - 0.15f);
+            skin_consistency_score = expf(-8.0f * cv_dist * cv_dist);
+        }
+
+        /* Signal 2: Motion Pattern Autocorrelation
+         * Computes frame-to-frame velocity direction consistency.
+         * Human movement has temporal structure (smooth trajectories, deliberate gestures).
+         * Random noise produces near-zero autocorrelation. Static objects produce
+         * either zero velocity or jitter with no directional consistency. */
+        float cur_speed = sqrtf(s_k_tracker.kf_x.v * s_k_tracker.kf_x.v +
+                                s_k_tracker.kf_y.v * s_k_tracker.kf_y.v);
+        float cur_vx_n = 0.0f, cur_vy_n = 0.0f;
+        if (cur_speed > 5.0f) {
+            cur_vx_n = s_k_tracker.kf_x.v / cur_speed;
+            cur_vy_n = s_k_tracker.kf_y.v / cur_speed;
+        }
+        float dot_product = cur_vx_n * s_prev_vx_norm + cur_vy_n * s_prev_vy_norm;
+        s_prev_vx_norm = cur_vx_n;
+        s_prev_vy_norm = cur_vy_n;
+        /* Positive dot = consistent direction, negative = reversal, zero = random/static */
+        float motion_raw = (cur_speed > 5.0f) ? fmaxf(0.0f, dot_product) : 0.0f;
+        s_motion_autocorr_ema = s_motion_autocorr_ema * 0.88f + motion_raw * 0.12f;
+        float motion_pattern_score = constrain(s_motion_autocorr_ema * 1.5f, 0.0f, 1.0f);
+
+        /* Signal 3: Spatial Coherence
+         * Ratio of skin pixels to bounding box area in the subsampled grid.
+         * Faces and hands produce compact clusters (high ratio ~0.15-0.40).
+         * Scattered skin-colored artifacts produce sparse, diffuse hits (low ratio). */
+        float bbox_area_sub = (s_k_tracker.w / 16.0f) * (s_k_tracker.h / 16.0f);
+        float coherence_raw = (bbox_area_sub > 4.0f) ? (float)skin_pixel_count / bbox_area_sub : 0.0f;
+        s_spatial_coherence_ema = s_spatial_coherence_ema * 0.90f + coherence_raw * 0.10f;
+        /* Normalize: ratio of 0.20 maps to ~1.0 score, below 0.05 maps to ~0.0 */
+        float coherence_score = constrain((s_spatial_coherence_ema - 0.03f) / 0.18f, 0.0f, 1.0f);
+
+        /* Signal 4: Temporal Persistence
+         * Saturating sigmoid of continuous tracking duration.
+         * Humans remain in frame for extended periods; false positives from momentary
+         * color matches or transient reflections fail this check quickly.
+         * t / (t + tau_half) with tau_half = 3.0 seconds. */
+        float temporal_score = 0.0f;
+        if (s_k_tracker.active && candidate_found) {
+            if (s_continuous_track_start == 0) s_continuous_track_start = now_ms;
+            float track_sec = (float)(now_ms - s_continuous_track_start) * 0.001f;
+            temporal_score = track_sec / (track_sec + HUMAN_TEMPORAL_TAU_HALF_S);
+        } else {
+            s_continuous_track_start = 0;
+        }
+
+        /* Weighted Fusion */
+        float raw_likelihood = HUMAN_W_SKIN_CONSISTENCY * skin_consistency_score
+                             + HUMAN_W_MOTION_PATTERN   * motion_pattern_score
+                             + HUMAN_W_SPATIAL_COHERENCE * coherence_score
+                             + HUMAN_W_TEMPORAL_PERSIST  * temporal_score;
+
+        /* Smooth with EMA to prevent single-frame spikes from triggering bonding */
+        s_human_likelihood = s_human_likelihood * 0.88f + constrain(raw_likelihood, 0.0f, 1.0f) * 0.12f;
+    }
+
+    /* Cluster-level habituation: a skin-colored object that never accumulates
+     * human evidence is the typical wall/pillow false lock. Count persistence
+     * of that failure on a stable centroid, then drop the whole cluster. */
+    {
+        float cx = s_k_tracker.active ? s_k_tracker.kf_x.p : cand_cx;
+        float cy = s_k_tracker.active ? s_k_tracker.kf_y.p : cand_cy;
+
+        if (skin_pixel_count < VISION_MIN_ACQUIRE_SKIN_PX) {
+            s_cluster_low_lik_frames = 0;
+            s_cluster_suppressed = false;
+        } else if (s_human_likelihood >= HUMAN_CLUSTER_SUPPRESS_THRESH) {
+            s_cluster_low_lik_frames = 0;
+            s_cluster_suppressed = false;
+            s_cluster_cx = cx;
+            s_cluster_cy = cy;
+        } else if (!s_cluster_suppressed) {
+            if (s_cluster_low_lik_frames == 0 || clusterCentroidMoved(cx, cy, s_cluster_cx, s_cluster_cy)) {
+                s_cluster_low_lik_frames = 1;
+                s_cluster_cx = cx;
+                s_cluster_cy = cy;
+            } else if (s_cluster_low_lik_frames < 255) {
+                s_cluster_low_lik_frames++;
+                if (s_cluster_low_lik_frames >= VISION_CLUSTER_HABITUATION_FRAMES) {
+                    s_cluster_suppressed = true;
+                }
+            }
+        }
+
+        if (s_cluster_suppressed) {
+            if (clusterCentroidMoved(cx, cy, s_cluster_cx, s_cluster_cy)) {
+                s_cluster_suppressed = false;
+                s_cluster_low_lik_frames = 0;
+                s_cluster_cx = cx;
+                s_cluster_cy = cy;
+            } else {
+                s_k_tracker.active = false;
+                s_lock_confidence *= 0.50f;
+            }
+        }
+    }
+
+    if (s_k_tracker.active && s_lock_confidence > 0.25f && !s_cluster_suppressed) {
         float center_x = FRAME_W / 2.0f;
         float center_y = FRAME_H / 2.0f;
         float err_x = ((s_k_tracker.kf_x.p - center_x) / center_x) * 100.0f;
@@ -556,6 +773,7 @@ void processFrameAI(camera_fb_t *fb) {
         g_current_target.error_x = err_x;
         g_current_target.error_y = err_y;
         g_current_target.confidence = s_lock_confidence;
+        g_current_target.human_likelihood = s_human_likelihood;
         g_current_target.total_energy = (float)M00;
         g_current_target.vx = s_k_tracker.kf_x.v;
         g_current_target.vy = s_k_tracker.kf_y.v;
@@ -568,6 +786,7 @@ void processFrameAI(camera_fb_t *fb) {
         g_current_target.error_x = 0.0f;
         g_current_target.error_y = 0.0f;
         g_current_target.confidence = s_lock_confidence;
+        g_current_target.human_likelihood = s_human_likelihood;
         g_current_target.total_energy = (float)M00;
         g_current_target.vx = 0.0f;
         g_current_target.vy = 0.0f;

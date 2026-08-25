@@ -4,6 +4,7 @@
  */
 
 #include "include/kore_kinematics.h"
+#include "include/kore_personality.h"
 #include "include/kore_config.h"
 #include "include/kore_types.h"
 #include <math.h>
@@ -286,8 +287,11 @@ void updateGazeSystem(void) {
                 g_currentOffsetY = s_trackSaccadeStartY + (distY * s);
             }
         } else {
-            float omega_n = GAZE_NATURAL_FREQUENCY_RAD_S;
-            float zeta = GAZE_DAMPING_RATIO;
+            /* Personality-modulated spring-damper parameters.
+             * Bold + high energy: snappy underdamped (omega up, zeta down).
+             * Shy + low energy: sluggish overdamped (omega down, zeta up). */
+            float omega_n = getPersonalityGazeOmega();
+            float zeta = getPersonalityGazeDamping();
 
             float ax = (omega_n * omega_n) * (s_smoothedTargetX - g_currentOffsetX) - (2.0f * zeta * omega_n) * s_eye_vx;
             float ay = (omega_n * omega_n) * (s_smoothedTargetY - g_currentOffsetY) - (2.0f * zeta * omega_n) * s_eye_vy;
@@ -356,16 +360,20 @@ void updateGazeSystem(void) {
             s_gazeStartTime = now;
             s_inSaccade = true;
         } else {
+            /* Personality-driven idle saccade target selection.
+             * Shy personalities bias gaze targets downward (avoidant).
+             * Bold personalities prefer center or upward engagement. */
+            float y_bias = getPersonalityIdleGazeYBias();
             uint32_t pick = esp_random() % 100;
             if (pick < 40) {
                 s_targetOffsetX = 0.0f;
-                s_targetOffsetY = 0.0f;
+                s_targetOffsetY = y_bias * 0.5f;
             } else if (pick < 70) {
                 s_targetOffsetX = -1.0f * (float)(esp_random() % 9 + 6);
-                s_targetOffsetY = (float)(esp_random() % 7) - 3.0f;
+                s_targetOffsetY = (float)(esp_random() % 7) - 3.0f + y_bias;
             } else {
                 s_targetOffsetX = (float)(esp_random() % 9 + 6);
-                s_targetOffsetY = (float)(esp_random() % 7) - 3.0f;
+                s_targetOffsetY = (float)(esp_random() % 7) - 3.0f + y_bias;
             }
 
             s_targetOffsetX = constrain(s_targetOffsetX, -16.5f, 16.5f);
@@ -374,7 +382,11 @@ void updateGazeSystem(void) {
             float ds = sqrtf((s_targetOffsetX - s_startOffsetX) * (s_targetOffsetX - s_startOffsetX) +
                              (s_targetOffsetY - s_startOffsetY) * (s_targetOffsetY - s_startOffsetY));
             s_gazeDuration = compute_saccade_duration_ms(ds);
-            s_nextGazeTime = now + s_gazeDuration + (esp_random() % 1800 + 2200);
+            /* Personality-scaled inter-saccade interval.
+             * Playful + high energy: shorter pauses (darting, curious gaze).
+             * Shy + low energy: longer pauses (lingering, hesitant gaze). */
+            float interval_scale = getPersonalityIdleIntervalScale();
+            s_nextGazeTime = now + s_gazeDuration + (uint32_t)(interval_scale * (float)(esp_random() % 1800 + 2200));
             s_gazeStartTime = now;
             s_inSaccade = true;
         }

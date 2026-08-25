@@ -12,6 +12,8 @@
 #include "include/kore_kalman.h"
 #include "include/kore_kinematics.h"
 #include "include/kore_affective.h"
+#include "include/kore_ai.h"
+#include "include/kore_personality.h"
 #include "src/core/camera_pipeline.h"
 #include "src/core/display_engine.h"
 #include "src/net/wifi_manager.h"
@@ -30,6 +32,12 @@ void setup() {
     showBootStatus("KoRe Starting...");
 
     KORE_LOG_INF("MAIN", "KoRe Biomechanical Face Tracker Starting");
+
+    /* Initialize On-Device TinyML Micro-Brain and Homeostatic Drives */
+    initBrainEngine();
+
+    /* Load persistent personality traits before any behavioral tick */
+    initPersonalityEngine();
 
     /* Initialize camera sensor hardware */
     showBootStatus("Init Camera...");

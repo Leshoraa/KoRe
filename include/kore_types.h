@@ -75,6 +75,9 @@ typedef struct {
     float error_x;
     float error_y;
     float confidence;
+    float human_likelihood;  /* Composite multi-signal human probability [0.0, 1.0] fusing skin consistency,
+                              * motion pattern, spatial coherence, and temporal persistence. Used by the
+                              * brain engine to gate bonding growth and social drive accumulation. */
     float total_energy;
     float vx;
     float vy;

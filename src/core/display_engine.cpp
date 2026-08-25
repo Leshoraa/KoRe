@@ -9,6 +9,7 @@
 #include "include/kore_types.h"
 #include "include/kore_kinematics.h"
 #include "include/kore_affective.h"
+#include "include/kore_personality.h"
 #include <Arduino.h>
 #include <esp_random.h>
 #include <time.h>
@@ -873,10 +874,15 @@ void oledTask(void *pvParameters) {
             s_burn_shift_y = (int)(esp_random() % 3) - 1;
         }
 
-        /* Check if target face is actively engaged */
+        /* Clock/weather glances must not be suppressed by YCbCr false positives
+         * (cream walls, pillows). Engagement requires composite human likelihood,
+         * not mere skin-colored lock, so ambient screens can still appear in idle. */
         bool target_engaged = false;
         portENTER_CRITICAL(&g_target_mutex);
-        target_engaged = (g_recon_state == STATE_ACTIVE && g_current_target.detected && (now - g_current_target.last_seen_ms < 600));
+        target_engaged = (g_recon_state == STATE_ACTIVE
+                          && g_current_target.detected
+                          && g_current_target.human_likelihood > HUMAN_LIKELIHOOD_THRESHOLD
+                          && (now - g_current_target.last_seen_ms < 600));
         portEXIT_CRITICAL(&g_target_mutex);
 
         /* Check manual preview request from Web UI */
@@ -893,18 +899,29 @@ void oledTask(void *pvParameters) {
         }
 
         /* Spontaneous organic ambient glance (Personality & Attention-Driven):
-         * - Only triggers when robot is NOT engaged with a person and manual expression is inactive.
-         * - True stochastic weighted selection: Clock vs Weather vs skipping to staying in eye gaze.
-         * - Natural organic interval: 45s - 120s between spontaneous glances.
-         * - Brief glance duration: 3.5s - 5.5s. */
+         * Triggers naturally during idle solitude and steady calm companionship.
+         * Interval is scaled by playfulness/activity traits. Only suppressed during
+         * manual Web UI override, ongoing expression transition, or sudden startle. */
         if (s_next_random_ambient_check_ms == 0) {
-            uint32_t interval_span = (AMBIENT_INTERVAL_MAX_MS > AMBIENT_INTERVAL_MIN_MS) ? (AMBIENT_INTERVAL_MAX_MS - AMBIENT_INTERVAL_MIN_MS) : 60000;
-            s_next_random_ambient_check_ms = now + (esp_random() % interval_span) + AMBIENT_INTERVAL_MIN_MS;
+            float glance_scale = getPersonalityAmbientGlanceScale();
+            uint32_t min_ms = (uint32_t)((float)AMBIENT_INTERVAL_MIN_MS * glance_scale);
+            uint32_t max_ms = (uint32_t)((float)AMBIENT_INTERVAL_MAX_MS * glance_scale);
+            uint32_t interval_span = (max_ms > min_ms) ? (max_ms - min_ms) : 30000;
+            s_next_random_ambient_check_ms = now + (esp_random() % interval_span) + min_ms;
         }
 
-        if (!target_engaged && !isManualExpressionActive() && now >= s_next_random_ambient_check_ms) {
-            uint32_t interval_span = (AMBIENT_INTERVAL_MAX_MS > AMBIENT_INTERVAL_MIN_MS) ? (AMBIENT_INTERVAL_MAX_MS - AMBIENT_INTERVAL_MIN_MS) : 60000;
-            s_next_random_ambient_check_ms = now + (esp_random() % interval_span) + AMBIENT_INTERVAL_MIN_MS;
+        bool can_spontaneous_glance = !isManualExpressionActive()
+                                      && !g_is_transitioning
+                                      && (g_currentExpr != EXPR_SHOCK && g_currentExpr != EXPR_OVERLOAD);
+
+        if (can_spontaneous_glance && now >= s_next_random_ambient_check_ms) {
+            float glance_scale = getPersonalityAmbientGlanceScale();
+            /* If actively engaged with companion, space glances slightly (~1.25x) like natural casual watch checks */
+            if (target_engaged) glance_scale *= 1.25f;
+            uint32_t min_ms = (uint32_t)((float)AMBIENT_INTERVAL_MIN_MS * glance_scale);
+            uint32_t max_ms = (uint32_t)((float)AMBIENT_INTERVAL_MAX_MS * glance_scale);
+            uint32_t interval_span = (max_ms > min_ms) ? (max_ms - min_ms) : 30000;
+            s_next_random_ambient_check_ms = now + (esp_random() % interval_span) + min_ms;
 
             if (s_ambient_popup_until_ms < now) {
                 bool weather_valid = false;
@@ -917,18 +934,11 @@ void oledTask(void *pvParameters) {
                 AmbientScreenMode chosen_mode = AMBIENT_NONE;
 
                 if (weather_available) {
-                    if (roll < 45) {
-                        /* 45% chance: Glances at clock */
-                        chosen_mode = AMBIENT_CLOCK;
-                    } else if (roll < 85) {
-                        /* 40% chance: Glances at weather */
-                        chosen_mode = AMBIENT_WEATHER;
-                    }
+                    /* Alternate 50% clock / 50% weather */
+                    chosen_mode = (roll < 50) ? AMBIENT_CLOCK : AMBIENT_WEATHER;
                 } else {
-                    if (roll < 60) {
-                        /* 60% chance: Glances at clock */
-                        chosen_mode = AMBIENT_CLOCK;
-                    }
+                    /* If weather not enabled or syncing, always show clock */
+                    chosen_mode = AMBIENT_CLOCK;
                 }
 
                 if (chosen_mode != AMBIENT_NONE) {
@@ -977,7 +987,8 @@ void oledTask(void *pvParameters) {
                 } else {
                     if (g_blinkState == BLINK_IDLE_STATE) {
                         if (g_nextBlinkTime == 0) {
-                            uint32_t initInterval = (g_currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
+                            uint32_t initInterval = getPersonalityBlinkInterval();
+                            if (g_currentExpr == EXPR_ANGRY) initInterval = (uint32_t)(initInterval * 1.20f);
                             g_nextBlinkTime = now + initInterval;
                         }
                         if (now >= g_nextBlinkTime) {
@@ -985,7 +996,7 @@ void oledTask(void *pvParameters) {
                             g_nextBlinkTime = now;
                             if (s_isDoubleBlinkPending) {
                                 s_isDoubleBlinkPending = false;
-                            } else if ((esp_random() % 100) < 14) {
+                            } else if ((esp_random() % 100) < getPersonalityDoubleBlinkChance()) {
                                 s_isDoubleBlinkPending = true;
                             }
                         }
@@ -1011,7 +1022,8 @@ void oledTask(void *pvParameters) {
                             if (s_isDoubleBlinkPending) {
                                 g_nextBlinkTime = now + 120;
                             } else {
-                                uint32_t interval = (g_currentExpr == EXPR_ANGRY) ? (esp_random() % 4000 + 4000) : (esp_random() % 3500 + 3500);
+                                uint32_t interval = getPersonalityBlinkInterval();
+                                if (g_currentExpr == EXPR_ANGRY) interval = (uint32_t)(interval * 1.20f);
                                 g_nextBlinkTime = now + interval;
                             }
                         } else {
