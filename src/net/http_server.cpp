@@ -558,6 +558,33 @@ static esp_err_t trigger_clock_handler(httpd_req_t *req) {
     return httpd_resp_send(req, resp, strlen(resp));
 }
 
+static esp_err_t sync_time_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret > 0) {
+        buf[ret] = '\0';
+        char* p_epoch = strstr(buf, "epoch=");
+        char* p_tz = strstr(buf, "tz=");
+        if (p_epoch) {
+            time_t epoch = (time_t)strtoull(p_epoch + 6, NULL, 10);
+            if (epoch > 1700000000) {
+                struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+                settimeofday(&tv, NULL);
+            }
+        }
+        if (p_tz) {
+            int32_t tz_sec = (int32_t)strtol(p_tz + 3, NULL, 10);
+            saveTimezoneOffsetSec(tz_sec);
+            applyTimezoneConfig();
+        }
+    }
+    const char* resp = "{\"status\":\"ok\"}";
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
 static esp_err_t system_info_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
     char json[512];
@@ -618,6 +645,7 @@ void startWebServer(void) {
     httpd_uri_t weather_info_uri      = { .uri = "/weather_info",        .method = HTTP_GET,  .handler = weather_info_handler,     .user_ctx = NULL };
     httpd_uri_t trigger_weather_uri   = { .uri = "/trigger_weather",     .method = HTTP_POST, .handler = trigger_weather_handler,  .user_ctx = NULL };
     httpd_uri_t trigger_clock_uri     = { .uri = "/trigger_clock",       .method = HTTP_POST, .handler = trigger_clock_handler,    .user_ctx = NULL };
+    httpd_uri_t sync_time_uri         = { .uri = "/sync_time",           .method = HTTP_POST, .handler = sync_time_handler,        .user_ctx = NULL };
 
     if (httpd_start(&g_camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(g_camera_httpd, &index_uri);
@@ -642,6 +670,7 @@ void startWebServer(void) {
         httpd_register_uri_handler(g_camera_httpd, &weather_info_uri);
         httpd_register_uri_handler(g_camera_httpd, &trigger_weather_uri);
         httpd_register_uri_handler(g_camera_httpd, &trigger_clock_uri);
+        httpd_register_uri_handler(g_camera_httpd, &sync_time_uri);
     }
 
     config.server_port = HTTP_PORT_STREAM;

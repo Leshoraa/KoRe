@@ -1289,6 +1289,18 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     }
     window.addEventListener('resize', resizeCanvas);
 
+    /* Automatic Browser Time Synchronization (Supports AP mode & offline usage) */
+    function syncDeviceTime() {
+      const epoch = Math.floor(Date.now() / 1000);
+      const tzOffsetSec = -new Date().getTimezoneOffset() * 60;
+      fetch('/sync_time', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'epoch=' + epoch + '&tz=' + tzOffsetSec
+      }).catch(function() {});
+    }
+    syncDeviceTime();
+
     /* Segmented Tab Switching */
     const tabBtns = document.querySelectorAll('.tab-btn');
     const tabPanes = document.querySelectorAll('.tab-pane');
