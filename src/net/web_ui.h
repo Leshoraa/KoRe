@@ -335,7 +335,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
     /* Telemetry Metrics Grid - Strokeless Inner Cards */
     .metrics-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 8px;
     }
 
@@ -732,60 +732,96 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       text-align: left;
     }
 
+    .tab-label-short { display: none; }
+    .tab-label-full { display: inline; }
+
     /* Responsive Breakpoints */
     @media (max-width: 768px) {
       body {
-        padding: 10px 8px;
+        padding: 12px 10px 24px;
       }
       .app-wrapper {
         gap: 10px;
+        width: 100%;
+        max-width: 100%;
       }
+      .tab-label-full { display: none; }
+      .tab-label-short { display: inline; }
+
       .top-controls {
-        flex-direction: column;
-        align-items: stretch;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
         gap: 8px;
+        width: 100%;
       }
       .tab-segmented-control {
-        width: 100%;
+        flex: 1;
+        min-width: 0;
         display: flex;
-        justify-content: space-between;
         padding: 3px;
         gap: 2px;
       }
       .tab-btn {
         flex: 1;
         min-width: 0;
-        padding: 7px 6px 9px;
-        font-size: 11.5px;
-        gap: 5px;
+        padding: 7px 4px 9px;
+        font-size: 12px;
+        gap: 4px;
         justify-content: center;
       }
-      .tab-btn span {
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
       .mode-pill {
-        width: 100%;
-        text-align: center;
-        padding: 5px 10px;
+        flex-shrink: 0;
+        padding: 6px 10px;
         font-size: 11px;
+        font-weight: 700;
       }
       .bento-grid {
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 10px;
+        width: 100%;
+        align-items: stretch;
       }
       .bento-col {
         display: contents;
       }
+      .bento-card {
+        width: 100%;
+        padding: 14px;
+      }
       #card-camera { order: 1; }
-      #card-brightness { order: 2; }
+      #card-telemetry { order: 2; }
       #card-expression { order: 3; }
-      #card-telemetry { order: 4; }
+      #card-brightness { order: 4; }
       #card-imagetuning { order: 5; }
       #card-orientation { order: 6; }
 
+      .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+      }
+      .metric-box {
+        padding: 10px 8px;
+      }
+      .metric-number {
+        font-size: 16px;
+      }
+      .expr-grid {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 5px;
+      }
+      .btn-expr {
+        padding: 8px 2px;
+        font-size: 10px;
+      }
+      .btn-cam-param, .btn-cam-toggle {
+        flex: 1;
+        min-width: 0;
+        padding: 8px 2px;
+        font-size: 11px;
+      }
       .form-grid {
         grid-template-columns: 1fr;
         gap: 10px;
@@ -810,7 +846,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
             <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"></path>
             <circle cx="12" cy="13" r="3"></circle>
           </svg>
-          <span>Vision & Rig</span>
+          <span class="tab-label-full">Vision & Rig</span>
+          <span class="tab-label-short">Vision</span>
         </button>
         <button type="button" class="tab-btn" data-target="tab-network">
           <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -819,13 +856,15 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
             <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
             <line x1="12" y1="20" x2="12.01" y2="20"></line>
           </svg>
-          <span>Network</span>
+          <span class="tab-label-full">Network</span>
+          <span class="tab-label-short">Network</span>
         </button>
         <button type="button" class="tab-btn" data-target="tab-device">
           <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path>
           </svg>
-          <span>Weather & Location</span>
+          <span class="tab-label-full">Weather & Location</span>
+          <span class="tab-label-short">Weather</span>
         </button>
       </div>
       <div id="mode-badge" class="mode-pill">STA Online</div>
