@@ -5,6 +5,8 @@
 
 #include "src/net/ble_manager.h"
 #include "src/net/notification_client.h"
+#include "src/core/display_engine.h"
+#include "src/net/wifi_manager.h"
 #include "include/kore_config.h"
 #include <Arduino.h>
 #include <BLEDevice.h>
@@ -18,6 +20,7 @@ static BLECharacteristic *s_pTxCharacteristic = nullptr;
 static volatile bool s_device_connected = false;
 
 static bool extractJsonField(const String& json, const char* key, char* out, size_t max_len) {
+    // 1. Try quoted string: "key":"value"
     String pattern = String("\"") + key + "\":\"";
     int start = json.indexOf(pattern);
     if (start >= 0) {
@@ -30,6 +33,39 @@ static bool extractJsonField(const String& json, const char* key, char* out, siz
             return true;
         }
     }
+
+    // 2. Try unquoted literal or number: "key": 123 or "key":true
+    pattern = String("\"") + key + "\":";
+    start = json.indexOf(pattern);
+    if (start >= 0) {
+        start += pattern.length();
+        while (start < (int)json.length() && (json[start] == ' ' || json[start] == '\t')) {
+            start++;
+        }
+        if (start < (int)json.length() && json[start] == '\"') {
+            start++;
+            int end = json.indexOf("\"", start);
+            if (end > start) {
+                String val = json.substring(start, end);
+                strncpy(out, val.c_str(), max_len - 1);
+                out[max_len - 1] = '\0';
+                return true;
+            }
+        } else {
+            int end = start;
+            while (end < (int)json.length() && json[end] != ',' && json[end] != '}' && 
+                   json[end] != '\r' && json[end] != '\n' && json[end] != ' ' && json[end] != '\"') {
+                end++;
+            }
+            if (end > start) {
+                String val = json.substring(start, end);
+                val.trim();
+                strncpy(out, val.c_str(), max_len - 1);
+                out[max_len - 1] = '\0';
+                return true;
+            }
+        }
+    }
     return false;
 }
 
@@ -37,6 +73,70 @@ static void processIncomingBleData(const String& raw_input) {
     String input = raw_input;
     input.trim();
     if (input.length() == 0) return;
+
+    /* A. Check for Brightness adjustment command via JSON */
+    if (input.startsWith("{") && input.endsWith("}")) {
+        char cmd[32] = {0};
+        char bright_str[32] = {0};
+        char save_str[16] = {0};
+
+        extractJsonField(input, "cmd", cmd, sizeof(cmd));
+        if (cmd[0] == '\0') {
+            extractJsonField(input, "type", cmd, sizeof(cmd));
+        }
+
+        bool is_brightness_cmd = (strcmp(cmd, "set_brightness") == 0 || strcmp(cmd, "brightness") == 0);
+        bool has_brightness_field = extractJsonField(input, "brightness", bright_str, sizeof(bright_str));
+        if (!has_brightness_field) {
+            has_brightness_field = extractJsonField(input, "val", bright_str, sizeof(bright_str));
+        }
+        if (!has_brightness_field) {
+            has_brightness_field = extractJsonField(input, "value", bright_str, sizeof(bright_str));
+        }
+
+        if (is_brightness_cmd || (has_brightness_field && cmd[0] != '\0' && strcmp(cmd, "notification") != 0)) {
+            if (bright_str[0] != '\0') {
+                int b = atoi(bright_str);
+                b = constrain(b, 0, 255);
+                setOledBrightnessLive((uint8_t)b);
+
+                extractJsonField(input, "save", save_str, sizeof(save_str));
+                bool should_save = (save_str[0] == '\0') || (strcmp(save_str, "true") == 0) || (strcmp(save_str, "1") == 0);
+                if (should_save) {
+                    saveOledBrightness((uint8_t)b);
+                }
+
+                KORE_LOG_INF("BLE", "OLED brightness updated via BLE: %d (save=%d)", b, should_save ? 1 : 0);
+
+                if (s_pTxCharacteristic && s_device_connected) {
+                    char resp[64];
+                    snprintf(resp, sizeof(resp), "{\"status\":\"ok\",\"brightness\":%d}", b);
+                    s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                    s_pTxCharacteristic->notify();
+                }
+                return;
+            }
+        }
+    }
+
+    /* B. Check for Brightness adjustment command via Raw Text: BRIGHTNESS:180 */
+    if (input.startsWith("BRIGHTNESS:") || input.startsWith("brightness:") || input.startsWith("SET_BRIGHTNESS:")) {
+        int colon = input.indexOf(':');
+        int b = input.substring(colon + 1).toInt();
+        b = constrain(b, 0, 255);
+        setOledBrightnessLive((uint8_t)b);
+        saveOledBrightness((uint8_t)b);
+
+        KORE_LOG_INF("BLE", "OLED brightness set via BLE text command: %d", b);
+
+        if (s_pTxCharacteristic && s_device_connected) {
+            char resp[64];
+            snprintf(resp, sizeof(resp), "{\"status\":\"ok\",\"brightness\":%d}", b);
+            s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+            s_pTxCharacteristic->notify();
+        }
+        return;
+    }
 
     char app[16] = {0};
     char title[36] = {0};

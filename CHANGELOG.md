@@ -2,6 +2,14 @@
 
 All notable changes to the KoRe project are documented in this file.
 
+## [2.7.0] - 2026-08-26
+
+### Added
+- Native BLE OLED Display Brightness Control protocol via Nordic UART Service (NUS).
+- Real-time live brightness slider and preset selection in native KoRe Android application (`com.leshoraa.kore`), bypassing the web dashboard.
+- Immediate hardware brightness adjustment (`setOledBrightnessLive`) with persistent NVS flash storage (`saveOledBrightness`).
+- Auto-sync saved brightness setting when Android device connects over BLE.
+
 ## [2.6.0] - 2026-08-25
 
 ### Added
