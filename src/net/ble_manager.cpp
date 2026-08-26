@@ -117,6 +117,77 @@ static void processIncomingBleData(const String& raw_input) {
                 return;
             }
         }
+
+        /* B. Parse Navigation command payload: {"cmd":"nav", "active":true, "icon":"turn_right", "dist":"200 m", "inst":"Turn right", "street":"Main St"} */
+        if (strcmp(cmd, "nav") == 0 || strcmp(cmd, "navigation") == 0) {
+            char active_str[16] = {0};
+            extractJsonField(input, "active", active_str, sizeof(active_str));
+            bool is_active = (active_str[0] == '\0') || (strcmp(active_str, "true") == 0) || (strcmp(active_str, "1") == 0);
+
+            if (!is_active) {
+                KORE_LOG_INF("BLE", "Navigation deactivated via BLE");
+                dismissNavigationDisplay();
+                return;
+            }
+
+            char icon_str[32] = {0};
+            char dist_str[16] = {0};
+            char inst_str[32] = {0};
+            char street_str[48] = {0};
+            char eta_str[16] = {0};
+            char dur_str[16] = {0};
+            char tot_dist_str[16] = {0};
+
+            extractJsonField(input, "icon", icon_str, sizeof(icon_str));
+            extractJsonField(input, "dist", dist_str, sizeof(dist_str));
+            if (dist_str[0] == '\0') extractJsonField(input, "distance", dist_str, sizeof(dist_str));
+            extractJsonField(input, "inst", inst_str, sizeof(inst_str));
+            if (inst_str[0] == '\0') extractJsonField(input, "instruction", inst_str, sizeof(inst_str));
+            extractJsonField(input, "street", street_str, sizeof(street_str));
+            extractJsonField(input, "eta", eta_str, sizeof(eta_str));
+            extractJsonField(input, "dur", dur_str, sizeof(dur_str));
+            if (dur_str[0] == '\0') extractJsonField(input, "duration", dur_str, sizeof(dur_str));
+            extractJsonField(input, "tot_dist", tot_dist_str, sizeof(tot_dist_str));
+            if (tot_dist_str[0] == '\0') extractJsonField(input, "total_dist", tot_dist_str, sizeof(tot_dist_str));
+
+            NavIconType icon_type = NAV_ICON_STRAIGHT;
+            if (strcmp(icon_str, "turn_right") == 0 || strcmp(icon_str, "right") == 0) {
+                icon_type = NAV_ICON_TURN_RIGHT;
+            } else if (strcmp(icon_str, "turn_left") == 0 || strcmp(icon_str, "left") == 0) {
+                icon_type = NAV_ICON_TURN_LEFT;
+            } else if (strcmp(icon_str, "slight_right") == 0) {
+                icon_type = NAV_ICON_SLIGHT_RIGHT;
+            } else if (strcmp(icon_str, "slight_left") == 0) {
+                icon_type = NAV_ICON_SLIGHT_LEFT;
+            } else if (strcmp(icon_str, "sharp_right") == 0) {
+                icon_type = NAV_ICON_SHARP_RIGHT;
+            } else if (strcmp(icon_str, "sharp_left") == 0) {
+                icon_type = NAV_ICON_SHARP_LEFT;
+            } else if (strcmp(icon_str, "uturn") == 0 || strcmp(icon_str, "u_turn") == 0) {
+                icon_type = NAV_ICON_UTURN;
+            } else if (strcmp(icon_str, "roundabout") == 0) {
+                icon_type = NAV_ICON_ROUNDABOUT;
+            } else if (strcmp(icon_str, "arrive") == 0 || strcmp(icon_str, "destination") == 0) {
+                icon_type = NAV_ICON_ARRIVE;
+            }
+
+            NavigationInfo nav;
+            memset(&nav, 0, sizeof(nav));
+            nav.icon = icon_type;
+            strncpy(nav.distance, dist_str, sizeof(nav.distance) - 1);
+            strncpy(nav.instruction, inst_str, sizeof(nav.instruction) - 1);
+            strncpy(nav.street, street_str, sizeof(nav.street) - 1);
+            strncpy(nav.eta, eta_str, sizeof(nav.eta) - 1);
+            strncpy(nav.duration, dur_str, sizeof(nav.duration) - 1);
+            strncpy(nav.total_dist, tot_dist_str, sizeof(nav.total_dist) - 1);
+            nav.active = true;
+            nav.valid = true;
+            nav.updated_ms = millis();
+
+            KORE_LOG_INF("BLE", "Navigation HUD updated: [%s] dist=%s inst=%s eta=%s dur=%s tot=%s", icon_str, nav.distance, nav.instruction, nav.eta, nav.duration, nav.total_dist);
+            triggerNavigationDisplay(nav, 8000);
+            return;
+        }
     }
 
     /* B. Check for Brightness adjustment command via Raw Text: BRIGHTNESS:180 */

@@ -2,6 +2,15 @@
 
 All notable changes to the KoRe project are documented in this file.
 
+## [2.8.0] - 2026-08-26
+
+### Added
+- Real-Time Google Maps Turn-by-Turn Navigation HUD mode (`AMBIENT_NAVIGATION`) on 128x64 OLED display.
+- Specialized vector rendering for turn arrow icons (Turn Right, Turn Left, Slight Right/Left, Sharp Right/Left, U-Turn, Roundabout, Arrive, Straight).
+- Real-time BLE navigation protocol (`{"cmd":"nav", "active":true/false, "icon":"...", "dist":"...", "inst":"...", "street":"..."}`).
+- Native Android `MapsNavigationParser` detecting ongoing turn maneuvers from Google Maps (`com.google.android.apps.maps`) in Indonesian and English.
+- Automatic dynamic mode switching: transitions to Navigation HUD when a turn maneuver arrives, and smoothly returns to the animated robot facial rig when the turn is passed, route ends, or navigation is dismissed.
+
 ## [2.7.0] - 2026-08-26
 
 ### Added

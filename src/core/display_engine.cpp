@@ -800,6 +800,217 @@ void renderNotificationToCanvas(const NotificationInfo& notif, float animFrame, 
 
 }
 
+static void drawNavIcon(NavIconType icon, int cx, int cy, int size) {
+    (void)size;
+    switch (icon) {
+        case NAV_ICON_TURN_RIGHT: {
+            // Thick L-curve going right
+            canvas.drawFastVLine(cx - 6, cy - 2, 14, TFT_WHITE);
+            canvas.drawFastVLine(cx - 5, cy - 2, 14, TFT_WHITE);
+            canvas.drawFastVLine(cx - 4, cy - 2, 14, TFT_WHITE);
+            canvas.drawFastHLine(cx - 4, cy - 2, 10, TFT_WHITE);
+            canvas.drawFastHLine(cx - 4, cy - 1, 10, TFT_WHITE);
+            canvas.drawFastHLine(cx - 4, cy, 10, TFT_WHITE);
+            // Arrowhead pointing right
+            canvas.fillTriangle(cx + 12, cy - 1, cx + 5, cy - 8, cx + 5, cy + 6, TFT_WHITE);
+            break;
+        }
+        case NAV_ICON_TURN_LEFT: {
+            // Thick L-curve going left
+            canvas.drawFastVLine(cx + 6, cy - 2, 14, TFT_WHITE);
+            canvas.drawFastVLine(cx + 5, cy - 2, 14, TFT_WHITE);
+            canvas.drawFastVLine(cx + 4, cy - 2, 14, TFT_WHITE);
+            canvas.drawFastHLine(cx - 6, cy - 2, 10, TFT_WHITE);
+            canvas.drawFastHLine(cx - 6, cy - 1, 10, TFT_WHITE);
+            canvas.drawFastHLine(cx - 6, cy, 10, TFT_WHITE);
+            // Arrowhead pointing left
+            canvas.fillTriangle(cx - 12, cy - 1, cx - 5, cy - 8, cx - 5, cy + 6, TFT_WHITE);
+            break;
+        }
+        case NAV_ICON_SLIGHT_RIGHT: {
+            // Diagonal line up-right
+            canvas.drawLine(cx - 5, cy + 10, cx + 5, cy - 2, TFT_WHITE);
+            canvas.drawLine(cx - 4, cy + 10, cx + 6, cy - 2, TFT_WHITE);
+            canvas.drawLine(cx - 6, cy + 10, cx + 4, cy - 2, TFT_WHITE);
+            canvas.fillTriangle(cx + 11, cy - 8, cx + 1, cy - 8, cx + 8, cy + 2, TFT_WHITE);
+            break;
+        }
+        case NAV_ICON_SLIGHT_LEFT: {
+            // Diagonal line up-left
+            canvas.drawLine(cx + 5, cy + 10, cx - 5, cy - 2, TFT_WHITE);
+            canvas.drawLine(cx + 4, cy + 10, cx - 6, cy - 2, TFT_WHITE);
+            canvas.drawLine(cx + 6, cy + 10, cx - 4, cy - 2, TFT_WHITE);
+            canvas.fillTriangle(cx - 11, cy - 8, cx - 1, cy - 8, cx - 8, cy + 2, TFT_WHITE);
+            break;
+        }
+        case NAV_ICON_SHARP_RIGHT: {
+            canvas.drawFastVLine(cx - 4, cy, 12, TFT_WHITE);
+            canvas.drawFastVLine(cx - 3, cy, 12, TFT_WHITE);
+            canvas.drawLine(cx - 3, cy, cx + 8, cy - 6, TFT_WHITE);
+            canvas.drawLine(cx - 3, cy + 1, cx + 8, cy - 5, TFT_WHITE);
+            canvas.fillTriangle(cx + 13, cy - 8, cx + 6, cy - 12, cx + 6, cy - 1, TFT_WHITE);
+            break;
+        }
+        case NAV_ICON_SHARP_LEFT: {
+            canvas.drawFastVLine(cx + 4, cy, 12, TFT_WHITE);
+            canvas.drawFastVLine(cx + 3, cy, 12, TFT_WHITE);
+            canvas.drawLine(cx + 3, cy, cx - 8, cy - 6, TFT_WHITE);
+            canvas.drawLine(cx + 3, cy + 1, cx - 8, cy - 5, TFT_WHITE);
+            canvas.fillTriangle(cx - 13, cy - 8, cx - 6, cy - 12, cx - 6, cy - 1, TFT_WHITE);
+            break;
+        }
+        case NAV_ICON_UTURN: {
+            canvas.drawFastVLine(cx + 6, cy - 2, 14, TFT_WHITE);
+            canvas.drawFastVLine(cx + 5, cy - 2, 14, TFT_WHITE);
+            canvas.drawCircle(cx, cy - 2, 6, TFT_WHITE);
+            canvas.drawCircle(cx, cy - 2, 5, TFT_WHITE);
+            canvas.drawFastVLine(cx - 6, cy - 2, 10, TFT_WHITE);
+            canvas.drawFastVLine(cx - 5, cy - 2, 10, TFT_WHITE);
+            canvas.fillTriangle(cx - 5, cy + 12, cx - 10, cy + 6, cx, cy + 6, TFT_WHITE);
+            break;
+        }
+        case NAV_ICON_ROUNDABOUT: {
+            canvas.drawCircle(cx, cy, 7, TFT_WHITE);
+            canvas.drawCircle(cx, cy, 8, TFT_WHITE);
+            canvas.drawFastHLine(cx + 6, cy - 3, 6, TFT_WHITE);
+            canvas.fillTriangle(cx + 14, cy - 3, cx + 8, cy - 8, cx + 8, cy + 2, TFT_WHITE);
+            break;
+        }
+        case NAV_ICON_ARRIVE: {
+            canvas.fillCircle(cx, cy - 4, 6, TFT_WHITE);
+            canvas.fillCircle(cx, cy - 4, 3, TFT_BLACK);
+            canvas.fillTriangle(cx, cy + 8, cx - 5, cy - 2, cx + 5, cy - 2, TFT_WHITE);
+            break;
+        }
+        case NAV_ICON_STRAIGHT:
+        default: {
+            canvas.drawFastVLine(cx, cy - 2, 14, TFT_WHITE);
+            canvas.drawFastVLine(cx - 1, cy - 2, 14, TFT_WHITE);
+            canvas.drawFastVLine(cx + 1, cy - 2, 14, TFT_WHITE);
+            canvas.fillTriangle(cx, cy - 12, cx - 7, cy - 3, cx + 7, cy - 3, TFT_WHITE);
+            break;
+        }
+    }
+}
+
+void renderNavigationToCanvas(const NavigationInfo& nav, float animFrame, int offsetY) {
+    (void)animFrame;
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+
+    /* 1. Header: NAV status badge and estimated arrival time */
+    int ix = 4;
+    int iy = 2 + offsetY;
+    canvas.fillRect(ix, iy, 24, 9, TFT_WHITE);
+    canvas.setTextColor(TFT_BLACK, TFT_WHITE);
+    canvas.setTextSize(1);
+    canvas.setCursor(ix + 3, iy + 1);
+    canvas.print("NAV");
+
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    if (nav.eta[0] != '\0') {
+        canvas.setCursor(34, iy + 1);
+        canvas.printf("ETA: %s", nav.eta);
+    } else if (nav.street[0] != '\0' && nav.distance[0] == '\0') {
+        canvas.setCursor(34, iy + 1);
+        char street_hdr[16];
+        strncpy(street_hdr, nav.street, sizeof(street_hdr) - 1);
+        street_hdr[sizeof(street_hdr) - 1] = '\0';
+        canvas.print(street_hdr);
+    } else {
+        canvas.setCursor(34, iy + 1);
+        canvas.print("Live Route");
+    }
+
+    // Divider line
+    canvas.drawFastHLine(4, 13 + offsetY, OLED_PANEL_WIDTH_PX - 8, TFT_WHITE);
+
+    /* 2. Left viewport: Directional maneuver vector icon */
+    drawNavIcon(nav.icon, 18, 38 + offsetY, 28);
+
+    /* 3. Right viewport: Step distance, maneuver instruction, and route metrics */
+    if (nav.distance[0] != '\0') {
+        // Step distance in large typography
+        canvas.setTextSize(2);
+        canvas.setCursor(40, 16 + offsetY);
+        canvas.print(nav.distance);
+
+        // Maneuver instruction line
+        canvas.setTextSize(1);
+        if (nav.instruction[0] != '\0') {
+            canvas.setCursor(40, 34 + offsetY);
+            char inst_buf[18];
+            strncpy(inst_buf, nav.instruction, sizeof(inst_buf) - 1);
+            inst_buf[sizeof(inst_buf) - 1] = '\0';
+            canvas.print(inst_buf);
+        }
+
+        // Trip summary line (duration and remaining route distance)
+        canvas.setCursor(40, 48 + offsetY);
+        if (nav.duration[0] != '\0' && nav.total_dist[0] != '\0') {
+            char summary_buf[20];
+            snprintf(summary_buf, sizeof(summary_buf), "%s - %s", nav.duration, nav.total_dist);
+            canvas.print(summary_buf);
+        } else if (nav.duration[0] != '\0') {
+            char dur_buf[20];
+            if (nav.eta[0] != '\0') {
+                snprintf(dur_buf, sizeof(dur_buf), "%s (%s)", nav.duration, nav.eta);
+            } else {
+                snprintf(dur_buf, sizeof(dur_buf), "%s", nav.duration);
+            }
+            canvas.print(dur_buf);
+        } else if (nav.total_dist[0] != '\0') {
+            char tot_buf[20];
+            snprintf(tot_buf, sizeof(tot_buf), "Rem: %s", nav.total_dist);
+            canvas.print(tot_buf);
+        } else if (nav.street[0] != '\0') {
+            char street_buf[20];
+            strncpy(street_buf, nav.street, sizeof(street_buf) - 1);
+            street_buf[sizeof(street_buf) - 1] = '\0';
+            canvas.print(street_buf);
+        }
+    } else {
+        canvas.setTextSize(1);
+        if (nav.instruction[0] != '\0') {
+            canvas.setCursor(40, 18 + offsetY);
+            char inst_buf[20];
+            strncpy(inst_buf, nav.instruction, sizeof(inst_buf) - 1);
+            inst_buf[sizeof(inst_buf) - 1] = '\0';
+            canvas.print(inst_buf);
+        }
+
+        // Duration and remaining route distance
+        canvas.setCursor(40, 32 + offsetY);
+        if (nav.duration[0] != '\0' && nav.total_dist[0] != '\0') {
+            char summary_buf[20];
+            snprintf(summary_buf, sizeof(summary_buf), "%s - %s", nav.duration, nav.total_dist);
+            canvas.print(summary_buf);
+        } else if (nav.duration[0] != '\0') {
+            char dur_buf[20];
+            snprintf(dur_buf, sizeof(dur_buf), "%s", nav.duration);
+            canvas.print(dur_buf);
+        } else if (nav.total_dist[0] != '\0') {
+            char tot_buf[20];
+            snprintf(tot_buf, sizeof(tot_buf), "Rem: %s", nav.total_dist);
+            canvas.print(tot_buf);
+        }
+
+        // Target street / destination
+        if (nav.street[0] != '\0') {
+            canvas.setCursor(40, 48 + offsetY);
+            char street_buf[20];
+            strncpy(street_buf, nav.street, sizeof(street_buf) - 1);
+            street_buf[sizeof(street_buf) - 1] = '\0';
+            canvas.print(street_buf);
+        }
+    }
+}
+
+void drawNavigationScreen(const NavigationInfo& nav, float animFrame) {
+    canvas.fillScreen(TFT_BLACK);
+    renderNavigationToCanvas(nav, animFrame, s_burn_shift_y);
+    canvas.pushSprite(0, 0);
+}
+
 void drawNotificationScreen(const NotificationInfo& notif, float animFrame) {
     canvas.fillScreen(TFT_BLACK);
     renderNotificationToCanvas(notif, animFrame, s_burn_shift_y);
@@ -839,6 +1050,13 @@ void transitionToAmbient(AmbientScreenMode toMode, float durationMs) {
         portEXIT_CRITICAL(&g_notification_mutex);
     }
 
+    NavigationInfo local_nav;
+    if (toMode == AMBIENT_NAVIGATION) {
+        portENTER_CRITICAL(&g_nav_mutex);
+        local_nav = g_nav_info;
+        portEXIT_CRITICAL(&g_nav_mutex);
+    }
+
     for (int i = 0; i <= steps; i++) {
         float t = (float)i / (float)steps;
 
@@ -865,6 +1083,8 @@ void transitionToAmbient(AmbientScreenMode toMode, float durationMs) {
                 renderWeatherToCanvas(local_weather, g_animFrame, offsetY);
             } else if (toMode == AMBIENT_NOTIFICATION) {
                 renderNotificationToCanvas(local_notif, g_animFrame, offsetY);
+            } else if (toMode == AMBIENT_NAVIGATION) {
+                renderNavigationToCanvas(local_nav, g_animFrame, offsetY);
             }
             canvas.pushSprite(0, 0);
         }
@@ -895,6 +1115,13 @@ void transitionFromAmbientToFace(AmbientScreenMode fromMode, Expression toExpr, 
         portEXIT_CRITICAL(&g_notification_mutex);
     }
 
+    NavigationInfo local_nav;
+    if (fromMode == AMBIENT_NAVIGATION) {
+        portENTER_CRITICAL(&g_nav_mutex);
+        local_nav = g_nav_info;
+        portEXIT_CRITICAL(&g_nav_mutex);
+    }
+
     for (int i = 0; i <= steps; i++) {
         float t = (float)i / (float)steps;
 
@@ -910,6 +1137,8 @@ void transitionFromAmbientToFace(AmbientScreenMode fromMode, Expression toExpr, 
                 renderWeatherToCanvas(local_weather, g_animFrame, offsetY);
             } else if (fromMode == AMBIENT_NOTIFICATION) {
                 renderNotificationToCanvas(local_notif, g_animFrame, offsetY);
+            } else if (fromMode == AMBIENT_NAVIGATION) {
+                renderNavigationToCanvas(local_nav, g_animFrame, offsetY);
             }
             canvas.pushSprite(0, 0);
         } else {
@@ -947,6 +1176,25 @@ void triggerWeatherDisplay(uint32_t duration_ms) {
 void triggerNotificationDisplay(const NotificationInfo& notif, uint32_t duration_ms) {
     (void)notif;
     triggerAmbientDisplay(AMBIENT_NOTIFICATION, duration_ms);
+}
+
+void triggerNavigationDisplay(const NavigationInfo& nav, uint32_t duration_ms) {
+    portENTER_CRITICAL(&g_nav_mutex);
+    g_nav_info = nav;
+    g_nav_info.active = true;
+    g_nav_info.valid = true;
+    g_nav_info.updated_ms = millis();
+    portEXIT_CRITICAL(&g_nav_mutex);
+    triggerAmbientDisplay(AMBIENT_NAVIGATION, duration_ms);
+}
+
+void dismissNavigationDisplay(void) {
+    portENTER_CRITICAL(&g_nav_mutex);
+    g_nav_info.active = false;
+    portEXIT_CRITICAL(&g_nav_mutex);
+    if (s_active_ambient_mode == AMBIENT_NAVIGATION) {
+        s_ambient_popup_until_ms = millis();
+    }
 }
 
 void oledTask(void *pvParameters) {
@@ -1088,6 +1336,16 @@ void oledTask(void *pvParameters) {
                 local_notif = g_notification_info;
                 portEXIT_CRITICAL(&g_notification_mutex);
                 drawNotificationScreen(local_notif, g_animFrame);
+            } else if (s_active_ambient_mode == AMBIENT_NAVIGATION) {
+                NavigationInfo local_nav;
+                portENTER_CRITICAL(&g_nav_mutex);
+                local_nav = g_nav_info;
+                portEXIT_CRITICAL(&g_nav_mutex);
+                if (!local_nav.active) {
+                    s_ambient_popup_until_ms = now;
+                } else {
+                    drawNavigationScreen(local_nav, g_animFrame);
+                }
             }
         } else {
             if (s_active_ambient_mode != AMBIENT_NONE) {

@@ -23,7 +23,21 @@ NotificationInfo g_notification_info = {
     .active = false
 };
 
+NavigationInfo g_nav_info = {
+    .icon = NAV_ICON_NONE,
+    .distance = "",
+    .instruction = "",
+    .street = "",
+    .eta = "",
+    .duration = "",
+    .total_dist = "",
+    .updated_ms = 0,
+    .active = false,
+    .valid = false
+};
+
 portMUX_TYPE g_notification_mutex = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE g_nav_mutex = portMUX_INITIALIZER_UNLOCKED;
 
 static char s_ntfy_topic[64] = "";
 static TaskHandle_t s_ntfy_task_handle = NULL;

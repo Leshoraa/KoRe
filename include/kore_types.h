@@ -129,6 +129,41 @@ typedef struct {
     bool active;
 } NotificationInfo;
 
+/**
+ * @enum NavIconType
+ * @brief Turn-by-turn navigation maneuver icon types for OLED visualization.
+ */
+typedef enum {
+    NAV_ICON_NONE = 0,
+    NAV_ICON_STRAIGHT,
+    NAV_ICON_TURN_RIGHT,
+    NAV_ICON_TURN_LEFT,
+    NAV_ICON_SLIGHT_RIGHT,
+    NAV_ICON_SLIGHT_LEFT,
+    NAV_ICON_SHARP_RIGHT,
+    NAV_ICON_SHARP_LEFT,
+    NAV_ICON_UTURN,
+    NAV_ICON_ROUNDABOUT,
+    NAV_ICON_ARRIVE
+} NavIconType;
+
+/**
+ * @struct NavigationInfo
+ * @brief Real-time turn-by-turn navigation payload synchronized via BLE.
+ */
+typedef struct {
+    NavIconType icon;     /**< Directional maneuver icon type */
+    char distance[16];    /**< Distance to next turn/step, e.g. "200 m", "1.5 km" */
+    char instruction[32]; /**< Maneuver instruction text, e.g. "Turn right", "Head north" */
+    char street[48];      /**< Target roadway or destination, e.g. "Grand Ave" */
+    char eta[16];         /**< Estimated time of arrival, e.g. "14:49" */
+    char duration[16];    /**< Estimated remaining duration, e.g. "15 min" */
+    char total_dist[16];  /**< Total remaining route distance, e.g. "2.9 km" */
+    uint32_t updated_ms;  /**< Timestamp of last update in milliseconds */
+    bool active;          /**< Active route status flag */
+    bool valid;           /**< Data validity flag */
+} NavigationInfo;
+
 #define MAX_OBJECT_CANDIDATES 3
 
 /* Cross-Core Synchronization Handles */
@@ -136,6 +171,7 @@ extern portMUX_TYPE g_target_mutex;
 extern portMUX_TYPE g_stream_mutex;
 extern portMUX_TYPE g_weather_mutex;
 extern portMUX_TYPE g_notification_mutex;
+extern portMUX_TYPE g_nav_mutex;
 extern SemaphoreHandle_t g_frame_sem;
 
 /* Global Cross-Core State Variables */
@@ -154,6 +190,7 @@ extern volatile bool g_camera_init_ok;
 extern volatile uint8_t g_oled_brightness;
 extern WeatherInfo g_weather_info;
 extern NotificationInfo g_notification_info;
+extern NavigationInfo g_nav_info;
 
 
 #ifdef __cplusplus

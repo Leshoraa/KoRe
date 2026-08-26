@@ -49,7 +49,8 @@ enum AmbientScreenMode {
     AMBIENT_NONE = 0,
     AMBIENT_CLOCK,
     AMBIENT_WEATHER,
-    AMBIENT_NOTIFICATION
+    AMBIENT_NOTIFICATION,
+    AMBIENT_NAVIGATION
 };
 
 void showBootStatus(const char* line1, const char* line2 = nullptr);
@@ -57,10 +58,14 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
 void drawClockScreen(float animFrame);
 void drawWeatherScreen(const WeatherInfo& weather, float animFrame);
 void drawNotificationScreen(const NotificationInfo& notif, float animFrame);
+void drawNavigationScreen(const NavigationInfo& nav, float animFrame);
+void renderNavigationToCanvas(const NavigationInfo& nav, float animFrame, int offsetY = 0);
 void triggerAmbientDisplay(AmbientScreenMode mode, uint32_t duration_ms = WEATHER_POPUP_DURATION_MS);
 void triggerWeatherDisplay(uint32_t duration_ms = WEATHER_POPUP_DURATION_MS);
 void triggerClockDisplay(uint32_t duration_ms = WEATHER_POPUP_DURATION_MS);
 void triggerNotificationDisplay(const NotificationInfo& notif, uint32_t duration_ms = NOTIFICATION_POPUP_DURATION_MS);
+void triggerNavigationDisplay(const NavigationInfo& nav, uint32_t duration_ms = 15000);
+void dismissNavigationDisplay(void);
 void transitionToAmbient(AmbientScreenMode toMode, float durationMs = 160.0f);
 void transitionFromAmbientToFace(AmbientScreenMode fromMode, Expression toExpr, float durationMs = 140.0f);
 void setOledBrightnessLive(uint8_t brightness);
