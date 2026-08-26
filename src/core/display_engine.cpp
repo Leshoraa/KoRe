@@ -606,7 +606,7 @@ void renderClockToCanvas(float animFrame, int offsetY = 0) {
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
 
     if (time_synced) {
-        static const char* days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+        static const char* days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
         static const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
         
         const char* day_str = days[timeinfo.tm_wday % 7];

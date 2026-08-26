@@ -19,7 +19,10 @@ const char* getWiFiStaSSID(void);
 const char* getWiFiStaPass(void);
 const char* getWiFiApSSID(void);
 const char* getWiFiApPass(void);
+const char* getBleDeviceName(void);
 void saveWiFiCredentials(const char* sta_s, const char* sta_p, const char* ap_s, const char* ap_p);
+void saveBleConfig(const char* name);
+void saveAllDeviceConfig(const char* sta_s, const char* sta_p, const char* ap_s, const char* ap_p, const char* ble_name);
 void switchWiFiMode(const char* target_mode);
 void scheduleSystemRestart(uint32_t delay_ms);
 

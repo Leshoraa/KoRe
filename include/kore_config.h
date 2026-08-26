@@ -50,7 +50,7 @@ extern "C" {
 #define NTFY_POLL_INTERVAL_MS         2500     /* 2.5 seconds periodic stream/poll interval */
 
 /* Bluetooth Low Energy (BLE) Companion Notifications */
-#define BLE_DEVICE_NAME               "KoRe-Sense"
+#define BLE_DEVICE_NAME_DEFAULT       "KoRe-Sense"
 #define BLE_NUS_SERVICE_UUID          "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define BLE_NUS_CHAR_RX_UUID          "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define BLE_NUS_CHAR_TX_UUID          "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"

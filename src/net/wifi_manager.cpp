@@ -19,10 +19,13 @@ static const char* s_ap_password_default = "12345678";
 static const char* s_sta_ssid_default     = "";
 static const char* s_sta_password_default = "";
 
+static const char* s_ble_name_default     = BLE_DEVICE_NAME_DEFAULT;
+
 static char s_sta_ssid[64] = {0};
 static char s_sta_password[64] = {0};
 static char s_ap_ssid[64] = {0};
 static char s_ap_password[64] = {0};
+static char s_ble_name[64] = {0};
 
 static char s_weather_city[32] = WEATHER_DEFAULT_CITY;
 static float s_weather_lat = WEATHER_DEFAULT_LAT;
@@ -116,6 +119,11 @@ const char* getWiFiApPass(void) {
     return s_ap_password;
 }
 
+const char* getBleDeviceName(void) {
+    if (strlen(s_ble_name) > 0) return s_ble_name;
+    return s_ble_name_default;
+}
+
 static void restartTask(void *pvParameters) {
     uint32_t delay_ms = (uint32_t)(uintptr_t)pvParameters;
     if (delay_ms == 0) delay_ms = 1500;
@@ -127,7 +135,18 @@ void scheduleSystemRestart(uint32_t delay_ms) {
     xTaskCreate(restartTask, "restart_task", 3072, (void*)(uintptr_t)delay_ms, 1, NULL);
 }
 
-void saveWiFiCredentials(const char* sta_s, const char* sta_p, const char* ap_s, const char* ap_p) {
+void saveBleConfig(const char* name) {
+    Preferences prefs;
+    prefs.begin("kore_cfg", false);
+    if (name && strlen(name) > 0) {
+        prefs.putString("ble_name", name);
+        strncpy(s_ble_name, name, sizeof(s_ble_name) - 1);
+    }
+    prefs.end();
+    scheduleSystemRestart(1500);
+}
+
+void saveAllDeviceConfig(const char* sta_s, const char* sta_p, const char* ap_s, const char* ap_p, const char* ble_name) {
     Preferences prefs;
     prefs.begin("kore_cfg", false);
     if (sta_s && strlen(sta_s) > 0) {
@@ -149,8 +168,16 @@ void saveWiFiCredentials(const char* sta_s, const char* sta_p, const char* ap_s,
         prefs.putString("ap_pass", ap_p);
         strncpy(s_ap_password, ap_p, sizeof(s_ap_password) - 1);
     }
+    if (ble_name && strlen(ble_name) > 0) {
+        prefs.putString("ble_name", ble_name);
+        strncpy(s_ble_name, ble_name, sizeof(s_ble_name) - 1);
+    }
     prefs.end();
     scheduleSystemRestart(1500);
+}
+
+void saveWiFiCredentials(const char* sta_s, const char* sta_p, const char* ap_s, const char* ap_p) {
+    saveAllDeviceConfig(sta_s, sta_p, ap_s, ap_p, NULL);
 }
 
 void switchWiFiMode(const char* target_mode) {
@@ -173,6 +200,7 @@ bool initWiFiAndNetwork(void) {
     String stored_sta_pass  = prefs.getString("sta_pass", prefs.getString("pass", ""));
     String stored_ap_ssid   = prefs.getString("ap_ssid", "");
     String stored_ap_pass   = prefs.getString("ap_pass", "");
+    String stored_ble_name  = prefs.getString("ble_name", BLE_DEVICE_NAME_DEFAULT);
 
     if (stored_sta_ssid.length() > 0) {
         strncpy(s_sta_ssid, stored_sta_ssid.c_str(), sizeof(s_sta_ssid) - 1);
@@ -188,6 +216,12 @@ bool initWiFiAndNetwork(void) {
     } else {
         strncpy(s_ap_ssid, s_ap_ssid_default, sizeof(s_ap_ssid) - 1);
         strncpy(s_ap_password, s_ap_password_default, sizeof(s_ap_password) - 1);
+    }
+
+    if (stored_ble_name.length() > 0) {
+        strncpy(s_ble_name, stored_ble_name.c_str(), sizeof(s_ble_name) - 1);
+    } else {
+        strncpy(s_ble_name, s_ble_name_default, sizeof(s_ble_name) - 1);
     }
 
     s_oled_brightness = prefs.getUChar("oled_bright", OLED_DEFAULT_BRIGHTNESS);

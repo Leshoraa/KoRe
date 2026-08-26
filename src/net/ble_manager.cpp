@@ -7,8 +7,11 @@
 #include "src/net/notification_client.h"
 #include "src/core/display_engine.h"
 #include "src/net/wifi_manager.h"
+#include "include/kore_affective.h"
 #include "include/kore_config.h"
+
 #include <Arduino.h>
+#include <WiFi.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -188,6 +191,129 @@ static void processIncomingBleData(const String& raw_input) {
             triggerNavigationDisplay(nav, 8000);
             return;
         }
+
+        /* C. Parse Expression command payload: {"cmd":"set_expression", "expr":0} or {"cmd":"set_expression", "expr":"auto"} */
+        if (strcmp(cmd, "set_expression") == 0 || strcmp(cmd, "expression") == 0 || strcmp(cmd, "set_expr") == 0) {
+            char expr_str[16] = {0};
+            bool has_expr = extractJsonField(input, "expr", expr_str, sizeof(expr_str));
+            if (!has_expr) {
+                has_expr = extractJsonField(input, "expression", expr_str, sizeof(expr_str));
+            }
+            if (!has_expr) {
+                has_expr = extractJsonField(input, "val", expr_str, sizeof(expr_str));
+            }
+
+            if (has_expr && expr_str[0] != '\0') {
+                if (strcmp(expr_str, "auto") == 0 || strcmp(expr_str, "-1") == 0) {
+                    setManualExpression(-1);
+                    KORE_LOG_INF("BLE", "Expression reset to autonomous Auto Mood via BLE");
+                } else {
+                    int code = atoi(expr_str);
+                    if (code >= 0 && code <= 7) {
+                        setManualExpression(code);
+                        KORE_LOG_INF("BLE", "Expression set to %d (%s) via BLE", code, getExpressionName((Expression)code));
+                    }
+                }
+
+                if (s_pTxCharacteristic && s_device_connected) {
+                    char resp[64];
+                    snprintf(resp, sizeof(resp), "{\"status\":\"ok\",\"expr\":\"%s\"}", expr_str);
+                    s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                    s_pTxCharacteristic->notify();
+                }
+                return;
+            }
+        }
+
+        /* D. Query IP and WiFi status: {"cmd":"get_ip"} or {"cmd":"status"} */
+        if (strcmp(cmd, "get_ip") == 0 || strcmp(cmd, "status") == 0 || strcmp(cmd, "info") == 0) {
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[128];
+                String current_ip = isWiFiAPMode() ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+                snprintf(resp, sizeof(resp), "{\"status\":\"ok\",\"ip\":\"%s\",\"mode\":\"%s\"}", current_ip.c_str(), isWiFiAPMode() ? "AP" : "STA");
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+                KORE_LOG_INF("BLE", "Reported Wi-Fi IP %s via BLE", current_ip.c_str());
+            }
+            return;
+        }
+
+        /* E. Query full device configuration */
+        if (strcmp(cmd, "get_config") == 0 || strcmp(cmd, "get_network") == 0 || strcmp(cmd, "get_device_config") == 0) {
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[300];
+                String current_ip = isWiFiAPMode() ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+                snprintf(resp, sizeof(resp),
+                    "{\"status\":\"ok\",\"sta_ssid\":\"%s\",\"sta_pass\":\"%s\",\"ap_ssid\":\"%s\",\"ap_pass\":\"%s\",\"ble_name\":\"%s\",\"ip\":\"%s\",\"is_ap\":%s}",
+                    getWiFiStaSSID(), getWiFiStaPass(), getWiFiApSSID(), getWiFiApPass(), getBleDeviceName(),
+                    current_ip.c_str(), isWiFiAPMode() ? "true" : "false");
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+                KORE_LOG_INF("BLE", "Reported full device config via BLE");
+            }
+            return;
+        }
+
+        /* F. Save all device configurations: Wi-Fi STA, AP Hotspot, and Bluetooth Name */
+        if (strcmp(cmd, "save_device_config") == 0 || strcmp(cmd, "save_config") == 0) {
+            char sta_s[64] = {0};
+            char sta_p[64] = {0};
+            char ap_s[64] = {0};
+            char ap_p[64] = {0};
+            char ble_n[64] = {0};
+
+            extractJsonField(input, "sta_ssid", sta_s, sizeof(sta_s));
+            extractJsonField(input, "sta_pass", sta_p, sizeof(sta_p));
+            extractJsonField(input, "ap_ssid", ap_s, sizeof(ap_s));
+            extractJsonField(input, "ap_pass", ap_p, sizeof(ap_p));
+            extractJsonField(input, "ble_name", ble_n, sizeof(ble_n));
+
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[128] = "{\"status\":\"ok\",\"message\":\"Config saved. ESP rebooting...\"}";
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+            }
+
+            saveAllDeviceConfig(sta_s, sta_p, ap_s, ap_p, ble_n);
+            return;
+        }
+
+        /* G. Save WiFi only */
+        if (strcmp(cmd, "save_wifi") == 0) {
+            char sta_s[64] = {0};
+            char sta_p[64] = {0};
+            char ap_s[64] = {0};
+            char ap_p[64] = {0};
+            extractJsonField(input, "sta_ssid", sta_s, sizeof(sta_s));
+            extractJsonField(input, "sta_pass", sta_p, sizeof(sta_p));
+            extractJsonField(input, "ap_ssid", ap_s, sizeof(ap_s));
+            extractJsonField(input, "ap_pass", ap_p, sizeof(ap_p));
+
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[128] = "{\"status\":\"ok\",\"message\":\"WiFi saved. ESP rebooting...\"}";
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+            }
+
+            saveWiFiCredentials(sta_s, sta_p, ap_s, ap_p);
+            return;
+        }
+
+        /* H. Save BLE only */
+        if (strcmp(cmd, "save_ble") == 0) {
+            char ble_n[64] = {0};
+            extractJsonField(input, "ble_name", ble_n, sizeof(ble_n));
+            if (ble_n[0] == '\0') extractJsonField(input, "name", ble_n, sizeof(ble_n));
+
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[128] = "{\"status\":\"ok\",\"message\":\"BLE saved. ESP rebooting...\"}";
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+            }
+
+            saveBleConfig(ble_n);
+            return;
+        }
     }
 
     /* B. Check for Brightness adjustment command via Raw Text: BRIGHTNESS:180 */
@@ -208,6 +334,32 @@ static void processIncomingBleData(const String& raw_input) {
         }
         return;
     }
+
+    /* C. Check for Expression adjustment command via Raw Text: EXPR:0 or EXPR:auto */
+    if (input.startsWith("EXPR:") || input.startsWith("expr:") || input.startsWith("SET_EXPRESSION:")) {
+        int colon = input.indexOf(':');
+        String val = input.substring(colon + 1);
+        val.trim();
+        if (val.equalsIgnoreCase("auto") || val == "-1") {
+            setManualExpression(-1);
+            KORE_LOG_INF("BLE", "Expression reset to autonomous Auto Mood via text command");
+        } else {
+            int code = val.toInt();
+            if (code >= 0 && code <= 7) {
+                setManualExpression(code);
+                KORE_LOG_INF("BLE", "Expression set to %d (%s) via BLE text command", code, getExpressionName((Expression)code));
+            }
+        }
+
+        if (s_pTxCharacteristic && s_device_connected) {
+            char resp[64];
+            snprintf(resp, sizeof(resp), "{\"status\":\"ok\",\"expr\":\"%s\"}", val.c_str());
+            s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+            s_pTxCharacteristic->notify();
+        }
+        return;
+    }
+
 
     char app[16] = {0};
     char title[36] = {0};
@@ -302,28 +454,62 @@ class ServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
         s_device_connected = true;
         KORE_LOG_INF("BLE", "Phone connected via BLE GATT");
+        if (s_pTxCharacteristic) {
+            char resp[300];
+            String current_ip = isWiFiAPMode() ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+            snprintf(resp, sizeof(resp),
+                "{\"status\":\"ok\",\"ip\":\"%s\",\"mode\":\"%s\",\"sta_ssid\":\"%s\",\"sta_pass\":\"%s\",\"ap_ssid\":\"%s\",\"ap_pass\":\"%s\",\"ble_name\":\"%s\"}",
+                current_ip.c_str(), isWiFiAPMode() ? "AP" : "STA",
+                getWiFiStaSSID(), getWiFiStaPass(), getWiFiApSSID(), getWiFiApPass(), getBleDeviceName()
+            );
+            s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+            s_pTxCharacteristic->notify();
+        }
     }
 
     void onDisconnect(BLEServer* pServer) override {
         s_device_connected = false;
         KORE_LOG_INF("BLE", "Phone disconnected; restarting advertising");
-        pServer->startAdvertising();
+        BLEDevice::startAdvertising();
     }
 };
+
+static String s_ble_rx_buffer = "";
+static unsigned long s_last_rx_ms = 0;
 
 class CharacteristicCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) override {
         String incoming = pCharacteristic->getValue();
-        if (incoming.length() > 0) {
-            processIncomingBleData(incoming);
+        if (incoming.length() == 0) return;
+
+        unsigned long now = millis();
+        if (s_ble_rx_buffer.length() > 0 && (now - s_last_rx_ms > 1500)) {
+            s_ble_rx_buffer = "";
+        }
+        s_last_rx_ms = now;
+
+        s_ble_rx_buffer += incoming;
+
+        if (s_ble_rx_buffer.startsWith("{")) {
+            if (s_ble_rx_buffer.endsWith("}") || s_ble_rx_buffer.indexOf("}\n") >= 0 || s_ble_rx_buffer.indexOf("}\r") >= 0) {
+                String complete_msg = s_ble_rx_buffer;
+                s_ble_rx_buffer = "";
+                processIncomingBleData(complete_msg);
+            }
+        } else {
+            String complete_msg = s_ble_rx_buffer;
+            s_ble_rx_buffer = "";
+            processIncomingBleData(complete_msg);
         }
     }
 };
 
 void initBleNotificationServer(void) {
-    KORE_LOG_INF("BLE", "Initializing BLE GATT Server: %s", BLE_DEVICE_NAME);
+    const char* dev_name = getBleDeviceName();
+    KORE_LOG_INF("BLE", "Initializing BLE GATT Server: %s", dev_name);
 
-    BLEDevice::init(BLE_DEVICE_NAME);
+    BLEDevice::init(dev_name);
+
     s_pServer = BLEDevice::createServer();
     s_pServer->setCallbacks(new ServerCallbacks());
 
@@ -346,13 +532,11 @@ void initBleNotificationServer(void) {
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(BLE_NUS_SERVICE_UUID);
     pAdvertising->setScanResponse(true);
-    pAdvertising->setMinInterval(160); /* 100 ms interval for Wi-Fi 2.4GHz RF coexistence */
-    pAdvertising->setMaxInterval(320); /* 200 ms interval */
-    pAdvertising->setMinPreferred(0x06);
-    pAdvertising->setMaxPreferred(0x12);
+    pAdvertising->setMinInterval(32); /* 20 ms */
+    pAdvertising->setMaxInterval(64); /* 40 ms */
     BLEDevice::startAdvertising();
 
-    KORE_LOG_INF("BLE", "BLE advertising started as '%s'", BLE_DEVICE_NAME);
+    KORE_LOG_INF("BLE", "BLE advertising started as '%s'", dev_name);
 }
 
 bool isBleConnected(void) {

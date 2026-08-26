@@ -1078,6 +1078,15 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
                 </div>
               </div>
 
+              <!-- BLE Column -->
+              <div class="form-section">
+                <div class="form-section-title">Bluetooth Low Energy (BLE)</div>
+                <div class="form-group">
+                  <label for="ble_name">Device Name</label>
+                  <input type="text" id="ble_name" name="ble_name" placeholder="KoRe-Sense" required>
+                </div>
+              </div>
+
             </div>
 
             <div class="form-actions-row">
@@ -1788,6 +1797,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
       .then(data => {
         if (data.sta_ssid) document.getElementById('sta_ssid').value = data.sta_ssid;
         if (data.ap_ssid) document.getElementById('ap_ssid').value = data.ap_ssid;
+        if (data.ble_name) document.getElementById('ble_name').value = data.ble_name;
         document.getElementById('sta_pass').placeholder = 'Saved (leave blank to keep unchanged)';
         document.getElementById('ap_pass').placeholder = 'Saved (leave blank to keep unchanged)';
 
@@ -1874,7 +1884,8 @@ static const char HTML_PAGE[] PROGMEM = R"rawliteral(<!DOCTYPE html>
         sta_ssid: document.getElementById('sta_ssid').value,
         sta_pass: document.getElementById('sta_pass').value,
         ap_ssid: document.getElementById('ap_ssid').value,
-        ap_pass: document.getElementById('ap_pass').value
+        ap_pass: document.getElementById('ap_pass').value,
+        ble_name: document.getElementById('ble_name').value
       };
 
       fetch('/save_wifi', {

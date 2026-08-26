@@ -210,10 +210,11 @@ static bool extract_json_value(const char* json, const char* key, char* out, siz
 
 static esp_err_t get_wifi_handler(httpd_req_t *req) {
     g_last_web_activity_ms = millis();
-    char json[320];
+    char json[384];
     snprintf(json, sizeof(json),
-        "{\"sta_ssid\":\"%s\",\"sta_pass\":\"********\",\"ap_ssid\":\"%s\",\"ap_pass\":\"********\",\"is_ap\":%s}",
-        getWiFiStaSSID(), getWiFiApSSID(), isWiFiAPMode() ? "true" : "false"
+        "{\"sta_ssid\":\"%s\",\"sta_pass\":\"%s\",\"ap_ssid\":\"%s\",\"ap_pass\":\"%s\",\"ble_name\":\"%s\",\"is_ap\":%s}",
+        getWiFiStaSSID(), getWiFiStaPass(), getWiFiApSSID(), getWiFiApPass(), getBleDeviceName(),
+        isWiFiAPMode() ? "true" : "false"
     );
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -258,18 +259,20 @@ static esp_err_t save_wifi_handler(httpd_req_t *req) {
     char new_sta_pass[64] = {0};
     char new_ap_ssid[64]  = {0};
     char new_ap_pass[64]  = {0};
+    char new_ble_name[64] = {0};
 
     extract_json_value(buf, "sta_ssid", new_sta_ssid, sizeof(new_sta_ssid));
     extract_json_value(buf, "sta_pass", new_sta_pass, sizeof(new_sta_pass));
     extract_json_value(buf, "ap_ssid", new_ap_ssid, sizeof(new_ap_ssid));
     extract_json_value(buf, "ap_pass", new_ap_pass, sizeof(new_ap_pass));
+    extract_json_value(buf, "ble_name", new_ble_name, sizeof(new_ble_name));
 
     const char* resp = "{\"status\":\"ok\",\"message\":\"Settings saved. ESP rebooting...\"}";
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_send(req, resp, strlen(resp));
 
-    saveWiFiCredentials(new_sta_ssid, new_sta_pass, new_ap_ssid, new_ap_pass);
+    saveAllDeviceConfig(new_sta_ssid, new_sta_pass, new_ap_ssid, new_ap_pass, new_ble_name);
     return ESP_OK;
 }
 
