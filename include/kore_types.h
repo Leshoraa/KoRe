@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include "freertos/FreeRTOS.h"

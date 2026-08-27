@@ -42,6 +42,9 @@ typedef struct {
     uint32_t solitude_sec;      /* Current continuous session solitude seconds */
     float bonding_level;        /* [0.0, 1.0]: Cumulative companionship bonding level in NVS */
     uint32_t lifetime_sec;      /* Total cumulative lifetime interaction seconds in NVS */
+    uint8_t memory_count;       /* Total active episodic memory entries in bank */
+    float memory_resonance;     /* [0.0, 1.0]: Latest top cosine similarity resonance score */
+    Expression last_recalled_expr; /* Associated expression of top resonant memory */
 } BrainTelemetry;
 
 /* Micro-Brain Neural Network Lifecycle & Inference */

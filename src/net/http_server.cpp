@@ -56,7 +56,7 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
     CircadianState circa = getCircadianState();
 
     snprintf(json, sizeof(json),
-        "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"human_likelihood\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_w\":%d,\"c0_h\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_w\":%d,\"c1_h\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_w\":%d,\"c2_h\":%d,\"c2_p\":%.1f,\"expr\":%d,\"expr_name\":\"%s\",\"is_manual\":%s,\"valence\":%.2f,\"arousal\":%.2f,\"curiosity\":%.2f,\"social\":%.2f,\"boredom\":%.2f,\"fatigue\":%.2f,\"mischief\":%.2f,\"thought\":\"%s\",\"interact_s\":%u,\"solitude_s\":%u,\"bonding\":%.2f,\"life_s\":%u,\"heap_free\":%u,\"psram_free\":%u,\"uptime_s\":%lu,\"cpu_mhz\":%d,\"personality\":{\"boldness\":%.2f,\"volatility\":%.2f,\"playfulness\":%.2f,\"attachment\":%.2f},\"circadian\":{\"energy\":%.2f,\"mood_offset\":%.2f,\"phase_pct\":%.1f}}",
+        "{\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"human_likelihood\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_w\":%d,\"c0_h\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_w\":%d,\"c1_h\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_w\":%d,\"c2_h\":%d,\"c2_p\":%.1f,\"expr\":%d,\"expr_name\":\"%s\",\"is_manual\":%s,\"valence\":%.2f,\"arousal\":%.2f,\"curiosity\":%.2f,\"social\":%.2f,\"boredom\":%.2f,\"fatigue\":%.2f,\"mischief\":%.2f,\"thought\":\"%s\",\"interact_s\":%u,\"solitude_s\":%u,\"bonding\":%.2f,\"life_s\":%u,\"mem_count\":%u,\"mem_res\":%.2f,\"mem_expr\":%d,\"heap_free\":%u,\"psram_free\":%u,\"uptime_s\":%lu,\"cpu_mhz\":%d,\"personality\":{\"boldness\":%.2f,\"volatility\":%.2f,\"playfulness\":%.2f,\"attachment\":%.2f},\"circadian\":{\"energy\":%.2f,\"mood_offset\":%.2f,\"phase_pct\":%.1f}}",
         target.detected ? "true" : "false",
         target.x, target.y, target.w, target.h,
         target.cx, target.cy,
@@ -79,6 +79,7 @@ static esp_err_t telemetry_handler(httpd_req_t *req) {
         brain.thought_summary,
         brain.interaction_sec, brain.solitude_sec,
         brain.bonding_level, brain.lifetime_sec,
+        (unsigned)brain.memory_count, brain.memory_resonance, (int)brain.last_recalled_expr,
         (unsigned)esp_get_free_heap_size(),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         (unsigned long)(millis() / 1000),

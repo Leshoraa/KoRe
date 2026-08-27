@@ -7,6 +7,7 @@
 #include "src/net/notification_client.h"
 #include "src/core/display_engine.h"
 #include "src/net/wifi_manager.h"
+#include "src/net/weather_client.h"
 #include "include/kore_affective.h"
 #include "include/kore_config.h"
 
@@ -314,6 +315,166 @@ static void processIncomingBleData(const String& raw_input) {
             saveBleConfig(ble_n);
             return;
         }
+
+        /* I. Show Clock Glance on OLED: {"cmd":"show_clock"} or {"cmd":"clock"} */
+        if (strcmp(cmd, "show_clock") == 0 || strcmp(cmd, "clock") == 0) {
+            triggerClockDisplay(WEATHER_POPUP_DURATION_MS);
+            KORE_LOG_INF("BLE", "Clock display triggered via BLE");
+
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[64] = "{\"status\":\"ok\",\"message\":\"Clock triggered\"}";
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+            }
+            return;
+        }
+
+        /* J. Show Weather Glance on OLED: {"cmd":"show_weather"} or {"cmd":"weather"} */
+        if (strcmp(cmd, "show_weather") == 0 || strcmp(cmd, "weather") == 0) {
+            triggerWeatherDisplay(WEATHER_POPUP_DURATION_MS);
+            KORE_LOG_INF("BLE", "Weather display triggered via BLE");
+
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[64] = "{\"status\":\"ok\",\"message\":\"Weather triggered\"}";
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+            }
+            return;
+        }
+
+        /* K. Query Weather & Location configuration: {"cmd":"get_weather"} */
+        if (strcmp(cmd, "get_weather") == 0 || strcmp(cmd, "get_weather_config") == 0) {
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[300];
+                portENTER_CRITICAL(&g_weather_mutex);
+                snprintf(resp, sizeof(resp),
+                    "{\"status\":\"ok\",\"city\":\"%s\",\"lat\":%.4f,\"lon\":%.4f,\"enabled\":%s,\"valid\":%s,"
+                    "\"tz\":%ld,\"temp\":%.1f,\"humidity\":%d,\"code\":%d,\"condition\":\"%s\"}",
+                    getWeatherCity(), getWeatherLat(), getWeatherLon(),
+                    isWeatherEnabled() ? "true" : "false",
+                    g_weather_info.valid ? "true" : "false",
+                    (long)getTimezoneOffsetSec(),
+                    g_weather_info.temperature,
+                    g_weather_info.humidity,
+                    g_weather_info.weather_code,
+                    g_weather_info.condition
+                );
+                portEXIT_CRITICAL(&g_weather_mutex);
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+                KORE_LOG_INF("BLE", "Reported weather config via BLE");
+            }
+            return;
+        }
+
+        /* L. Save Weather & Location configuration: {"cmd":"save_weather", "city":"Jakarta", "lat":-6.2088, "lon":106.8456, "enabled":true, "tz":25200} */
+        if (strcmp(cmd, "save_weather") == 0 || strcmp(cmd, "set_weather") == 0) {
+            char city[32] = {0};
+            char lat_s[32] = {0};
+            char lon_s[32] = {0};
+            char en_s[16] = {0};
+            char tz_s[32] = {0};
+
+            extractJsonField(input, "city", city, sizeof(city));
+            extractJsonField(input, "lat", lat_s, sizeof(lat_s));
+            extractJsonField(input, "lon", lon_s, sizeof(lon_s));
+            extractJsonField(input, "enabled", en_s, sizeof(en_s));
+            extractJsonField(input, "tz", tz_s, sizeof(tz_s));
+            if (tz_s[0] == '\0') extractJsonField(input, "tz_offset_sec", tz_s, sizeof(tz_s));
+
+            float lat = (lat_s[0] != '\0') ? (float)atof(lat_s) : getWeatherLat();
+            float lon = (lon_s[0] != '\0') ? (float)atof(lon_s) : getWeatherLon();
+            bool enabled = (en_s[0] == '\0' || strcmp(en_s, "true") == 0 || strcmp(en_s, "1") == 0);
+
+            saveWeatherConfig(city, lat, lon, enabled);
+            if (tz_s[0] != '\0') {
+                saveTimezoneOffsetSec((int32_t)atol(tz_s));
+                applyTimezoneConfig();
+            }
+            triggerWeatherFetch();
+
+            KORE_LOG_INF("BLE", "Saved weather config via BLE: city=%s, lat=%.4f, lon=%.4f, en=%d, tz=%s", city, lat, lon, enabled ? 1 : 0, tz_s);
+
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[128] = "{\"status\":\"ok\",\"message\":\"Weather settings updated\"}";
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+            }
+            return;
+        }
+
+        /* M. Live Weather Push from Phone over BLE (Works completely offline without Wi-Fi on KoRe):
+              {"cmd":"push_weather", "city":"Jakarta", "temp":28.5, "hum":70, "code":1, "cond":"MAINLY CLEAR"} */
+        if (strcmp(cmd, "push_weather") == 0 || strcmp(cmd, "sync_weather") == 0) {
+            char city[32] = {0};
+            char temp_s[16] = {0};
+            char hum_s[16] = {0};
+            char code_s[16] = {0};
+            char cond[32] = {0};
+
+            extractJsonField(input, "city", city, sizeof(city));
+            extractJsonField(input, "temp", temp_s, sizeof(temp_s));
+            extractJsonField(input, "hum", hum_s, sizeof(hum_s));
+            extractJsonField(input, "code", code_s, sizeof(code_s));
+            extractJsonField(input, "cond", cond, sizeof(cond));
+
+            float temp = atof(temp_s);
+            int hum = atoi(hum_s);
+            int code = atoi(code_s);
+
+            portENTER_CRITICAL(&g_weather_mutex);
+            g_weather_info.temperature = temp;
+            g_weather_info.humidity = hum;
+            g_weather_info.weather_code = code;
+            if (city[0] != '\0') {
+                strncpy(g_weather_info.city, city, sizeof(g_weather_info.city) - 1);
+                g_weather_info.city[sizeof(g_weather_info.city) - 1] = '\0';
+            }
+            if (cond[0] != '\0') {
+                strncpy(g_weather_info.condition, cond, sizeof(g_weather_info.condition) - 1);
+                g_weather_info.condition[sizeof(g_weather_info.condition) - 1] = '\0';
+            }
+            g_weather_info.valid = true;
+            g_weather_info.last_sync_ms = millis();
+            portEXIT_CRITICAL(&g_weather_mutex);
+
+            KORE_LOG_INF("BLE", "Weather pushed directly from phone BLE: %s, %.1fC, %d%%, code=%d (%s)",
+                g_weather_info.city, temp, hum, code, g_weather_info.condition);
+
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[64] = "{\"status\":\"ok\",\"message\":\"Weather updated\"}";
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+            }
+            return;
+        }
+
+        /* N. Accurate Time Synchronization from Phone over BLE:
+              {"cmd":"sync_time", "epoch":1724745000, "tz":25200} */
+        if (strcmp(cmd, "sync_time") == 0 || strcmp(cmd, "time") == 0) {
+            char epoch_s[32] = {0};
+            char tz_s[16] = {0};
+            extractJsonField(input, "epoch", epoch_s, sizeof(epoch_s));
+            extractJsonField(input, "tz", tz_s, sizeof(tz_s));
+
+            time_t epoch = (time_t)strtoull(epoch_s, NULL, 10);
+            if (epoch > 1700000000) {
+                struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+                settimeofday(&tv, NULL);
+                KORE_LOG_INF("BLE", "RTC Time synced from phone over BLE: epoch=%llu", (unsigned long long)epoch);
+            }
+            if (tz_s[0] != '\0') {
+                saveTimezoneOffsetSec((int32_t)atol(tz_s));
+                applyTimezoneConfig();
+            }
+
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[64] = "{\"status\":\"ok\",\"message\":\"Time synced\"}";
+                s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
+                s_pTxCharacteristic->notify();
+            }
+            return;
+        }
     }
 
     /* B. Check for Brightness adjustment command via Raw Text: BRIGHTNESS:180 */
@@ -454,6 +615,7 @@ class ServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
         s_device_connected = true;
         KORE_LOG_INF("BLE", "Phone connected via BLE GATT");
+
         if (s_pTxCharacteristic) {
             char resp[300];
             String current_ip = isWiFiAPMode() ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
@@ -470,6 +632,7 @@ class ServerCallbacks : public BLEServerCallbacks {
     void onDisconnect(BLEServer* pServer) override {
         s_device_connected = false;
         KORE_LOG_INF("BLE", "Phone disconnected; restarting advertising");
+        delay(30);
         BLEDevice::startAdvertising();
     }
 };
@@ -489,17 +652,32 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks {
         s_last_rx_ms = now;
 
         s_ble_rx_buffer += incoming;
+        s_ble_rx_buffer.trim();
 
-        if (s_ble_rx_buffer.startsWith("{")) {
-            if (s_ble_rx_buffer.endsWith("}") || s_ble_rx_buffer.indexOf("}\n") >= 0 || s_ble_rx_buffer.indexOf("}\r") >= 0) {
-                String complete_msg = s_ble_rx_buffer;
-                s_ble_rx_buffer = "";
-                processIncomingBleData(complete_msg);
+        /* Robust parser: extract and process every complete JSON object { ... } */
+        while (true) {
+            int start_brace = s_ble_rx_buffer.indexOf('{');
+            if (start_brace < 0) {
+                /* Non-JSON raw command or notification */
+                if (s_ble_rx_buffer.length() > 0 && (s_ble_rx_buffer.indexOf('\n') >= 0 || s_ble_rx_buffer.indexOf(':') >= 0 || s_ble_rx_buffer.indexOf('|') >= 0)) {
+                    String complete_msg = s_ble_rx_buffer;
+                    s_ble_rx_buffer = "";
+                    processIncomingBleData(complete_msg);
+                }
+                break;
             }
-        } else {
-            String complete_msg = s_ble_rx_buffer;
-            s_ble_rx_buffer = "";
-            processIncomingBleData(complete_msg);
+
+            int end_brace = s_ble_rx_buffer.indexOf('}', start_brace);
+            if (end_brace < 0) {
+                /* Incomplete JSON chunk, wait for next onWrite */
+                break;
+            }
+
+            String single_json = s_ble_rx_buffer.substring(start_brace, end_brace + 1);
+            s_ble_rx_buffer = s_ble_rx_buffer.substring(end_brace + 1);
+            s_ble_rx_buffer.trim();
+
+            processIncomingBleData(single_json);
         }
     }
 };
@@ -509,6 +687,11 @@ void initBleNotificationServer(void) {
     KORE_LOG_INF("BLE", "Initializing BLE GATT Server: %s", dev_name);
 
     BLEDevice::init(dev_name);
+
+    /* Set Bluetooth RF TX power to maximum (+9 dBm) on ESP32-S3 */
+    BLEDevice::setPower(ESP_PWR_LVL_P9, ESP_BLE_PWR_TYPE_DEFAULT);
+    BLEDevice::setPower(ESP_PWR_LVL_P9, ESP_BLE_PWR_TYPE_ADV);
+    BLEDevice::setPower(ESP_PWR_LVL_P9, ESP_BLE_PWR_TYPE_SCAN);
 
     s_pServer = BLEDevice::createServer();
     s_pServer->setCallbacks(new ServerCallbacks());
@@ -532,8 +715,10 @@ void initBleNotificationServer(void) {
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(BLE_NUS_SERVICE_UUID);
     pAdvertising->setScanResponse(true);
-    pAdvertising->setMinInterval(32); /* 20 ms */
-    pAdvertising->setMaxInterval(64); /* 40 ms */
+    pAdvertising->setMinPreferred(0x06); /* 7.5 ms preferred interval */
+    pAdvertising->setMinPreferred(0x12); /* 22.5 ms preferred interval */
+    pAdvertising->setMinInterval(32);    /* 20 ms */
+    pAdvertising->setMaxInterval(64);    /* 40 ms */
     BLEDevice::startAdvertising();
 
     KORE_LOG_INF("BLE", "BLE advertising started as '%s'", dev_name);

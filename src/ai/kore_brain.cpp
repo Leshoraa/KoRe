@@ -4,6 +4,7 @@
  */
 
 #include "include/kore_ai.h"
+#include "include/kore_memory.h"
 #include "include/kore_affective.h"
 #include "include/kore_personality.h"
 #include "include/kore_config.h"
@@ -88,6 +89,7 @@ void loadBrainMemoryNVS(void) {
         s_bonding_level = constrain(s_bonding_level, 0.0f, 1.0f);
     }
 #endif
+    loadMemoryNVS();
 }
 
 void saveBrainMemoryNVS(void) {
@@ -100,6 +102,7 @@ void saveBrainMemoryNVS(void) {
         s_last_nvs_save_ms = millis();
     }
 #endif
+    saveMemoryNVS();
 }
 
 float getBrainBondingLevel(void) {
@@ -111,6 +114,7 @@ uint32_t getBrainLifetimeSec(void) {
 }
 
 void initBrainEngine(void) {
+    initMemoryEngine();
     loadBrainMemoryNVS();
 
     s_drives.curiosity = 0.35f;
@@ -154,7 +158,13 @@ void updateBrainEngine(float dt_sec) {
         s_proximity_smooth *= 0.95f;
     }
 
-    /* Track Timers & Bonding Growth */
+    /* Track Timers & Bonding Growth & Episodic Memory Ingestion */
+    static bool s_was_detected = false;
+    static uint32_t s_last_shock_mem_s = 0;
+    static uint32_t s_last_joy_mem_s = 0;
+    static uint32_t s_last_solitude_mem_s = 0;
+    uint32_t now_s = now / 1000;
+
     if (is_detected) {
         if (s_interaction_start_ms == 0) s_interaction_start_ms = now;
         s_total_interaction_sec = (now - s_interaction_start_ms) / 1000;
@@ -169,13 +179,44 @@ void updateBrainEngine(float dt_sec) {
             /* Growth rate: ~0.01 per 15 minutes of companion time */
             s_bonding_level = fminf(1.0f, s_bonding_level + (float)delta_s * 0.000011f);
         }
+
+        /* Salient Memory Ingestion: Joyful bonding milestone */
+        if (s_dominant_expr == EXPR_JOY && s_bonding_level > 0.30f && s_total_interaction_sec > 25) {
+            if (now_s - s_last_joy_mem_s > 60) {
+                s_last_joy_mem_s = now_s;
+                float v_now = getEmotionValence();
+                float a_now = getEmotionArousal();
+                float mem_v[8] = { v_now, a_now, s_drives.curiosity, s_drives.social, s_drives.boredom, s_drives.fatigue, s_drives.mischief, s_proximity_smooth };
+                recordEpisodicMemory(mem_v, EXPR_JOY, 0.75f + 0.20f * s_bonding_level, v_now);
+            }
+        }
     } else {
+        /* Salient Memory Ingestion: End of sustained interaction session */
+        if (s_was_detected && s_total_interaction_sec > 15) {
+            float v_now = getEmotionValence();
+            float a_now = getEmotionArousal();
+            float mem_v[8] = { v_now, a_now, s_drives.curiosity, s_drives.social, s_drives.boredom, s_drives.fatigue, s_drives.mischief, s_proximity_smooth };
+            float salience = fminf(1.0f, 0.40f + 0.30f * s_bonding_level + 0.01f * (float)s_total_interaction_sec);
+            recordEpisodicMemory(mem_v, s_dominant_expr, salience, v_now);
+        }
+
         if (s_solitude_start_ms == 0) s_solitude_start_ms = now;
         s_total_solitude_sec = (now - s_solitude_start_ms) / 1000;
         s_interaction_start_ms = 0;
         s_total_interaction_sec = 0;
         s_last_bonding_grow_ms = now;
+
+        /* Salient Memory Ingestion: Deep solitude milestone (180s, 420s) */
+        if ((s_total_solitude_sec == 180 || s_total_solitude_sec == 420) && (now_s - s_last_solitude_mem_s > 30)) {
+            s_last_solitude_mem_s = now_s;
+            float v_now = getEmotionValence();
+            float a_now = getEmotionArousal();
+            float mem_v[8] = { v_now, a_now, s_drives.curiosity, s_drives.social, s_drives.boredom, s_drives.fatigue, s_drives.mischief, s_proximity_smooth };
+            Expression sol_expr = (s_drives.social < 0.30f) ? EXPR_SAD : EXPR_DEADPAN;
+            recordEpisodicMemory(mem_v, sol_expr, 0.60f, v_now);
+        }
     }
+    s_was_detected = is_detected;
 
     /* Periodic Flash Memory Wear-Leveling Save (Every 300 Seconds) */
     if (now - s_last_nvs_save_ms >= 300000) {
@@ -216,10 +257,17 @@ void updateBrainEngine(float dt_sec) {
     float d_mischief = (mischief_gain * (s_drives.social * (1.0f - s_drives.fatigue)) - 0.08f * s_drives.mischief + noise_m);
     s_drives.mischief = constrain(s_drives.mischief + d_mischief * dt_sec, 0.0f, 1.0f);
 
-    /* 3. Neural Policy Feedforward Inference */
+    /* Salient Memory Ingestion: Sudden High-Arousal Startle / Overload event */
     float V = getEmotionValence();
     float A = getEmotionArousal();
+    if (A > 0.82f && s_motion_energy_ema > 0.75f && (now_s - s_last_shock_mem_s > 20)) {
+        s_last_shock_mem_s = now_s;
+        float mem_v[8] = { V, A, s_drives.curiosity, s_drives.social, s_drives.boredom, s_drives.fatigue, s_drives.mischief, s_proximity_smooth };
+        Expression spike_expr = (s_drives.fatigue > 0.60f) ? EXPR_OVERLOAD : EXPR_SHOCK;
+        recordEpisodicMemory(mem_v, spike_expr, 0.85f, V);
+    }
 
+    /* 3. Neural Policy Feedforward Inference & Associative Episodic Recall */
     float state_vector[8] = {
         V,
         A,
@@ -231,7 +279,10 @@ void updateBrainEngine(float dt_sec) {
         s_proximity_smooth
     };
 
-    /* Matrix Multiplication: Logits = W * State + Bias */
+    /* Query associative memory resonance in latent vector space */
+    EpisodicRecallResult recall = queryMemoryResonance(state_vector);
+
+    /* Matrix Multiplication: Logits = W * State + Bias + ΔLogits_memory */
     float max_logit = -999.0f;
     for (int i = 0; i < 8; i++) {
         float sum = s_neural_biases[i];
@@ -244,6 +295,9 @@ void updateBrainEngine(float dt_sec) {
         else if (i == 3) sum += 0.6f * s_bonding_level;     /* SMIRK boosted by bonding */
         else if (i == 4) sum -= 1.2f * s_bonding_level;     /* SHOCK heavily suppressed by bonding */
         else if (i == 2) sum -= 0.6f * s_bonding_level;     /* Tsundere pout gentled by bonding */
+
+        /* Modulate Logits via Associative Episodic Memory Resonance */
+        sum += recall.memory_logits_delta[i];
 
         s_decision_logits[i] = sum;
         if (sum > max_logit) max_logit = sum;
@@ -267,7 +321,7 @@ void updateBrainEngine(float dt_sec) {
 
     /* 4. Update Cognitive Inner Monologue Summary
      * Combinatorial monologue generation using personality traits, circadian state,
-     * and drive values to produce varied, character-consistent internal narration. */
+     * episodic memory recall, and drive values to produce varied internal narration. */
     PersonalityTraits traits = getPersonalityTraits();
     CircadianState circa = getCircadianState();
 
@@ -278,6 +332,9 @@ void updateBrainEngine(float dt_sec) {
             snprintf(s_thought_summary, sizeof(s_thought_summary), "Sleepy but still wanna play...");
         else
             snprintf(s_thought_summary, sizeof(s_thought_summary), "Need to rest for a bit...");
+    } else if (recall.resonance_score > 0.70f && recall.top_k_count > 0 && esp_random() % 100 < 45) {
+        /* Direct reflection of resonant episodic memory */
+        snprintf(s_thought_summary, sizeof(s_thought_summary), "%s", recall.recall_context);
     } else if (circa.energy_level < 0.35f && !is_detected) {
         if (traits.boldness < 0.40f)
             snprintf(s_thought_summary, sizeof(s_thought_summary), "Getting drowsy... quiet here");
@@ -355,6 +412,9 @@ BrainTelemetry getBrainTelemetry(void) {
     t.solitude_sec = s_total_solitude_sec;
     t.bonding_level = s_bonding_level;
     t.lifetime_sec = s_lifetime_interaction_sec;
+    t.memory_count = getEpisodicMemoryCount();
+    t.memory_resonance = getLatestMemoryResonance();
+    t.last_recalled_expr = getLatestRecalledExpression();
     return t;
 }
 

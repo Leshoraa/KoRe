@@ -375,6 +375,13 @@ static void drawSadMouth(int ox, int oy, float animFrame, uint16_t color, float 
     }
 }
 
+static inline void drawCameraActiveIndicator(uint16_t color) {
+    if (g_recon_state == STATE_ACTIVE) {
+        /* Discreet, natural optical sensing catchlight indicator at top-right edge */
+        canvas.fillRect(124, 3, 2, 2, color);
+    }
+}
+
 static void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCurve, float mouthY, float mouthWidth, float browAlpha, bool inverted, float vergence, float scale) {
     uint16_t bgColor = inverted ? TFT_WHITE : TFT_BLACK;
     uint16_t fgColor = inverted ? TFT_BLACK : TFT_WHITE;
@@ -383,6 +390,7 @@ static void renderFaceState(float eyeHeightFactor, int ox, int oy, float mouthCu
     drawEyes(eyeHeightFactor, ox, oy, fgColor, vergence, scale);
     drawAngryBrows(eyeHeightFactor, ox, oy, browAlpha, bgColor, vergence, scale);
     drawMouthCustom(ox, oy, mouthCurve, mouthY, mouthWidth, 0.0f, fgColor, scale);
+    drawCameraActiveIndicator(fgColor);
     canvas.pushSprite(0, 0);
 }
 
@@ -397,6 +405,7 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawJoyEyes(ox, oy, 1.0f, TFT_WHITE, vergence, scale);
             drawJoyMouth(ox, oy, 1.0f, TFT_WHITE, scale);
+            drawCameraActiveIndicator(TFT_WHITE);
             canvas.pushSprite(0, 0);
             break;
         case EXPR_ANGRY:
@@ -406,6 +415,7 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawCatMouth(ox, oy, TFT_WHITE, scale);
+            drawCameraActiveIndicator(TFT_WHITE);
             canvas.pushSprite(0, 0);
             break;
         case EXPR_SHOCK:
@@ -416,24 +426,28 @@ void drawFace(Expression expr, float eyeHeightFactor, float offsetX, float offse
                 drawEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             }
             drawShockMouth(ox, oy, TFT_WHITE, scale);
+            drawCameraActiveIndicator(TFT_WHITE);
             canvas.pushSprite(0, 0);
             break;
         case EXPR_OVERLOAD:
             canvas.fillScreen(TFT_BLACK);
             drawSpiralEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawOverloadMouth(ox, oy, TFT_WHITE, scale);
+            drawCameraActiveIndicator(TFT_WHITE);
             canvas.pushSprite(0, 0);
             break;
         case EXPR_SAD:
             canvas.fillScreen(TFT_BLACK);
             drawSadEyes(ox, oy, frame, TFT_WHITE, vergence, scale);
             drawSadMouth(ox, oy, frame, TFT_WHITE, scale);
+            drawCameraActiveIndicator(TFT_WHITE);
             canvas.pushSprite(0, 0);
             break;
         case EXPR_DEADPAN:
             canvas.fillScreen(TFT_BLACK);
             drawFumoEyes(eyeHeightFactor, ox, oy, TFT_WHITE, vergence, scale);
             drawDeadpanMouth(ox, oy, TFT_WHITE, scale);
+            drawCameraActiveIndicator(TFT_WHITE);
             canvas.pushSprite(0, 0);
             break;
     }
@@ -558,6 +572,7 @@ void transitionExpression(Expression fromExpr, Expression toExpr, float duration
             }
         }
 
+        drawCameraActiveIndicator(fgColor);
         canvas.pushSprite(0, 0);
         vTaskDelay(pdMS_TO_TICKS((int)stepDelay));
     }
