@@ -2,6 +2,17 @@
 
 All notable changes to the KoRe project are documented in this file.
 
+## [2.9.0] - 2026-08-28
+
+### Added
+- Real-Time Telemetry over Bluetooth Low Energy (BLE) Nordic UART Service (NUS).
+- BLE JSON command support for on-demand snapshot: `{"cmd":"get_telemetry"}` / `{"cmd":"telemetry"}` and raw string `TELEMETRY`.
+- Background BLE telemetry periodic streaming task (`{"cmd":"stream_telemetry","enable":true,"interval":500}`).
+- MTU-safe chunked BLE packet delivery supporting any client MTU size without buffer truncation.
+
+### Fixed
+- **Camera Power Decoupling**: Fully decoupled telemetry querying from forcing camera sensor active. Polling `/telemetry` over HTTP or streaming telemetry over BLE operates completely passively without waking up the camera hardware or preventing low-power standby sleep (`STATE_SLEEP_RECON`).
+
 ## [2.8.0] - 2026-08-26
 
 ### Added

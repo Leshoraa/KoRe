@@ -21,10 +21,29 @@ extern "C" {
 void initBleNotificationServer(void);
 
 /**
- * @brief Check if a central device (phone) is currently connected via BLE.
- * @return true if connected, false otherwise.
+ * @brief Format standardized telemetry JSON payload across HTTP and BLE endpoints.
+ * @param[out] json Destination buffer for JSON string.
+ * @param[in] max_len Maximum capacity of destination buffer.
  */
-bool isBleConnected(void);
+void formatTelemetryJson(char *json, size_t max_len);
+
+/**
+ * @brief Transmit an immediate telemetry snapshot over BLE NUS TX characteristic.
+ */
+void sendBleTelemetryNow(void);
+
+/**
+ * @brief Configure periodic telemetry streaming over BLE GATT notifications.
+ * @param[in] enable True to enable periodic streaming, false to disable.
+ * @param[in] interval_ms Streaming period in milliseconds (minimum 100ms).
+ */
+void setBleTelemetryStreaming(bool enable, uint32_t interval_ms);
+
+/**
+ * @brief Query if periodic telemetry streaming is currently enabled.
+ * @return True if streaming is active, false otherwise.
+ */
+bool isBleTelemetryStreaming(void);
 
 #ifdef __cplusplus
 }

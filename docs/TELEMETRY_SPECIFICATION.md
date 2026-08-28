@@ -165,11 +165,38 @@ KoRe hosts a lightweight, asynchronous dual-port HTTP server on the ESP32-S3:
   - **Response:** `{"status": "ok"}`
 
 ### 2.12 Extended Telemetry Fields
-The `/telemetry` endpoint includes dynamic system and affective metrics:
+The `/telemetry` and BLE telemetry payloads include dynamic system, affective, and camera state metrics:
 - `valence` (float): Current emotional valence [-1.0, 1.0]
 - `arousal` (float): Current emotional arousal [0.0, 1.0]
+- `curiosity`, `social`, `boredom`, `fatigue`, `mischief` (float): Homeostatic drive states [0.0, 1.0]
+- `thought` (string): Real-time cognitive inner thought summary
+- `bonding` (float): Bonding level with human companion [0.0, 1.0]
+- `cam_sleep` (bool): True if camera hardware is in low-power standby mode (telemetry continues to function without forcing camera active)
+- `cam_online` (bool): True if camera sensor hardware initialized successfully
 - `heap_free` (uint): Free internal heap in bytes
 - `psram_free` (uint): Free PSRAM in bytes
 - `uptime_s` (uint): System uptime in seconds
 - `cpu_mhz` (int): Current CPU frequency in MHz
+
+---
+
+## 3. Bluetooth Low Energy (BLE) NUS Telemetry Protocol
+
+KoRe exposes a high-throughput Nordic UART Service (NUS) over BLE GATT for mobile applications:
+- **Service UUID:** `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
+- **RX Characteristic (Write / Write Without Response):** `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`
+- **TX Characteristic (Notify):** `6E400003-B5A3-F393-E0A9-E50E24DCCA9E`
+
+### 3.1 On-Demand Telemetry Snapshot
+- **Command:** `{"cmd": "get_telemetry"}` or `{"cmd": "telemetry"}` or raw string `TELEMETRY`
+- **Behavior:** Returns the full JSON telemetry payload via TX notification chunked into safe MTU packets without waking up or forcing the camera sensor ON.
+
+### 3.2 Continuous Telemetry Streaming
+- **Start Streaming:** `{"cmd": "stream_telemetry", "enable": true, "interval": 500}` or `STREAM_TELEMETRY:500`
+- **Stop Streaming:** `{"cmd": "stream_telemetry", "enable": false}` or `STREAM_TELEMETRY:0`
+- **Behavior:** KoRe's background FreeRTOS BLE telemetry task automatically transmits real-time telemetry updates at the specified period (e.g. 500ms) over GATT notifications.
+
+### 3.3 Camera Decoupling Architecture
+Querying or streaming telemetry via BLE or HTTP `/telemetry` operates strictly passively and **never forces the camera hardware to stay ON or wake from standby sleep**. The camera enters standby sleep (`STATE_SLEEP_RECON`) automatically when not actively tracking or streaming video, preserving battery and reducing heat.
+
 

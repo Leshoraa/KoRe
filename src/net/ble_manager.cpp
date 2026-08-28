@@ -10,6 +10,9 @@
 #include "src/net/weather_client.h"
 #include "include/kore_affective.h"
 #include "include/kore_config.h"
+#include "include/kore_types.h"
+#include "include/kore_ai.h"
+#include "include/kore_personality.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -22,6 +25,121 @@ static BLEServer *s_pServer = nullptr;
 static BLECharacteristic *s_pRxCharacteristic = nullptr;
 static BLECharacteristic *s_pTxCharacteristic = nullptr;
 static volatile bool s_device_connected = false;
+static volatile bool s_ble_telemetry_streaming = false;
+static volatile uint32_t s_ble_telemetry_interval_ms = 500;
+static TaskHandle_t s_ble_telemetry_task_handle = NULL;
+
+void formatTelemetryJson(char *json, size_t max_len) {
+    TrackTarget target;
+    int num_cands = 0;
+    int insp_idx = 0;
+    ObjectCandidate cands[3];
+
+    portENTER_CRITICAL(&g_target_mutex);
+    target = g_current_target;
+    num_cands = g_num_candidates;
+    insp_idx = g_inspected_candidate_idx;
+    for (int i = 0; i < 3; i++) cands[i] = g_object_candidates[i];
+    portEXIT_CRITICAL(&g_target_mutex);
+
+    BrainTelemetry brain = getBrainTelemetry();
+    PersonalityTraits traits = getPersonalityTraits();
+    CircadianState circa = getCircadianState();
+
+    bool is_cam_sleeping = (g_recon_state == STATE_SLEEP_RECON || !g_camera_init_ok);
+    float current_fps = is_cam_sleeping ? 0.0f : g_fps_ai;
+    bool is_detected = is_cam_sleeping ? false : target.detected;
+
+    snprintf(json, max_len,
+        "{\"type\":\"telemetry\",\"detected\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"cx\":%d,\"cy\":%d,\"err_x\":%.1f,\"err_y\":%.1f,\"conf\":%.2f,\"human_likelihood\":%.2f,\"fps_ai\":%.1f,\"fw\":%d,\"fh\":%d,\"vx\":%.1f,\"vy\":%.1f,\"prox\":%.2f,\"num_cands\":%d,\"insp_idx\":%d,\"c0_cx\":%d,\"c0_cy\":%d,\"c0_w\":%d,\"c0_h\":%d,\"c0_p\":%.1f,\"c1_cx\":%d,\"c1_cy\":%d,\"c1_w\":%d,\"c1_h\":%d,\"c1_p\":%.1f,\"c2_cx\":%d,\"c2_cy\":%d,\"c2_w\":%d,\"c2_h\":%d,\"c2_p\":%.1f,\"expr\":%d,\"expr_name\":\"%s\",\"is_manual\":%s,\"valence\":%.2f,\"arousal\":%.2f,\"curiosity\":%.2f,\"social\":%.2f,\"boredom\":%.2f,\"fatigue\":%.2f,\"mischief\":%.2f,\"thought\":\"%s\",\"interact_s\":%u,\"solitude_s\":%u,\"bonding\":%.2f,\"life_s\":%u,\"mem_count\":%u,\"mem_res\":%.2f,\"mem_expr\":%d,\"heap_free\":%u,\"psram_free\":%u,\"uptime_s\":%lu,\"cpu_mhz\":%d,\"cam_sleep\":%s,\"cam_online\":%s,\"personality\":{\"boldness\":%.2f,\"volatility\":%.2f,\"playfulness\":%.2f,\"attachment\":%.2f},\"circadian\":{\"energy\":%.2f,\"mood_offset\":%.2f,\"phase_pct\":%.1f}}",
+        is_detected ? "true" : "false",
+        target.x, target.y, target.w, target.h,
+        target.cx, target.cy,
+        target.error_x, target.error_y,
+        is_cam_sleeping ? 0.0f : target.confidence,
+        is_cam_sleeping ? 0.0f : target.human_likelihood,
+        current_fps,
+        640, 480,
+        target.vx, target.vy,
+        target.proximity,
+        num_cands, insp_idx,
+        cands[0].cx, cands[0].cy, cands[0].w, cands[0].h, cands[0].priority_score,
+        cands[1].cx, cands[1].cy, cands[1].w, cands[1].h, cands[1].priority_score,
+        cands[2].cx, cands[2].cy, cands[2].w, cands[2].h, cands[2].priority_score,
+        (int)g_currentExpr,
+        getExpressionName(g_currentExpr),
+        isManualExpressionActive() ? "true" : "false",
+        getEmotionValence(), getEmotionArousal(),
+        brain.drives.curiosity, brain.drives.social, brain.drives.boredom, brain.drives.fatigue, brain.drives.mischief,
+        brain.thought_summary,
+        brain.interaction_sec, brain.solitude_sec,
+        brain.bonding_level, brain.lifetime_sec,
+        (unsigned)brain.memory_count, brain.memory_resonance, (int)brain.last_recalled_expr,
+        (unsigned)esp_get_free_heap_size(),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned long)(millis() / 1000),
+        ESP.getCpuFreqMHz(),
+        is_cam_sleeping ? "true" : "false",
+        g_camera_init_ok ? "true" : "false",
+        traits.boldness, traits.volatility, traits.playfulness, traits.attachment,
+        circa.energy_level, circa.mood_baseline, circa.phase_pct
+    );
+}
+
+static void sendBleData(const char* data, size_t len) {
+    if (!s_pTxCharacteristic || !s_device_connected || len == 0) return;
+
+    const size_t CHUNK_SIZE = 180;
+    size_t offset = 0;
+    while (offset < len && s_device_connected) {
+        size_t to_send = len - offset;
+        if (to_send > CHUNK_SIZE) to_send = CHUNK_SIZE;
+        s_pTxCharacteristic->setValue((uint8_t*)(data + offset), to_send);
+        s_pTxCharacteristic->notify();
+        offset += to_send;
+        if (offset < len) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+}
+
+static portMUX_TYPE s_ble_telem_mux = portMUX_INITIALIZER_UNLOCKED;
+static char s_ble_telemetry_buf[1400];
+
+void sendBleTelemetryNow(void) {
+    if (!s_pTxCharacteristic || !s_device_connected) return;
+    portENTER_CRITICAL(&s_ble_telem_mux);
+    formatTelemetryJson(s_ble_telemetry_buf, sizeof(s_ble_telemetry_buf));
+    portEXIT_CRITICAL(&s_ble_telem_mux);
+    sendBleData(s_ble_telemetry_buf, strlen(s_ble_telemetry_buf));
+}
+
+void setBleTelemetryStreaming(bool enable, uint32_t interval_ms) {
+    s_ble_telemetry_streaming = enable;
+    if (interval_ms >= 100) {
+        s_ble_telemetry_interval_ms = interval_ms;
+    }
+    KORE_LOG_INF("BLE", "BLE telemetry streaming %s (interval=%ums)",
+                 enable ? "ENABLED" : "DISABLED", (unsigned)s_ble_telemetry_interval_ms);
+}
+
+bool isBleTelemetryStreaming(void) {
+    return s_ble_telemetry_streaming && s_device_connected;
+}
+
+static void bleTelemetryStreamTask(void *pvParameters) {
+    (void)pvParameters;
+    while (true) {
+        if (s_device_connected && s_ble_telemetry_streaming) {
+            sendBleTelemetryNow();
+            uint32_t wait_time = s_ble_telemetry_interval_ms;
+            if (wait_time < 100) wait_time = 100;
+            vTaskDelay(pdMS_TO_TICKS(wait_time));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+    }
+}
 
 static bool extractJsonField(const String& json, const char* key, char* out, size_t max_len) {
     // 1. Try quoted string: "key":"value"
@@ -475,6 +593,41 @@ static void processIncomingBleData(const String& raw_input) {
             }
             return;
         }
+
+        /* O. Query Telemetry snapshot: {"cmd":"get_telemetry"} or {"cmd":"telemetry"} */
+        if (strcmp(cmd, "get_telemetry") == 0 || strcmp(cmd, "telemetry") == 0 || strcmp(cmd, "get_tele") == 0) {
+            KORE_LOG_INF("BLE", "Telemetry snapshot requested via BLE JSON command");
+            sendBleTelemetryNow();
+            return;
+        }
+
+        /* P. Background Telemetry Streaming: {"cmd":"stream_telemetry", "enable":true, "interval":500} */
+        if (strcmp(cmd, "stream_telemetry") == 0 || strcmp(cmd, "start_telemetry") == 0 || strcmp(cmd, "stop_telemetry") == 0) {
+            char en_s[16] = {0};
+            char int_s[16] = {0};
+            extractJsonField(input, "enable", en_s, sizeof(en_s));
+            if (en_s[0] == '\0') extractJsonField(input, "active", en_s, sizeof(en_s));
+            extractJsonField(input, "interval", int_s, sizeof(int_s));
+            if (int_s[0] == '\0') extractJsonField(input, "interval_ms", int_s, sizeof(int_s));
+
+            bool enable = true;
+            if (strcmp(cmd, "stop_telemetry") == 0) {
+                enable = false;
+            } else if (en_s[0] != '\0') {
+                enable = (strcmp(en_s, "true") == 0 || strcmp(en_s, "1") == 0);
+            }
+
+            uint32_t interval = (int_s[0] != '\0') ? (uint32_t)atoi(int_s) : s_ble_telemetry_interval_ms;
+            setBleTelemetryStreaming(enable, interval);
+
+            if (s_pTxCharacteristic && s_device_connected) {
+                char resp[96];
+                snprintf(resp, sizeof(resp), "{\"status\":\"ok\",\"streaming\":%s,\"interval_ms\":%u}",
+                         enable ? "true" : "false", (unsigned)s_ble_telemetry_interval_ms);
+                sendBleData(resp, strlen(resp));
+            }
+            return;
+        }
     }
 
     /* B. Check for Brightness adjustment command via Raw Text: BRIGHTNESS:180 */
@@ -517,6 +670,35 @@ static void processIncomingBleData(const String& raw_input) {
             snprintf(resp, sizeof(resp), "{\"status\":\"ok\",\"expr\":\"%s\"}", val.c_str());
             s_pTxCharacteristic->setValue((uint8_t*)resp, strlen(resp));
             s_pTxCharacteristic->notify();
+        }
+        return;
+    }
+
+    /* D. Check for Telemetry query via Raw Text: TELEMETRY or GET_TELEMETRY */
+    if (input.equalsIgnoreCase("TELEMETRY") || input.equalsIgnoreCase("GET_TELEMETRY") || input.startsWith("TELEMETRY:")) {
+        KORE_LOG_INF("BLE", "Telemetry snapshot requested via BLE text command");
+        sendBleTelemetryNow();
+        return;
+    }
+
+    /* E. Check for Telemetry Streaming via Raw Text: STREAM_TELEMETRY:1 or STREAM_TELEMETRY:0 */
+    if (input.startsWith("STREAM_TELEMETRY:") || input.startsWith("stream_telemetry:")) {
+        int colon = input.indexOf(':');
+        String val = input.substring(colon + 1);
+        val.trim();
+        bool enable = (val == "1" || val.equalsIgnoreCase("true") || val.equalsIgnoreCase("on"));
+        int interval = val.toInt();
+        if (interval > 1) {
+            setBleTelemetryStreaming(true, (uint32_t)interval);
+        } else {
+            setBleTelemetryStreaming(enable, s_ble_telemetry_interval_ms);
+        }
+
+        if (s_pTxCharacteristic && s_device_connected) {
+            char resp[96];
+            snprintf(resp, sizeof(resp), "{\"status\":\"ok\",\"streaming\":%s,\"interval_ms\":%u}",
+                     s_ble_telemetry_streaming ? "true" : "false", (unsigned)s_ble_telemetry_interval_ms);
+            sendBleData(resp, strlen(resp));
         }
         return;
     }
@@ -631,6 +813,7 @@ class ServerCallbacks : public BLEServerCallbacks {
 
     void onDisconnect(BLEServer* pServer) override {
         s_device_connected = false;
+        s_ble_telemetry_streaming = false;
         KORE_LOG_INF("BLE", "Phone disconnected; restarting advertising");
         delay(30);
         BLEDevice::startAdvertising();
@@ -687,6 +870,7 @@ void initBleNotificationServer(void) {
     KORE_LOG_INF("BLE", "Initializing BLE GATT Server: %s", dev_name);
 
     BLEDevice::init(dev_name);
+    BLEDevice::setMTU(517);
 
     /* Set Bluetooth RF TX power to maximum (+9 dBm) on ESP32-S3 */
     BLEDevice::setPower(ESP_PWR_LVL_P9, ESP_BLE_PWR_TYPE_DEFAULT);
@@ -720,6 +904,18 @@ void initBleNotificationServer(void) {
     pAdvertising->setMinInterval(32);    /* 20 ms */
     pAdvertising->setMaxInterval(64);    /* 40 ms */
     BLEDevice::startAdvertising();
+
+    if (!s_ble_telemetry_task_handle) {
+        xTaskCreatePinnedToCore(
+            bleTelemetryStreamTask,
+            "BLE_Telem_Task",
+            6144,
+            NULL,
+            1,
+            &s_ble_telemetry_task_handle,
+            0
+        );
+    }
 
     KORE_LOG_INF("BLE", "BLE advertising started as '%s'", dev_name);
 }

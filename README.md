@@ -232,7 +232,8 @@ $$s(p) = 10p^3 - 15p^4 + 6p^5, \quad p \in [0, 1]$$
 KoRe hosts an asynchronous dual-port HTTP web server for live telemetry inspection, credential setup, facial expression selection, camera tuning, weather configuration, display brightness adjustment, OTA firmware flashing, and video streaming:
 
 - **Web Dashboard (`GET http://<ESP32_IP>/`):** Serves the Bento grid control panel interface rendering real-time target bounding boxes, telemetry metrics, 8-expression selection, camera tuning, weather location settings, live display brightness slider, and OTA firmware updater.
-- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics, candidate arrays, active expression IDs, emotional valence/arousal, and memory statistics.
+- **JSON Telemetry Endpoint (`GET http://<ESP32_IP>/telemetry`):** Returns real-time tracking metrics, candidate arrays, active expression IDs, emotional valence/arousal, memory statistics, and camera standby status without forcing camera hardware active.
+- **Bluetooth Low Energy (BLE) Telemetry & Companion Service:** Nordic UART Service (`6E400001-...`) GATT server for mobile companion connectivity, allowing on-demand telemetry (`{"cmd":"get_telemetry"}` or `TELEMETRY`) and live continuous telemetry streaming (`{"cmd":"stream_telemetry","enable":true,"interval":500}`) completely decoupled from camera power.
 - **Display Brightness (`POST http://<ESP32_IP>/set_brightness`):** Adjusts OLED panel brightness ($0 - 255$) in real-time with automatic NVS storage.
 - **Weather Configuration (`POST /set_weather`, `GET /weather_info`, `POST /trigger_weather`):** Manages Open-Meteo geolocation, queries current observation, and triggers 6-second OLED preview.
 - **Camera Tuning Endpoint (`POST http://<ESP32_IP>/camera_control`):** Dynamically adjusts brightness, contrast, saturation, flip/mirror orientation, and auto-exposure.
