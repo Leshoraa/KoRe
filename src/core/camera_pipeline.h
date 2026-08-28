@@ -37,6 +37,12 @@ bool allocateVisionBuffers(void);
  */
 void cameraTask(void *pvParameters);
 
+/**
+ * @brief Checks if camera is awake and has a clean, valid JPEG frame ready for snapshot.
+ * @return True if frame is ready.
+ */
+bool isCameraReadyForSnapshot(void);
+
 #ifdef __cplusplus
 }
 #endif

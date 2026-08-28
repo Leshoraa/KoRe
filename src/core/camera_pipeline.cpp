@@ -923,7 +923,7 @@ void cameraTask(void *pvParameters) {
                     }
                     last_frame_time = now;
 
-                    if (web_active && g_latest_jpeg_buf) {
+                    if (s_warmup_frames == 0 && web_active && g_latest_jpeg_buf) {
                         if (fb->len <= STREAM_BUFFER_SIZE_BYTES) {
                             portENTER_CRITICAL(&g_stream_mutex);
                             memcpy(g_latest_jpeg_buf, fb->buf, fb->len);
@@ -966,7 +966,7 @@ void cameraTask(void *pvParameters) {
         } else if (g_recon_state == STATE_SLEEP_RECON) {
             if (web_active || (now - state_timer > sleep_duration_ms)) {
                 setCameraSleep(false);
-                vTaskDelay(pdMS_TO_TICKS(30));
+                vTaskDelay(pdMS_TO_TICKS(50));
 
                 kf2d_tracker_init(&s_k_tracker);
                 portENTER_CRITICAL(&g_target_mutex);
@@ -979,7 +979,7 @@ void cameraTask(void *pvParameters) {
                 g_current_target.proximity = 0.0f;
                 portEXIT_CRITICAL(&g_target_mutex);
 
-                s_warmup_frames = 3;
+                s_warmup_frames = 2;
                 g_recon_state = STATE_ACTIVE;
                 state_timer = now;
                 active_duration_ms = ACTIVE_STATE_TIMEOUT_MS;
@@ -991,3 +991,8 @@ void cameraTask(void *pvParameters) {
         vTaskDelay(1);
     }
 }
+
+bool isCameraReadyForSnapshot(void) {
+    return (g_camera_init_ok && g_recon_state == STATE_ACTIVE && s_warmup_frames == 0 && g_latest_jpeg_len > 0);
+}
+

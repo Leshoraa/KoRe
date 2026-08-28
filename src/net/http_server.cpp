@@ -10,6 +10,7 @@
 #include "src/net/notification_client.h"
 #include "src/net/ble_manager.h"
 #include "src/core/display_engine.h"
+#include "src/core/camera_pipeline.h"
 #include "include/kore_config.h"
 #include "include/kore_types.h"
 #include "include/kore_affective.h"
@@ -650,6 +651,59 @@ static esp_err_t ntfy_post_handler(httpd_req_t *req) {
     return httpd_resp_send(req, resp, strlen(resp));
 }
 
+static esp_err_t snapshot_handler(httpd_req_t *req) {
+    g_last_web_activity_ms = millis();
+
+    if (!g_camera_init_ok) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera Offline");
+        return ESP_OK;
+    }
+
+    // Tunggu sampai frame JPEG valid siap (maksimal 400ms jika kamera baru bangun dari sleep)
+    uint32_t start_wait = millis();
+    while (!isCameraReadyForSnapshot() && (millis() - start_wait < 400)) {
+        vTaskDelay(pdMS_TO_TICKS(15));
+    }
+
+    size_t snap_len = 0;
+    uint8_t* snap_buf = NULL;
+
+    portENTER_CRITICAL(&g_stream_mutex);
+    if (g_latest_jpeg_buf && g_latest_jpeg_len > 0) {
+        snap_len = g_latest_jpeg_len;
+        snap_buf = (uint8_t*)malloc(snap_len);
+        if (snap_buf) {
+            memcpy(snap_buf, g_latest_jpeg_buf, snap_len);
+        }
+    }
+    portEXIT_CRITICAL(&g_stream_mutex);
+
+    if (!snap_buf || snap_len == 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Capture Timeout");
+        return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=desk_moment.jpg");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    
+    char meta_val[32];
+    snprintf(meta_val, sizeof(meta_val), "%.2f", getEmotionValence());
+    httpd_resp_set_hdr(req, "X-Moment-Valence", meta_val);
+    
+    char meta_arousal[32];
+    snprintf(meta_arousal, sizeof(meta_arousal), "%.2f", getEmotionArousal());
+    httpd_resp_set_hdr(req, "X-Moment-Arousal", meta_arousal);
+
+    char meta_expr[48];
+    snprintf(meta_expr, sizeof(meta_expr), "%s", getExpressionName(g_currentExpr));
+    httpd_resp_set_hdr(req, "X-Moment-Expression", meta_expr);
+
+    esp_err_t res = httpd_resp_send(req, (const char *)snap_buf, snap_len);
+    free(snap_buf);
+    return res;
+}
+
 static esp_err_t stream_redirect_handler(httpd_req_t *req) {
     char host[64] = {0};
     if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK) {
@@ -703,6 +757,8 @@ void startWebServer(void) {
     httpd_uri_t ntfy_get_uri          = { .uri = "/api/ntfy",            .method = HTTP_GET,  .handler = ntfy_get_handler,        .user_ctx = NULL };
     httpd_uri_t ntfy_post_uri         = { .uri = "/api/ntfy",            .method = HTTP_POST, .handler = ntfy_post_handler,       .user_ctx = NULL };
     httpd_uri_t stream_redir_uri      = { .uri = "/stream",             .method = HTTP_GET,  .handler = stream_redirect_handler,   .user_ctx = NULL };
+    httpd_uri_t snapshot_uri          = { .uri = "/snapshot",           .method = HTTP_GET,  .handler = snapshot_handler,          .user_ctx = NULL };
+    httpd_uri_t moment_capture_uri    = { .uri = "/moment_capture",     .method = HTTP_GET,  .handler = snapshot_handler,          .user_ctx = NULL };
 
     if (httpd_start(&g_camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(g_camera_httpd, &index_uri);
@@ -732,6 +788,8 @@ void startWebServer(void) {
         httpd_register_uri_handler(g_camera_httpd, &ntfy_get_uri);
         httpd_register_uri_handler(g_camera_httpd, &ntfy_post_uri);
         httpd_register_uri_handler(g_camera_httpd, &stream_redir_uri);
+        httpd_register_uri_handler(g_camera_httpd, &snapshot_uri);
+        httpd_register_uri_handler(g_camera_httpd, &moment_capture_uri);
         KORE_LOG_INF("HTTP", "Web control server registered on port %d", HTTP_PORT_WEB_CONTROL);
     } else {
         KORE_LOG_ERR("HTTP", "Failed to start HTTP web control server");
